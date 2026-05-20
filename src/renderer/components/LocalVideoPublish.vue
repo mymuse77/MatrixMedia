@@ -22,14 +22,17 @@
 
         <el-form-item label="视频标签">
           <el-select
+            ref="bqSelect"
             v-model="bqTags"
             multiple
             filterable
             allow-create
             default-first-option
             no-data-text="请输入标签"
-            placeholder="输入标签，回车添加为条目"
+            placeholder="输入标签，回车/空格添加；支持批量粘贴 #标签1 #标签2"
             style="width: 100%"
+            @paste.native.capture="onBqPaste"
+            @keydown.native.capture="onBqKeydown"
           ></el-select>
         </el-form-item>
         <el-form-item label="概括短标题">
@@ -342,6 +345,82 @@ export default {
   },
   methods: {
     platformSupportsCreativeStatement,
+    /** 把字符串按 # / 空格 / 逗号 / 分号 / 顿号 切成多个标签 */
+    _splitBqTokens(raw) {
+      if (!raw) return [];
+      return String(raw)
+        // 在每个 # 前插入空格，保证 "#a#b" 也能切开
+        .replace(/#/g, " #")
+        .split(/[\s,，、;；]+/)
+        .map((s) => s.trim().replace(/^#+/, "").trim())
+        .filter(Boolean);
+    },
+    _pushBqTags(list) {
+      if (!Array.isArray(list) || !list.length) return 0;
+      const exist = new Set((this.bqTags || []).map((t) => String(t)));
+      let added = 0;
+      for (const t of list) {
+        const v = String(t || "").trim();
+        if (!v) continue;
+        if (exist.has(v)) continue;
+        this.bqTags.push(v);
+        exist.add(v);
+        added += 1;
+      }
+      return added;
+    },
+    /** 清空 el-select 内部正在输入的搜索词 */
+    _clearBqInput() {
+      this.$nextTick(() => {
+        const root = this.$refs.bqSelect && this.$refs.bqSelect.$el;
+        if (!root) return;
+        const input = root.querySelector("input.el-select__input");
+        if (!input) return;
+        input.value = "";
+        // 同步 el-select 内部 query 状态
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        try {
+          const sel = this.$refs.bqSelect;
+          if (sel) sel.query = "";
+        } catch (_) {
+          /* ignore */
+        }
+      });
+    },
+    onBqPaste(e) {
+      try {
+        const cd = e.clipboardData || window.clipboardData;
+        if (!cd) return;
+        const text = cd.getData("text") || "";
+        if (!text) return;
+        const tokens = this._splitBqTokens(text);
+        // 只有单个普通词（没有 # / 分隔符）就走原始粘贴流程
+        if (tokens.length <= 1 && !/[#\s,，、;；]/.test(text)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this._pushBqTags(tokens);
+        this._clearBqInput();
+      } catch (_) {
+        /* ignore，回落到默认行为 */
+      }
+    },
+    onBqKeydown(e) {
+      // 只拦截空格键
+      if (e.key !== " " && e.code !== "Space" && e.keyCode !== 32) return;
+      const target = e.target;
+      if (!target || target.tagName !== "INPUT") return;
+      const raw = String(target.value || "");
+      const tokens = this._splitBqTokens(raw);
+      if (!tokens.length) {
+        // 空内容按空格，直接阻止留下空白
+        e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      this._pushBqTags(tokens);
+      this._clearBqInput();
+    },
     open(filePath) {
       if (!filePath) return;
       this.localFilePath = filePath;
