@@ -209,6 +209,39 @@ async function setToutiaoCover(page, hasTagSelector, setPublishStage) {
   await page.waitForTimeout(3000)
   setPublishStage('点击裁剪')
   console.log('点击裁剪')
+  // 兜底：只要 .xigua-poster-editor .bg 已经有 background-image(blob:...)，
+  // 就认为封面已经上传完成，按钮卡在 cannot-click 也不再死等，避免整个流程卡死。
+  const isXiguaPosterUploaded = async () => {
+    try {
+      return await page.evaluate(() => {
+        const bg = document.querySelector('.xigua-poster-editor .bg')
+        if (!bg) return false
+        const inline = bg.style && bg.style.backgroundImage
+        const computed =
+          (window.getComputedStyle(bg) || {}).backgroundImage || ''
+        const bgImage = inline || computed
+        return !!bgImage && bgImage.includes('url(') && bgImage !== 'none'
+      })
+    } catch (_) {
+      return false
+    }
+  }
+  const forceClickIfExists = async (selector, label) => {
+    try {
+      const ok = await page.evaluate(sel => {
+        const el = document.querySelector(sel)
+        if (!el) return false
+        el.scrollIntoView({ block: 'center', inline: 'center' })
+        el.click()
+        return true
+      }, selector)
+      console.log(`[tt] 兜底强制点击${label}: ${ok ? '已点击' : '元素不存在'}`)
+      return ok
+    } catch (e) {
+      console.log(`[tt] 兜底强制点击${label}失败:`, e?.message || e)
+      return false
+    }
+  }
   // 裁剪按钮：有就点，没有（新版可能直接跳过裁剪步骤）就跳过，不阻断后续流程
   const clipBtn = await page.$('.base-content-wrap .clip-btn')
   if (clipBtn) {
@@ -224,23 +257,51 @@ async function setToutiaoCover(page, hasTagSelector, setPublishStage) {
       console.log('裁剪完成')
     } catch (e) {
       console.log('[tt] 裁剪按钮点击失败，跳过:', e?.message || e)
+      if (await isXiguaPosterUploaded()) {
+        console.log('[tt] 检测到 .xigua-poster-editor .bg 已有封面，按已完成处理')
+      }
     }
   } else {
     console.log('[tt] 没有裁剪按钮，跳过裁剪步骤')
   }
   setPublishStage('点击确认')
-  await clickReadyElement(
-    page,
-    '.base-content-wrap .btn-sure',
-    '头条封面确认按钮'
-  )
+  try {
+    await clickReadyElement(
+      page,
+      '.base-content-wrap .btn-sure',
+      '头条封面确认按钮',
+      5000
+    )
+  } catch (e) {
+    console.log('[tt] 封面确认按钮等待超时:', e?.message || e)
+    if (await isXiguaPosterUploaded()) {
+      console.log('[tt] bg 已存在，兜底强制点击 btn-sure')
+      await forceClickIfExists('.base-content-wrap .btn-sure', 'btn-sure')
+    } else {
+      throw e
+    }
+  }
   await page.waitForTimeout(1000)
   setPublishStage('确认封面弹窗')
-  await clickReadyElement(
-    page,
-    '.Dialog-container .footer .m-button.red',
-    '头条封面弹窗确认按钮'
-  )
+  try {
+    await clickReadyElement(
+      page,
+      '.Dialog-container .footer .m-button.red',
+      '头条封面弹窗确认按钮',
+      5000
+    )
+  } catch (e) {
+    console.log('[tt] 封面弹窗确认按钮等待超时:', e?.message || e)
+    if (await isXiguaPosterUploaded()) {
+      console.log('[tt] bg 已存在，兜底强制点击弹窗 red 按钮')
+      await forceClickIfExists(
+        '.Dialog-container .footer .m-button.red',
+        '弹窗 red'
+      )
+    } else {
+      throw e
+    }
+  }
   setPublishStage('封面设置完成')
 }
 
