@@ -5,6 +5,9 @@
         <el-button type="primary" @click="selectVideoFile"
           >选择视频发布</el-button
         >
+        <el-button type="primary" @click="openDirectoryPublish"
+          >目录发布</el-button
+        >
         <el-button type="success" @click="openArticlePublish"
           >发布文章</el-button
         >
@@ -572,6 +575,9 @@ export default {
       if (path) {
         this.$refs.localPublishRef.open(path);
       }
+    },
+    async openDirectoryPublish() {
+      this.$refs.localPublishRef.openDirectory();
     },
     openArticlePublish() {
       this.$refs.articlePublishRef.open();

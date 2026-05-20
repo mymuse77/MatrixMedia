@@ -12,6 +12,8 @@ const https = require('https')
 const version = require('../../../package.json').version
 console.log(version, '-------')
 import fs from 'fs'
+import path from 'path'
+import xlsx from 'xlsx'
 // 获取托管在 Gitee 的 pubtw 仓库 Release 信息。
 // 公开仓库可匿名调用 API，无需 access_token，避免把可写 token 打进开源客户端。
 function requestGiteeJson(path, fallback) {
@@ -432,6 +434,61 @@ export default {
         return undefined
       }
       return result.filePaths[0]
+    })
+
+    ipcMain.handle('dialog:openBatchDir', async (event) => {
+      const result = await dialog.showOpenDialog(
+        BrowserWindow.fromWebContents(event.sender),
+        { properties: ['openDirectory'] }
+      )
+      if (result.canceled || !result.filePaths || result.filePaths.length === 0) return null
+      return result.filePaths[0]
+    })
+
+    ipcMain.handle('dialog:openBatchXlsx', async (event) => {
+      const result = await dialog.showOpenDialog(
+        BrowserWindow.fromWebContents(event.sender),
+        {
+          properties: ['openFile'],
+          filters: [{ name: 'Excel', extensions: ['xlsx', 'xls'] }]
+        }
+      )
+      if (result.canceled || !result.filePaths || result.filePaths.length === 0) return null
+      const filePath = result.filePaths[0]
+      try {
+        const workbook = xlsx.readFile(filePath)
+        const sheetName = workbook.SheetNames[0]
+        const sheet = workbook.Sheets[sheetName]
+        const rows = xlsx.utils.sheet_to_json(sheet, { defval: '' })
+        // Normalize: support column headers "文件名"/"fileName", "标题"/"title", "标签"/"tags"
+        return rows.map(row => ({
+          fileName: String(row['文件名'] || row['fileName'] || row['filename'] || '').trim(),
+          title: String(row['标题'] || row['title'] || '').trim(),
+          tags: String(row['标签'] || row['tags'] || '').trim(),
+        })).filter(r => r.fileName)
+      } catch (e) {
+        return { error: e && e.message ? e.message : String(e) }
+      }
+    })
+
+    ipcMain.handle('dialog:downloadBatchTemplate', async () => {
+      try {
+        const workbook = xlsx.utils.book_new()
+        const wsData = [
+          ['文件名', '标题', '标签'],
+          ['第01集.mp4', '精彩短剧第一集', '短剧,影视,追剧'],
+          ['第02集.mp4', '精彩短剧第二集', '短剧,影视,追剧'],
+        ]
+        const ws = xlsx.utils.aoa_to_sheet(wsData)
+        xlsx.utils.book_append_sheet(workbook, ws, 'Sheet1')
+        const downloadsDir = electronApp.getPath('downloads')
+        const outPath = path.join(downloadsDir, 'batch-publish-template.xlsx')
+        xlsx.writeFile(workbook, outPath)
+        shell.openPath(outPath)
+        return { ok: true, path: outPath }
+      } catch (e) {
+        return { ok: false, error: e && e.message ? e.message : String(e) }
+      }
     })
 
     ipcMain.handle('statr-server', async () => {
