@@ -248,19 +248,37 @@ export default async function (page, data, window, event) {
     const titleHandle = await page.$(TITLE_SELECTOR)
     if (!titleHandle) throw new Error('未找到标题 contenteditable')
 
-    // 默认值是文件名前缀，需要先清空。focus + selectAll + delete，再 type 新内容。
+    // 默认值是文件名前缀，需要先清空。
+    // 注意：不要用 page.evaluate + selection API，打包压缩后局部变量会被改名
+    // 导致 "ReferenceError: r is not defined"。这里全部走 puppeteer 原生 API。
     await titleHandle.focus()
-    await page.evaluate((sel) => {
-      const el = document.querySelector(sel)
-      if (!el) return
-      const range = document.createRange()
-      range.selectNodeContents(el)
-      const sel2 = window.getSelection()
-      sel2.removeAllRanges()
-      sel2.addRange(range)
-    }, TITLE_SELECTOR)
-    await page.keyboard.press('Delete')
+    // 三连击 = 选中当前段落（contenteditable 里等价于全选这一段）
+    await titleHandle.click({ clickCount: 3 })
+    await page.waitForTimeout(100)
+    // 兜底再来一次 Ctrl/Cmd+A 全选
+    const isMac = process.platform === 'darwin'
+    await page.keyboard.down(isMac ? 'Meta' : 'Control')
+    await page.keyboard.press('KeyA')
+    await page.keyboard.up(isMac ? 'Meta' : 'Control')
+    await page.waitForTimeout(80)
+    await page.keyboard.press('Backspace')
     await page.waitForTimeout(150)
+    // 再兜底：如果还有残留文字（个别情况下选区清不掉），直接通过 element.evaluate
+    // 把 textContent 置空（绑定到 handle，无需 selector，避免压缩问题）。
+    try {
+      const remain = await titleHandle.evaluate(function (el) {
+        return (el.textContent || '').trim()
+      })
+      if (remain) {
+        await titleHandle.evaluate(function (el) {
+          el.textContent = ''
+          el.dispatchEvent(new Event('input', { bubbles: true }))
+        })
+        await titleHandle.focus()
+      }
+    } catch (_) {
+      /* 忽略兜底失败 */
+    }
     await page.keyboard.type(data.data.bt1 || '', { delay: 50 })
     console.log('[bjh] 标题已输入')
   } catch (err) {
