@@ -48,6 +48,9 @@ export function parsePublishArgs(subArgv) {
     publishAt: null,
     show: false,
     closeWindowAfterPublish: true,
+    dir: null,
+    config: null,
+    creativeStatement: null,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -74,6 +77,12 @@ export function parsePublishArgs(subArgv) {
       out.show = true;
     } else if (a === "--no-close-window") {
       out.closeWindowAfterPublish = false;
+    } else if (a === '--dir') {
+      out.dir = args[++i];
+    } else if (a === '--config' || a === '--xlsx') {
+      out.config = args[++i];
+    } else if (a === '--creative-statement' || a === '--cs') {
+      out.creativeStatement = args[++i];
     }
   }
 
@@ -89,8 +98,14 @@ export function parsePublishArgs(subArgv) {
   }
   out.platform = pt;
 
-  if (!out.file) {
-    return { ok: false, error: "缺少 --file（或 -f）视频文件路径" };
+  if (!out.file && !out.dir) {
+    return { ok: false, error: '缺少 --file（或 -f）视频文件路径，或 --dir + --config 批量目录模式' };
+  }
+  if (out.file && out.dir) {
+    return { ok: false, error: '--file 和 --dir 不能同时使用' };
+  }
+  if (out.dir && !out.config) {
+    return { ok: false, error: '--dir 批量模式必须同时提供 --config <xlsx路径>' };
   }
 
   if (!out.partition) {
@@ -105,13 +120,13 @@ export function parsePublishArgs(subArgv) {
     out.partition = `persist:${phoneSeg}${out.platform}`;
   }
 
-  if (!out.title || !String(out.title).trim()) {
+  if (!out.dir && (!out.title || !String(out.title).trim())) {
     return {
       ok: false,
-      error:
-        "缺少 --title（或 -t）视频标题（与 GUI「视频标题」一致，写入 data.bt1）",
+      error: '缺少 --title（或 -t）视频标题（与 GUI「视频标题」一致，写入 data.bt1）',
     };
   }
+  // in dir mode title comes from xlsx per row, no global --title needed
 
   if (out.show) {
     console.warn(
@@ -176,6 +191,11 @@ export function publishHelpText() {
 选项:
   -p, --platform <id>   平台：dy|抖音、tt|头条、ks|快手、blbl|哔哩哔哩、bjh|百家号、sph|视频号、xhs|小红书、fqsp|番茄视频
   -f, --file <path>     本地视频文件路径
+      --dir <path>          [batch] video directory path; must be paired with --config
+      --config <path>       [batch] xlsx declaration file path (columns: 文件名/标题/标签/创作声明)
+      --cs, --creative-statement <val>  creative statement value for single-file mode.
+                            Valid values: none | ai_generated | fiction | marketing | personal_opinion | repost | self_made_no_repost
+                            (self_made_no_repost is blbl-only). Default: none.
       --phone <id>      账号手机号（与 GUI 账号树一致，可与 partition 二选一）
       --partition <p>   完整 session partition，如 persist:13800138000抖音
   -t, --title <text>    视频标题（必填）→ data.bt1
@@ -196,7 +216,8 @@ export function publishHelpText() {
       --no-close-window 发布后不自动关窗（仅 GUI 显示窗口时有效；CLI 始终后台运行）
   -h, --help            显示帮助
 
-退出码: 0 成功, 1 异常, 2 参数错误, 3 任务失败（上传未成功）
+退出码 (单文件): 0 成功, 1 异常, 2 参数错误, 3 任务失败（上传未成功）
+退出码 (批量 --dir): 0 全部成功, 1 部分失败, 2 全部失败
 
 示例:
   矩媒.exe cli publish -p dy --phone 13800138000 -f C:\\\\v.mp4 -t "我的视频标题" --tags "#减脂 #健身"
@@ -210,5 +231,7 @@ export function publishHelpText() {
   matrixmedia cli publish -p blbl --phone 13800138000 -f ./v.mp4 -t "标题" --tags "游戏 解说 开黑"
   # 一次性定时发布：必须提供实际视频、标题、账号等完整发布参数
   matrixmedia cli publish -p dy --phone 13800138000 -f ./v.mp4 -t "标题" --publish-at "2026-05-05 20:30:00"
+  # batch publish with xlsx config:
+  matrixmedia cli publish -p dy --phone 13800138000 --dir ./videos --config ./videos/batch.xlsx
 `.trim();
 }
