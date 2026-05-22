@@ -66,6 +66,12 @@ import Sidebar from "./components/Sidebar";
 import { useAppStore } from "@/store/app";
 import { ipcRenderer } from "electron";
 import packageInfo from "../../../package.json";
+import dataRequest from "@/utils/dataRequest";
+import {
+  buildFeedbackReminderRecord,
+  buildFeedbackReminderShownPatch,
+  resolveFeedbackReminderState,
+} from "./feedbackReminder";
 
 
 const { sidebarStatus } = useAppStore();
@@ -74,20 +80,63 @@ const sidebarSwitch = computed(() => sidebarStatus.opened)
 const feedbackUrl = "https://wj.qq.com/s2/26701939/4679/";
 const feedbackDialogVisible = ref(false);
 const feedbackConfirmVisible = ref(false);
-const feedbackStorageKey = `matrixmedia-feedback-submitted:${packageInfo.version}`;
 
 ipcRenderer.invoke("IsUseSysTitle").then(res => {
   IsUseSysTitle.value = res;
 });
 
 onMounted(() => {
-  // 2026.6.1号就不出现了
-  const now = new Date();
-  const targetDate = new Date(2026, 5, 1);
-  if (now > targetDate) {
-    feedbackDialogVisible.value = localStorage.getItem(feedbackStorageKey) !== "1";
-  }
+  initFeedbackReminder().catch(() => {});
 });
+
+function formatDate(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+async function initFeedbackReminder() {
+  const now = new Date();
+  const nowMs = now.getTime();
+  const pushDataResult = await dataRequest({
+    type: "get",
+    fileName: "pushData",
+    item: {
+      page: 1,
+      pageSize: 10000,
+    },
+  });
+  const state = resolveFeedbackReminderState({
+    pushDataResult,
+    version: packageInfo.version,
+    nowMs,
+  });
+
+  if (state.action === "create") {
+    await dataRequest({
+      type: "add",
+      fileName: "pushData",
+      item: buildFeedbackReminderRecord({
+        version: packageInfo.version,
+        nowMs,
+        date: formatDate(now),
+      }),
+    });
+    return;
+  }
+
+  if (state.action === "show") {
+    feedbackDialogVisible.value = true;
+    if (state.record.id && state.record.date) {
+      await dataRequest({
+        type: "update",
+        fileName: "pushData",
+        item: buildFeedbackReminderShownPatch(state.record, nowMs),
+      });
+    }
+  }
+}
 
 function openFeedbackWindow() {
   ipcRenderer.invoke("open-external-window", {
@@ -103,7 +152,6 @@ function showFeedbackConfirm() {
 }
 
 function confirmFeedbackSubmitted() {
-  localStorage.setItem(feedbackStorageKey, "1");
   feedbackConfirmVisible.value = false;
   feedbackDialogVisible.value = false;
 }
