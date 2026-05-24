@@ -96,6 +96,13 @@ export default {
     isAccountManager() {
       return this.$route.path.indexOf('/accountManager') !== -1
     },
+    accountRouteSignature() {
+      return usePermissionStore()
+        .routers
+        .filter(route => typeof route.path === 'string' && route.path.startsWith('/accountManager'))
+        .map(route => `${route.path}:${(route.children || []).length}`)
+        .join('|')
+    },
     mediaMenuItemIndex() {
       return this.getAccoutIndex || MEDIA_MENU_NO_ACCOUNT
     }
@@ -113,6 +120,10 @@ export default {
       } else if (path.startsWith('/accountManager') && this.getAccoutIndex) {
         this.activeIndex = this.getAccoutIndex
       }
+    },
+    accountRouteSignature() {
+      this.refreshAccountMenuIndex()
+      this.syncActiveIndexToCurrentRoute()
     }
   },
   methods: {

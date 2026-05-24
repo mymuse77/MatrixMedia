@@ -8,7 +8,9 @@ import { runPuppeteerTask, createIpcTransport } from './puppeteerFile';
 import ptConfig from '../config/ptConfig';
 import path from 'path';
 import fs from 'fs';
-import { app } from 'electron';
+import { app, BrowserWindow } from 'electron';
+import { getAccountLoginStatus, getAccountPartition } from './accountLoginStatus';
+import { openAccountLoginWindow } from './accountLoginWindow';
 
 /**
  * 获取账号数据目录
@@ -46,16 +48,33 @@ function getAllAccounts() {
   return allAccounts;
 }
 
+function notifyAccountChanged(payload) {
+  const message = {
+    source: 'websocket',
+    timestamp: Date.now(),
+    ...(payload || {}),
+  };
+
+  BrowserWindow.getAllWindows().forEach(win => {
+    if (!win || win.isDestroyed()) return;
+    try {
+      win.webContents.send('matrix-account-changed', message);
+    } catch (error) {
+      console.error('[WebSocket] notify account changed failed:', error);
+    }
+  });
+}
+
 /**
  * 检查账号登录状态
  */
 async function checkAccountLogin(phone, platform) {
-  // TODO: 实现登录状态检查逻辑
-  // 可以通过检查 session cookie 来判断
-  return {
-    isLoggedIn: false,
-    partition: `persist:${phone}${platform}`,
-  };
+  return getAccountLoginStatus({
+    phone,
+    platform,
+    url: ptConfig[platform]?.index,
+    partition: getAccountPartition(phone, platform),
+  });
 }
 
 /**
@@ -92,6 +111,14 @@ export async function handleAddAccount(taskData, wsClient) {
       throw new Error(result.message || '添加账号失败');
     }
 
+    notifyAccountChanged({
+      reason: 'add',
+      taskId,
+      phone,
+      pt: platform,
+      platform,
+    });
+
     wsClient.sendProgress(taskId, 100, '账号创建成功');
 
     return {
@@ -99,7 +126,7 @@ export async function handleAddAccount(taskData, wsClient) {
       account: {
         phone,
         platform,
-        partition: `persist:${phone}${platform}`,
+        partition: getAccountPartition(phone, platform),
         url: ptConfig[platform].index,
         createTime: Date.now(),
       },
@@ -129,15 +156,23 @@ export async function handleGetAccounts(taskData, wsClient) {
     }
 
     // 格式化账号数据
-    const formattedAccounts = accounts.map(acc => ({
-      id: acc.id,
-      phone: acc.phone,
-      platform: acc.pt,
-      partition: `persist:${acc.phone}${acc.pt}`,
-      url: acc.url,
-      createTime: acc.createTime,
-      // TODO: 添加登录状态检查
-      isLoggedIn: false,
+    const formattedAccounts = await Promise.all(accounts.map(async acc => {
+      const loginStatus = await getAccountLoginStatus({
+        phone: acc.phone,
+        platform: acc.pt,
+        url: acc.url || ptConfig[acc.pt]?.index,
+        partition: getAccountPartition(acc.phone, acc.pt),
+      });
+
+      return {
+        id: acc.id,
+        phone: acc.phone,
+        platform: acc.pt,
+        partition: loginStatus.partition,
+        url: acc.url,
+        createTime: acc.createTime,
+        ...loginStatus,
+      };
     }));
 
     wsClient.sendProgress(taskId, 100, '查询完成');
@@ -173,6 +208,15 @@ export async function handleDeleteAccount(taskData, wsClient) {
       throw new Error(result.message || '删除账号失败');
     }
 
+    notifyAccountChanged({
+      reason: 'delete',
+      taskId,
+      id,
+      phone,
+      pt: platform,
+      platform,
+    });
+
     wsClient.sendProgress(taskId, 100, '账号删除成功');
 
     return {
@@ -186,7 +230,74 @@ export async function handleDeleteAccount(taskData, wsClient) {
 }
 
 /**
- * 4. 发布视频任务
+ * 4. 打开账号登录/管理窗口
+ */
+export async function handleOpenAccountLogin(taskData, wsClient) {
+  const { taskId, data = {} } = taskData;
+  const { id, phone, platform } = data;
+
+  try {
+    wsClient.sendProgress(taskId, 30, '正在打开账号窗口');
+
+    const accounts = getAllAccounts();
+    const account = accounts.find(acc => {
+      if (id && acc.id === id) return true;
+      return acc.phone === phone && acc.pt === platform;
+    });
+    const targetPhone = account?.phone || phone;
+    const targetPlatform = account?.pt || platform;
+
+    if (!targetPhone || !targetPlatform) {
+      throw new Error('缺少账号 phone/platform');
+    }
+
+    if (!ptConfig[targetPlatform]) {
+      throw new Error(`不支持的平台: ${targetPlatform}`);
+    }
+
+    notifyAccountChanged({
+      reason: 'focus',
+      taskId,
+      phone: targetPhone,
+      pt: targetPlatform,
+      platform: targetPlatform,
+    });
+
+    const result = await openAccountLoginWindow({
+      partition: data.partition || getAccountPartition(targetPhone, targetPlatform),
+      url: data.url || account?.url || ptConfig[targetPlatform].index,
+      useragent: ptConfig[targetPlatform].useragent,
+      title: `${targetPhone} ${targetPlatform}`,
+    });
+
+    if (!result || result.ok === false) {
+      throw new Error(result?.message || '打开账号窗口失败');
+    }
+
+    wsClient.sendProgress(taskId, 100, '账号窗口已打开');
+
+    return {
+      success: true,
+      action: 'open_account_login',
+      opened: true,
+      reused: Boolean(result.reused),
+      account: {
+        id: account?.id || id,
+        phone: targetPhone,
+        platform: targetPlatform,
+        partition: data.partition || getAccountPartition(targetPhone, targetPlatform),
+        url: data.url || account?.url || ptConfig[targetPlatform].index,
+      },
+      message: result.reused ? '已切换到账号窗口' : '账号窗口已打开',
+    };
+  } catch (error) {
+    console.error('[WebSocket] 打开账号窗口失败:', error);
+    throw error;
+  }
+}
+
+/**
+ * 5. 发布视频任务
  */
 export async function handlePublishVideo(taskData, wsClient) {
   const { taskId, data } = taskData;
@@ -364,9 +475,16 @@ export async function handleGetClientStatus(taskData, wsClient) {
 
     const accounts = getAllAccounts();
 
-    // TODO: 实现更详细的状态统计
-    const loggedInCount = 0; // 需要实现登录状态检查
-    const loggedOutCount = accounts.length;
+    const accountStatuses = await Promise.all(accounts.map(acc =>
+      getAccountLoginStatus({
+        phone: acc.phone,
+        platform: acc.pt,
+        url: acc.url || ptConfig[acc.pt]?.index,
+        partition: getAccountPartition(acc.phone, acc.pt),
+      })
+    ));
+    const loggedInCount = accountStatuses.filter(status => status.isLoggedIn).length;
+    const loggedOutCount = accounts.length - loggedInCount;
 
     // TODO: 获取任务队列状态
     const queueStatus = {
@@ -414,17 +532,22 @@ export function registerWebSocketHandlers(wsClient) {
     handleDeleteAccount(taskData, wsClient)
   );
 
-  // 4. 发布视频任务
+  // 4. 打开账号登录/管理窗口
+  wsClient.registerTaskHandler('open_account_login', (taskData) =>
+    handleOpenAccountLogin(taskData, wsClient)
+  );
+
+  // 5. 发布视频任务
   wsClient.registerTaskHandler('publish_video', (taskData) =>
     handlePublishVideo(taskData, wsClient)
   );
 
-  // 5. 查询发布历史
+  // 6. 查询发布历史
   wsClient.registerTaskHandler('get_publish_history', (taskData) =>
     handleGetPublishHistory(taskData, wsClient)
   );
 
-  // 6. 获取客户端状态
+  // 7. 获取客户端状态
   wsClient.registerTaskHandler('get_client_status', (taskData) =>
     handleGetClientStatus(taskData, wsClient)
   );

@@ -59,11 +59,13 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import AppMain from "./components/AppMain";
 import Navbar from "./components/Navbar";
 import Sidebar from "./components/Sidebar";
 import { useAppStore } from "@/store/app";
+import { usePermissionStore } from "@/store/permission";
+import router from "@/router";
 import { ipcRenderer } from "electron";
 import packageInfo from "../../../package.json";
 import dataRequest from "@/utils/dataRequest";
@@ -74,20 +76,92 @@ import {
 } from "./feedbackReminder";
 
 
-const { sidebarStatus } = useAppStore();
+const accountChangedChannel = "matrix-account-changed";
+const accountRoutePrefix = "/accountManager";
+const appStore = useAppStore();
+const permissionStore = usePermissionStore();
+const { sidebarStatus } = appStore;
 const IsUseSysTitle = ref(false);
 const sidebarSwitch = computed(() => sidebarStatus.opened)
 const feedbackUrl = "https://wj.qq.com/s2/26701939/4679/";
 const feedbackDialogVisible = ref(false);
 const feedbackConfirmVisible = ref(false);
+let accountRefreshTimer = null;
 
 ipcRenderer.invoke("IsUseSysTitle").then(res => {
   IsUseSysTitle.value = res;
 });
 
 onMounted(() => {
+  ipcRenderer.on(accountChangedChannel, handleMatrixAccountChanged);
   initFeedbackReminder().catch(() => {});
 });
+
+onBeforeUnmount(() => {
+  ipcRenderer.removeListener(accountChangedChannel, handleMatrixAccountChanged);
+  if (accountRefreshTimer) {
+    clearTimeout(accountRefreshTimer);
+    accountRefreshTimer = null;
+  }
+});
+
+function handleMatrixAccountChanged(_event, payload) {
+  if (accountRefreshTimer) clearTimeout(accountRefreshTimer);
+  accountRefreshTimer = setTimeout(() => {
+    accountRefreshTimer = null;
+    refreshMatrixAccountRoutes(payload || {}).catch(error => {
+      console.error("[matrix-account-changed] refresh routes failed:", error);
+    });
+  }, 150);
+}
+
+function findAccountRoute(payload) {
+  const routes = router.getRoutes();
+  const phone = payload && payload.phone;
+  const pt = payload && (payload.pt || payload.platform);
+
+  if (phone && pt) {
+    const routeName = `${phone}-${pt}`;
+    const exact = routes.find(route => route.name === routeName);
+    if (exact && exact.path) return exact.path;
+  }
+
+  const first = routes.find(
+    route => typeof route.path === "string" && route.path.startsWith(accountRoutePrefix)
+  );
+  return first && first.path;
+}
+
+async function refreshMatrixAccountRoutes(payload) {
+  await permissionStore.GenerateRoutes();
+
+  const currentPath = router.currentRoute && router.currentRoute.path;
+  const targetPath = findAccountRoute(payload);
+
+  if (targetPath) {
+    appStore.setData("isRoute", "accountManager");
+  }
+
+  if (
+    payload &&
+    ["add", "focus"].includes(payload.reason) &&
+    targetPath &&
+    currentPath !== targetPath
+  ) {
+    router.push(targetPath).catch(() => {});
+    return;
+  }
+
+  if (currentPath && currentPath.startsWith(accountRoutePrefix)) {
+    const currentRouteStillExists = router.getRoutes().some(route => route.path === currentPath);
+    if (!currentRouteStillExists && targetPath) {
+      router.push(targetPath).catch(() => {});
+    } else if (!targetPath) {
+      appStore.setData("isRoute", "/");
+      router.push("/").catch(() => {});
+    }
+  }
+}
 
 function formatDate(date) {
   const year = date.getFullYear();
