@@ -104,7 +104,8 @@
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "puppeteer-in-electron": "^3.0.5",
     "qrcode-terminal": "^0.12.0",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "socket.io-client": "^4.7.2"
   },
   "devDependencies": {
     "@babel/core": "^7.22.5",
@@ -166,7 +167,7 @@
     "minimist": "^1.2.8",
     "node-loader": "^2.0.0",
     "nprogress": "^0.2.0",
-    "pinia": "^2.0.33",
+    "pinia": "^2.1.7",
     "portfinder": "^1.0.32",
     "postcss": "^8.4.31",
     "postcss-loader": "^7.3.3",

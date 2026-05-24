@@ -32,6 +32,8 @@ import {
   getMainProcessLogFilePath,
   clearMainProcessLogFile,
 } from "./services/mainProcessLogFile";
+import { getWebSocketClient } from "./services/websocketClient";
+import { registerWebSocketHandlers } from "./services/websocketHandlers";
 
 const cliMode = isCliMode(process.argv);
 installMainProcessLogFile(app);
@@ -83,6 +85,16 @@ pie.initialize(app).then(() => {
 
 function onAppReady() {
   startScheduledPublishScheduler();
+
+  // 启动 WebSocket 客户端连接
+  const wsClient = getWebSocketClient();
+
+  // 注册所有 WebSocket 任务处理器
+  registerWebSocketHandlers(wsClient);
+
+  // 连接到服务器
+  wsClient.connect();
+
   initWindow((win) => {
     const iconPath = path.join(__static, "logo.png");
     console.log(iconPath);

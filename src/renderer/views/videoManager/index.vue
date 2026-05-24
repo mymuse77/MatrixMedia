@@ -13,8 +13,7 @@
         >
       </div>
       <div class="toolbar-right">
-      <el-button type="warning" @click="openFeedback">问题反馈</el-button>
-      <el-button type="warning" @click="openQQGroup">加入作者QQ群</el-button>
+
       </div>
     </div>
 

@@ -84,19 +84,19 @@ export default {
 
   components: {},
   created() {
-    this.fetchReleaseNotes();
-    this.checkForUpdates();
-    ipcRenderer.invoke("IsUseSysTitle").then(res => {
-      this.IsUseSysTitle = res;
-    });
-    // 下载进度
-    ipcRenderer.on("download-progress", this._onDownloadProgress);
-    // 下载报错
-    ipcRenderer.on("download-error", this._onDownloadError);
-    // 下载暂停提示
-    ipcRenderer.on("download-paused", this._onDownloadPaused);
-    // 下载成功
-    ipcRenderer.on("download-done", this._onDownloadDone);
+    // this.fetchReleaseNotes();
+    // this.checkForUpdates();
+    // ipcRenderer.invoke("IsUseSysTitle").then(res => {
+    //   this.IsUseSysTitle = res;
+    // });
+    // // 下载进度
+    // ipcRenderer.on("download-progress", this._onDownloadProgress);
+    // // 下载报错
+    // ipcRenderer.on("download-error", this._onDownloadError);
+    // // 下载暂停提示
+    // ipcRenderer.on("download-paused", this._onDownloadPaused);
+    // // 下载成功
+    // ipcRenderer.on("download-done", this._onDownloadDone);
   },
 
   mounted() {
