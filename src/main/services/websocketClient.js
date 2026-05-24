@@ -5,6 +5,7 @@
 
 const { io } = require('socket.io-client');
 const config = require('../config/websocket.config');
+const { getClientId } = require('./clientIdentity');
 
 class WebSocketClient {
   constructor() {
@@ -13,6 +14,7 @@ class WebSocketClient {
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = config.reconnection.attempts;
     this.serverUrl = config.serverUrl;
+    this.clientId = getClientId();
     this.taskHandlers = new Map(); // 任务处理器映射
     this.heartbeatTimer = null; // 心跳定时器
   }
@@ -120,6 +122,7 @@ class WebSocketClient {
     const authData = {
       type: 'auth',
       clientType: config.clientType,
+      clientId: this.clientId,
       deviceId: this.getDeviceId(),
       timestamp: Date.now(),
       // accounts: [], // 可用账号列表
@@ -133,8 +136,7 @@ class WebSocketClient {
    * 获取设备ID（可以从配置文件读取或生成）
    */
   getDeviceId() {
-    // TODO: 实现设备ID获取逻辑
-    return `device-${Date.now()}`;
+    return this.clientId;
   }
 
   /**
@@ -169,6 +171,7 @@ class WebSocketClient {
   sendAck(taskId) {
     this.socket.emit('ack', {
       clientType: config.clientType,
+      clientId: this.clientId,
       taskId,
       timestamp: Date.now()
     });
@@ -181,6 +184,7 @@ class WebSocketClient {
   sendTaskResult(taskId, status, data) {
     const result = {
       clientType: config.clientType,
+      clientId: this.clientId,
       taskId,
       status, // 'success' | 'failed'
       data,
@@ -197,6 +201,7 @@ class WebSocketClient {
   sendProgress(taskId, progress, message) {
     const progressData = {
       clientType: config.clientType,
+      clientId: this.clientId,
       taskId,
       progress, // 0-100
       message,
@@ -213,6 +218,7 @@ class WebSocketClient {
   sendStatus(statusData) {
     this.socket.emit('status', {
       clientType: config.clientType,
+      clientId: this.clientId,
       ...statusData,
       timestamp: Date.now(),
     });
@@ -259,6 +265,7 @@ class WebSocketClient {
     if (this.isConnected) {
       this.socket.emit('heartbeat', {
         clientType: config.clientType,
+        clientId: this.clientId,
         timestamp: Date.now()
       });
     }
@@ -283,6 +290,7 @@ class WebSocketClient {
   getConnectionStatus() {
     return {
       isConnected: this.isConnected,
+      clientId: this.clientId,
       socketId: this.socket?.id,
       reconnectAttempts: this.reconnectAttempts,
     };
