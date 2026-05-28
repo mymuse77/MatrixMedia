@@ -108,7 +108,11 @@ function isSamePushDataRecord(existingItem, newItem) {
     );
   }
 
-  return existingItem.selectedFile === newItem.selectedFile;
+  return (
+    existingItem.selectedFile === newItem.selectedFile &&
+    recordValue(existingItem.phone) === recordValue(newItem.phone) &&
+    recordValue(existingItem.partition) === recordValue(newItem.partition)
+  );
 }
 
 // 核心 CRUD

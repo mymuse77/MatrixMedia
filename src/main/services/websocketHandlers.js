@@ -378,6 +378,90 @@ function createLocalPublishRecordId() {
   return `${Date.now()}${Math.floor(Math.random() * 1000)}`;
 }
 
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function createLocalPublishData({
+  taskId,
+  phone,
+  platform,
+  partition,
+  videoPath,
+  title,
+  taskName,
+  description,
+  tags,
+  coverPath,
+  location,
+}) {
+  const localRecordName = cleanText(taskName) || title || path.basename(videoPath);
+
+  return {
+    id: createLocalPublishRecordId(),
+    taskId,
+    bookName: localRecordName,
+    textType: 'local',
+    data: {
+      textOtherName: localRecordName,
+      bt1: title || '',
+      bt2: description || title || '',
+      bq: tags || '',
+      bdText: '',
+      address: location || '',
+    },
+    textOtherName: localRecordName,
+    selectedFile: path.basename(videoPath),
+    bt: title || '',
+    bt2: description || title || '',
+    bq: tags || '',
+    filePath: videoPath,
+    url: ptConfig[platform]?.upload,
+    show: false,
+    mmCliSuppressWindow: true,
+    closeWindowAfterPublish: true,
+    useragent: ptConfig[platform]?.useragent,
+    partition: partition || getAccountPartition(phone, platform),
+    pt: platform,
+    phone,
+    date: new Date().toISOString().split('T')[0],
+    coverPath: coverPath || '',
+    publishStatus: 'publishing',
+    lastPublishMessage: '等待发布结果',
+    lastPublishAt: Date.now(),
+  };
+}
+
+function sendBatchPublishItemResult(wsClient, taskId, payload) {
+  if (!wsClient || typeof wsClient.sendTaskResult !== 'function') {
+    return;
+  }
+
+  const doneCount = payload.successCount + payload.failCount;
+  const isDone = doneCount >= payload.total;
+  const status = isDone
+    ? payload.successCount === payload.total
+      ? 'completed'
+      : payload.successCount > 0
+        ? 'partial'
+        : 'failed'
+    : 'running';
+
+  wsClient.sendTaskResult(taskId, 'success', {
+    success: isDone ? payload.successCount > 0 : true,
+    action: 'publish_videos',
+    status,
+    taskName: payload.taskName,
+    total: payload.total,
+    successCount: payload.successCount,
+    failCount: payload.failCount,
+    results: [payload.detail],
+    message: isDone
+      ? `批量发布完成：成功 ${payload.successCount}，失败 ${payload.failCount}`
+      : `批量发布中：已完成 ${doneCount}/${payload.total}`,
+  });
+}
+
 async function updateLocalPublishRecord(publishData, status, message) {
   if (!publishData?.id || !publishData?.date) return;
 
@@ -445,6 +529,7 @@ export async function handlePublishVideo(taskData, wsClient) {
     coverPath,
     location,
     progressRange,
+    localPublishRecord,
   } = data;
 
   try {
@@ -478,50 +563,31 @@ export async function handlePublishVideo(taskData, wsClient) {
 
     sendScopedProgress(wsClient, taskId, 20, '正在准备发布数据', progressRange);
 
-    // 构建发布任务数据
-    const localRecordName = cleanText(taskName) || title || path.basename(localVideoPath);
-    const publishData = {
-      id: createLocalPublishRecordId(),
-      taskId,
-      bookName: localRecordName,
-      textType: 'local',
-      data: {
-        textOtherName: localRecordName,
-        bt1: title || '',
-        bt2: description || title || '',
-        bq: tags || '',
-        bdText: '',
-        address: location || '',
-      },
-      textOtherName: localRecordName,
-      selectedFile: path.basename(localVideoPath),
-      bt: title || '',
-      bt2: description || title || '',
-      bq: tags || '',
-      filePath: localVideoPath,
-      url: ptConfig[platform]?.upload,
-      show: false,
-      mmCliSuppressWindow: true,
-      closeWindowAfterPublish: true,
-      useragent: ptConfig[platform]?.useragent,
-      partition: partition || `persist:${phone}${platform}`,
-      pt: platform,
-      phone,
-      date: new Date().toISOString().split('T')[0],
-      coverPath: coverPath || '',
-      publishStatus: 'publishing',
-      lastPublishMessage: '等待发布结果',
-      lastPublishAt: Date.now(),
-    };
+    const publishData = isPlainObject(localPublishRecord)
+      ? localPublishRecord
+      : createLocalPublishData({
+        taskId,
+        phone,
+        platform,
+        partition,
+        videoPath: localVideoPath,
+        title,
+        taskName,
+        description,
+        tags,
+        coverPath,
+        location,
+      });
 
     sendScopedProgress(wsClient, taskId, 30, '正在启动发布流程', progressRange);
 
-    // 创建发布记录
-    await changeData({
-      type: 'add',
-      fileName: 'pushData',
-      item: publishData,
-    });
+    if (!localPublishRecord) {
+      await changeData({
+        type: 'add',
+        fileName: 'pushData',
+        item: publishData,
+      });
+    }
 
     // 执行发布任务
     return new Promise((resolve, reject) => {
@@ -623,6 +689,7 @@ export async function handlePublishVideos(taskData, wsClient) {
   let successCount = 0;
   let failCount = 0;
   let detailIndex = 0;
+  const publishQueue = [];
 
   for (const account of publishAccounts) {
     const phone = cleanText(account.phone);
@@ -637,54 +704,118 @@ export async function handlePublishVideos(taskData, wsClient) {
       const currentIndex = detailIndex + 1;
       const progressStart = (detailIndex / total) * 100;
       const progressEnd = (currentIndex / total) * 100;
+      const publishData = createLocalPublishData({
+        taskId,
+        phone,
+        platform,
+        partition,
+        videoPath,
+        title: publishText.title,
+        taskName,
+        description: publishText.description,
+        tags: publishText.tags,
+      });
 
-      try {
-        wsClient.sendProgress(taskId, Number(progressStart.toFixed(2)), `正在发布 ${currentIndex}/${total}`);
+      publishQueue.push({
+        phone,
+        platform,
+        partition,
+        videoPath,
+        videoUrl,
+        publishText,
+        publishData,
+        currentIndex,
+        progressStart,
+        progressEnd,
+      });
 
-        const result = await handlePublishVideo({
-          taskId,
-          type: 'publish_video',
-          data: {
-            phone,
-            platform,
-            partition,
-            videoUrl,
-            videoPath,
-            taskName,
-            title: publishText.title,
-            description: publishText.description,
-            tags: publishText.tags,
-            progressRange: {
-              start: progressStart,
-              end: progressEnd,
-            },
+      detailIndex += 1;
+    }
+  }
+
+  for (const queued of publishQueue) {
+    await changeData({
+      type: 'add',
+      fileName: 'pushData',
+      item: queued.publishData,
+    });
+  }
+
+  for (const queued of publishQueue) {
+    const {
+      phone,
+      platform,
+      partition,
+      videoPath,
+      videoUrl,
+      publishText,
+      publishData,
+      currentIndex,
+      progressStart,
+      progressEnd,
+    } = queued;
+
+    try {
+      wsClient.sendProgress(taskId, Number(progressStart.toFixed(2)), `正在发布 ${currentIndex}/${total}`);
+
+      const result = await handlePublishVideo({
+        taskId,
+        type: 'publish_video',
+        data: {
+          phone,
+          platform,
+          partition,
+          videoUrl,
+          videoPath,
+          taskName,
+          title: publishText.title,
+          description: publishText.description,
+          tags: publishText.tags,
+          localPublishRecord: publishData,
+          progressRange: {
+            start: progressStart,
+            end: progressEnd,
           },
-        }, wsClient);
+        },
+      }, wsClient);
 
-        successCount += 1;
-        results.push({
-          success: true,
-          phone,
-          platform,
-          videoPath,
-          videoUrl,
-          result,
-        });
-      } catch (error) {
-        failCount += 1;
-        const message = error?.message || '发布失败';
-        results.push({
-          success: false,
-          phone,
-          platform,
-          videoPath,
-          videoUrl,
-          error: message,
-        });
-        wsClient.sendProgress(taskId, Number(progressEnd.toFixed(2)), `发布失败 ${currentIndex}/${total}: ${message}`);
-      } finally {
-        detailIndex += 1;
-      }
+      successCount += 1;
+      const detail = {
+        success: true,
+        phone,
+        platform,
+        videoPath,
+        videoUrl,
+        result,
+      };
+      results.push(detail);
+      sendBatchPublishItemResult(wsClient, taskId, {
+        taskName,
+        total,
+        successCount,
+        failCount,
+        detail,
+      });
+    } catch (error) {
+      failCount += 1;
+      const message = error?.message || '发布失败';
+      const detail = {
+        success: false,
+        phone,
+        platform,
+        videoPath,
+        videoUrl,
+        error: message,
+      };
+      results.push(detail);
+      sendBatchPublishItemResult(wsClient, taskId, {
+        taskName,
+        total,
+        successCount,
+        failCount,
+        detail,
+      });
+      wsClient.sendProgress(taskId, Number(progressEnd.toFixed(2)), `发布失败 ${currentIndex}/${total}: ${message}`);
     }
   }
 
