@@ -109,6 +109,15 @@ export function cancelPuppeteerTasks(reason) {
 
 function isExpectedPublishUrl(data, currentUrl) {
   if (currentUrl === data.url) return true;
+  if (data && data.pt === "抖音") {
+    try {
+      const current = new URL(currentUrl);
+      const expected = new URL(data.url);
+      return current.origin === expected.origin && current.pathname.indexOf("/creator-micro/content/post/video") === 0;
+    } catch (_) {
+      return String(currentUrl || "").indexOf("https://creator.douyin.com/creator-micro/content/post/video") === 0;
+    }
+  }
   if (data && data.pt === "掘金") {
     try {
       const current = new URL(currentUrl);

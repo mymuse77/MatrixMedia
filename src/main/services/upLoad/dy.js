@@ -87,6 +87,30 @@ async function selectDyCreativeStatement(page, data) {
 export default async function (page, data, window, event) {
   const isDraftMode =
     data.publishMode === "draft" || data.publishToDraft === true;
+  let doneSent = false;
+  const replyFailureAndStop = (message, error) => {
+    if (doneSent) return;
+    doneSent = true;
+    event.reply("puppeteerFile-done", {
+      ...data,
+      status: false,
+      message,
+    });
+    if (error) {
+      console.error(`❌ ${message}`, error);
+    } else {
+      console.error(`❌ ${message}`);
+    }
+  };
+  const replySuccess = (message) => {
+    if (doneSent) return;
+    doneSent = true;
+    event.reply("puppeteerFile-done", {
+      ...data,
+      status: true,
+      message,
+    });
+  };
 
   try {
     // 等待 name=upload-btn 的 input 出现
@@ -96,9 +120,13 @@ export default async function (page, data, window, event) {
     const uploadInputs = await page.$$('input[name="upload-btn"]');
     // 取最后一个 input 元素
     const uploadFileHandle = uploadInputs[uploadInputs.length - 1];
+    if (!uploadFileHandle) {
+      throw new Error("未找到上传文件输入框");
+    }
     await uploadFileHandle.uploadFile(path.resolve(data.filePath));
   } catch (e) {
-    console.error("❌ 输入文件失败", e);
+    replyFailureAndStop("输入文件失败", e);
+    return;
   }
   try {
     await page.waitForSelector(".semi-input", {
@@ -118,7 +146,8 @@ export default async function (page, data, window, event) {
     // bq 末尾没有分隔符会导致最后一个标签没被识别，这里补一次空格触发。
     await page.keyboard.press("Space");
   } catch (e) {
-    console.error("❌ 输入标题失败", e);
+    replyFailureAndStop("输入标题失败", e);
+    return;
   }
 
   // 话题输入完后立即选择自主声明（必须声明）
@@ -191,19 +220,10 @@ export default async function (page, data, window, event) {
     await submitBtn.click({ delay: 200 });
     console.log(isDraftMode ? "✅ 抖音视频已保存草稿" : "✅ 抖音视频上传成功");
     setTimeout(() => {
-      event.reply("puppeteerFile-done", {
-        ...data,
-        status: true,
-        message: isDraftMode ? "保存草稿成功" : "上传成功",
-      });
+      replySuccess(isDraftMode ? "保存草稿成功" : "上传成功");
       maybeClosePublishWindow(data, window);
     }, 5000);
   } catch (e) {
-    event.reply("puppeteerFile-done", {
-      ...data,
-      status: false,
-      message: "上传失败",
-    });
-    console.error("❌ 上传失败", e);
+    replyFailureAndStop("上传失败", e);
   }
 }
