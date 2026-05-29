@@ -642,6 +642,7 @@ export default async function (page, data, window, event) {
     console.log('[tt] 文件已 uploadFile')
   } catch (err) {
     console.error('[tt] 文件上传失败:', err?.message || err)
+    throw new Error(`头条文件上传失败：${err?.message || err}`)
   }
 
   console.log('[tt] 开始：等待标题输入框')
@@ -674,6 +675,7 @@ export default async function (page, data, window, event) {
       )
       console.log('[tt] 当前页 inputs:', JSON.stringify(dump))
     } catch (_) {}
+    throw new Error(`头条输入标题失败：${e?.message || e}`)
   }
   // 勾选「视频来源」声明（无标注则不勾选）—— 与横/竖屏无关，提前到上传等待之前执行
   try {

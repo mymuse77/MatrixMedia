@@ -1,12 +1,19 @@
 "use strict";
 
 import { ipcMain, app, BrowserWindow, dialog } from "electron";
+import fs from "fs";
 import puppeteerCore from "puppeteer-core";
 import { addExtra } from "puppeteer-extra";
 import pie from "puppeteer-in-electron";
 import Type from "./Type";
 import { UPLOAD_WINDOW_AUTO_CLOSE_MS } from "./upLoad/uploadTimeouts.js";
 import { skipCloseConfirmation } from "./upLoad/closeWindow.js";
+import {
+  appendPublishRunLog,
+  createPublishRun,
+  finishPublishRun,
+  updatePublishRun,
+} from "./publishLogService.js";
 
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 
@@ -183,6 +190,7 @@ export function runPuppeteerTask(data, transport, onFinish) {
 
 async function doUpload(data, transport, queueDone, runtimeTask) {
   data.partition = data.partition.split("-")[0];
+  const publishRun = createPublishRun(data);
   const maxRetries = 5;
   let currentAttempt = 0;
   let finished = false;
@@ -194,6 +202,9 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
 
   const safeReply = (channel, payload) => {
     try {
+      if (channel === "puppeteerFile-done") {
+        finishPublishRun(publishRun, payload || {});
+      }
       transport.reply(channel, payload);
       return true;
     } catch (err) {
@@ -236,14 +247,46 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     if (win && !win.isDestroyed()) win.close();
   };
 
+  if (data.textType === "local" && (!data.filePath || !fs.existsSync(data.filePath))) {
+    const message = `视频文件不存在或不可访问：${data.filePath || "未提供路径"}`;
+    appendPublishRunLog(publishRun.id, {
+      date: publishRun.date,
+      level: "error",
+      stage: "validate-file",
+      message,
+    });
+    safeReply("puppeteerFile-done", {
+      ...data,
+      status: false,
+      message,
+    });
+    finishOnce();
+    return;
+  }
+
   const createAttemptTransport = () => ({
+    log(input = {}) {
+      appendPublishRunLog(publishRun.id, {
+        date: publishRun.date,
+        ...input,
+      });
+    },
     reply(channel, ...args) {
       if (finished) return false;
       const payload = args[0];
       if (channel === "puppeteerFile-done" && payload && payload.status === false) {
+        appendPublishRunLog(publishRun.id, {
+          date: publishRun.date,
+          level: "error",
+          stage: "platform",
+          message: payload.message || "平台上传失败",
+        });
         const err = new Error(payload.message || "平台上传失败");
         err._mmUploadFailurePayload = payload;
         throw err;
+      }
+      if (channel === "puppeteerFile-done") {
+        finishPublishRun(publishRun, payload || {});
       }
       return transport.reply(channel, ...args);
     },
@@ -265,6 +308,11 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     let page;
 
     try {
+      appendPublishRunLog(publishRun.id, {
+        date: publishRun.date,
+        stage: "attempt",
+        message: `开始第 ${currentAttempt}/${maxRetries} 次发布尝试`,
+      });
       browser = await pie.connect(app, puppeteer);
       activeBrowser = browser;
       win = new BrowserWindow({
@@ -281,6 +329,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       });
       activeWin = win;
       page = await pie.getPage(browser, win);
+      updatePublishRun(publishRun, { lastMessage: "发布窗口已创建" });
 
       // Block any window.open() calls from the publish page (e.g. Juejin OAuth popups)
       win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -311,6 +360,12 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       const AUTO_CLOSE_DELAY = UPLOAD_WINDOW_AUTO_CLOSE_MS;
       autoCloseTimer = setTimeout(() => {
         console.log(`窗口 ${data.partition} 已自动关闭（${Math.round(AUTO_CLOSE_DELAY / 60000)} 分钟兜底超时）`);
+        appendPublishRunLog(publishRun.id, {
+          date: publishRun.date,
+          level: "error",
+          stage: "timeout",
+          message: "发布窗口达到兜底超时，自动关闭",
+        });
         closePublishWinProgrammatically(win);
       }, AUTO_CLOSE_DELAY);
 
@@ -341,6 +396,12 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       } else {
         await win.loadURL(data.url);
       }
+      appendPublishRunLog(publishRun.id, {
+        date: publishRun.date,
+        stage: "open-platform",
+        message: `已打开平台发布页：${data.pt}`,
+        detail: data.url,
+      });
 
       win.on("closed", () => {
         if (autoCloseTimer) {
@@ -418,9 +479,21 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
               finishOnce();
               return;
             }
+            appendPublishRunLog(publishRun.id, {
+              date: publishRun.date,
+              stage: "platform-handler",
+              message: `开始执行平台发布逻辑：${data.pt}`,
+            });
             await action(page, data, win, createAttemptTransport(), finishOnce);
           } else {
             console.log(`尝试${currentAttempt} URL不匹配: ${currentUrl}，关闭窗口并重新尝试`);
+            appendPublishRunLog(publishRun.id, {
+              date: publishRun.date,
+              level: "warn",
+              stage: "login",
+              message: "当前页面不是预期发布页，准备重试",
+              detail: currentUrl,
+            });
             if (win && !win.isDestroyed()) {
               win._mmRetryAfterClose = true;
               closePublishWinProgrammatically(win);
@@ -429,6 +502,12 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         } catch (err) {
           if (finished) return;
           console.log(`尝试${currentAttempt}执行平台逻辑失败:`, err);
+          appendPublishRunLog(publishRun.id, {
+            date: publishRun.date,
+            level: "error",
+            stage: "attempt-error",
+            message: err?.message || "平台发布逻辑执行失败",
+          });
           const failurePayload = err && err._mmUploadFailurePayload;
           if (currentAttempt >= maxRetries) {
             safeReply("puppeteerFile-done", {

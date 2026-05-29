@@ -328,6 +328,17 @@ export default {
     ipcMain.handle('window-close', (event, args) => {
       BrowserWindow.fromWebContents(event.sender)?.close()
     })
+    ipcMain.handle('toggle-devtools', (event) => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      if (!win) return false
+      if (win.webContents.isDevToolsOpened()) {
+        win.webContents.closeDevTools()
+        return false
+      } else {
+        win.webContents.openDevTools({ mode: 'right' })
+        return true
+      }
+    })
     ipcMain.handle('start-download', (event, msg) => {
       downloadFile.download(
         BrowserWindow.fromWebContents(event.sender),

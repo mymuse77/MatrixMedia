@@ -99,7 +99,7 @@ function createMainWindow(fn) {
     mainWindow.show();
 
     mainWindow.webContents.send("version", version);
-    if (process.env.NODE_ENV === "development" || openDevTools) mainWindow.webContents.openDevTools(true);
+    // DevTools 默认不打开，由渲染进程通过 IPC toggle-devtools 控制
     if (UseStartupChart) loadWindow.destroy();
   });
   mainWindow.on("maximize", () => {

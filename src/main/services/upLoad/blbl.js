@@ -97,6 +97,7 @@ export default async function (page, data, window, event) {
     await uploadInputs.uploadFile(path.resolve(data.filePath));
   } catch (err) {
     console.error("文件上传失败:", err);
+    throw new Error(`哔哩哔哩文件上传失败：${err?.message || err}`);
   }
 
   try {
@@ -108,6 +109,7 @@ export default async function (page, data, window, event) {
     await page.keyboard.type(data.data.bt1, { delay: 50 });
   } catch (e) {
     console.error("❌ 输入标题失败", e);
+    throw new Error(`哔哩哔哩输入标题失败：${e?.message || e}`);
   }
 
   // 标题输入完后立即选择创作声明（必须声明）
@@ -169,7 +171,8 @@ export default async function (page, data, window, event) {
       "等待哔哩哔哩视频上传完成超时"
     );
   } catch (e) {
-    console.warn("哔哩哔哩视频上传未完成，跳过后续步骤:", e?.message || e);
+    console.error("哔哩哔哩视频上传未完成:", e?.message || e);
+    throw new Error(`哔哩哔哩视频上传未完成：${e?.message || e}`);
   }
 
   try {
@@ -202,10 +205,11 @@ export default async function (page, data, window, event) {
       maybeClosePublishWindow(data, window);
     }, 5000);
   } catch (e) {
+    const detail = e?.message || e;
     event.reply("puppeteerFile-done", {
       ...data,
       status: false,
-      message: "上传失败",
+      message: `上传失败：${detail}`,
     });
     maybeClosePublishWindow(data, window);
     console.error("❌ 发布失败", e);

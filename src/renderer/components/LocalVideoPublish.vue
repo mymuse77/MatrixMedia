@@ -1053,9 +1053,7 @@ export default {
           );
           continue;
         }
-        // 用 JSON 兜底序列化，去掉 Vue 响应式代理 / 不可克隆对象，
-        // 避免 Electron IPC 抛 "object could not be cloned" 导致页面会话提前关闭。
-        ipcRenderer.send("puppeteerFile", JSON.parse(JSON.stringify({
+        const taskPayload = JSON.parse(JSON.stringify({
           ...p,
           taskId,
           ...video,
@@ -1070,7 +1068,7 @@ export default {
           partition,
           filePath: this.localFilePath,
           date: currentDate,
-        })));
+        }));
 
         const republishRecord = this.findRepublishRecord(p.pt, p.phone);
         if (republishRecord && republishRecord.id && republishRecord.date) {
@@ -1079,7 +1077,7 @@ export default {
           if (!Number.isFinite(oldRepublish) || oldRepublish < 0) {
             oldRepublish = Math.max(0, oldAttempt - 1);
           }
-          dataRequest({
+          await dataRequest({
             type: "update",
             fileName: "pushData",
             item: {
@@ -1104,7 +1102,7 @@ export default {
             },
           });
         } else {
-          dataRequest({
+          await dataRequest({
             type: "add",
             fileName: "pushData",
             item: {
@@ -1136,6 +1134,9 @@ export default {
             },
           });
         }
+
+        // 先落发布记录，再启动自动化任务，避免任务很快结束时进度回写找不到记录。
+        ipcRenderer.send("puppeteerFile", taskPayload);
 
         if (p.pt === "视频号") {
           await new Promise((resolve) => setTimeout(resolve, 4000));
@@ -1403,31 +1404,28 @@ export default {
             continue;
           }
 
-          ipcRenderer.send(
-            "puppeteerFile",
-            JSON.parse(
-              JSON.stringify({
-                ...p,
-                taskId,
-                bookName,
-                textType: "local",
-                data: { textOtherName, bt1, bt2, bq, bdText: "", creativeStatement },
-                textOtherName,
-                selectedFile,
-                publishMode: isDraftMode ? "draft" : "publish",
-                publishToDraft: isDraftMode,
-                url: this.ptConfig[p.pt].upload,
-                show: shouldShow,
-                closeWindowAfterPublish: shouldCloseWindowAfterPublish,
-                useragent: this.ptConfig[p.pt].useragent,
-                partition,
-                filePath,
-                date: currentDate,
-              })
-            )
+          const taskPayload = JSON.parse(
+            JSON.stringify({
+              ...p,
+              taskId,
+              bookName,
+              textType: "local",
+              data: { textOtherName, bt1, bt2, bq, bdText: "", creativeStatement },
+              textOtherName,
+              selectedFile,
+              publishMode: isDraftMode ? "draft" : "publish",
+              publishToDraft: isDraftMode,
+              url: this.ptConfig[p.pt].upload,
+              show: shouldShow,
+              closeWindowAfterPublish: shouldCloseWindowAfterPublish,
+              useragent: this.ptConfig[p.pt].useragent,
+              partition,
+              filePath,
+              date: currentDate,
+            })
           );
 
-          dataRequest({
+          await dataRequest({
             type: "add",
             fileName: "pushData",
             item: {
@@ -1459,6 +1457,8 @@ export default {
               lastPublishAt: Date.now(),
             },
           });
+
+          ipcRenderer.send("puppeteerFile", taskPayload);
 
           submitted++;
           if (p.pt === "视频号") {

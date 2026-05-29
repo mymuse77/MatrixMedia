@@ -11,9 +11,20 @@
         <el-menu-item :index="mediaMenuItemIndex">媒体平台管理</el-menu-item>
       </el-menu>
       <div class="account-actions">
+        <el-tooltip :content="devToolsOpen ? '关闭调试模式' : '打开调试模式'" placement="bottom">
+          <el-button
+            :type="devToolsOpen ? 'warning' : 'info'"
+            size="small"
+            circle
+            @click="toggleDevTools"
+          >
+            <i class="el-icon-setting"></i>
+          </el-button>
+        </el-tooltip>
         <el-button
           type="primary"
           size="small"
+          icon="el-icon-plus"
           @click="showDialog = true"
         >
           添加媒体账号
@@ -74,6 +85,7 @@ import { useAppStore } from '@/store/app'
 import dataRequest from '@/utils/dataRequest'
 import ptConfig from '@/utils/configUrl'
 import { usePermissionStore } from '@/store/permission'
+import { ipcRenderer } from 'electron'
 
 const MEDIA_MENU_NO_ACCOUNT = '__media_no_account__'
 
@@ -85,6 +97,7 @@ export default {
       getAccoutIndex: '',
       ptConfig,
       showDialog: false,
+      devToolsOpen: false,
       pushData: {
         phone: '',
         pt: '',
@@ -161,6 +174,10 @@ export default {
       } else {
         this.activeIndex = p
       }
+    },
+    async toggleDevTools() {
+      const opened = await ipcRenderer.invoke('toggle-devtools')
+      this.devToolsOpen = opened
     },
     selectFn(index) {
       if (index === MEDIA_MENU_NO_ACCOUNT) {
@@ -249,7 +266,26 @@ export default {
     height: 100%;
     background-color: #ffffff;
     justify-content: space-between;
-    padding-right: 19px;
+    align-items: center;
+    padding: 0 20px 0 4px;
+    border-bottom: 1px solid #e8edf5;
+    box-shadow: 0 4px 18px rgba(31, 45, 61, 0.04);
+
+    ::v-deep .el-menu.el-menu--horizontal {
+      border-bottom: none;
+    }
+
+    ::v-deep .el-menu--horizontal > .el-menu-item {
+      height: 62px;
+      line-height: 62px;
+      font-weight: 600;
+      color: #344054;
+    }
+
+    ::v-deep .el-menu--horizontal > .el-menu-item.is-active {
+      color: #1677ff;
+      border-bottom-color: #1677ff;
+    }
 
     .hb-bd {
       display: flex;
@@ -301,6 +337,8 @@ export default {
     .account-actions {
       display: flex;
       align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
     }
   }
 }
@@ -309,8 +347,12 @@ export default {
   -webkit-app-region: drag;
 }
 .tips-content {
-  color: red;
-  font-size: 14px;
-  font-weight: bold;
+  color: #8a5a00;
+  font-size: 13px;
+  line-height: 1.7;
+  padding: 10px 12px;
+  background: #fff7e6;
+  border: 1px solid #ffe0a3;
+  border-radius: 6px;
 }
 </style>

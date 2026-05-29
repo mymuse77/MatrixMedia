@@ -330,7 +330,7 @@ export default async function (page, data, window, event) {
     console.log(`[bjh] 已通过 ${combinedSelector} 上传文件`)
   } catch (err) {
     console.error('文件上传失败:', err)
-    // 不抛出错误，继续执行后续步骤
+    throw new Error(`百家号文件上传失败：${err?.message || err}`)
   }
 
   try {
@@ -424,6 +424,7 @@ export default async function (page, data, window, event) {
     console.log('[bjh] 标题已输入')
   } catch (err) {
     console.error('[bjh] 标题处理失败:', err?.message || err)
+    throw new Error(`百家号标题处理失败：${err?.message || err}`)
   }
 
 

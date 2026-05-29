@@ -27,7 +27,7 @@ assert.strictEqual(state.coverPath, "/tmp/cover.png");
 assert.strictEqual(state.form.category, "后端");
 assert.deepStrictEqual(state.tags, ["前端", "Electron"]);
 assert.strictEqual(state.form.summary, "摘要");
-assert.deepStrictEqual(buildArticleRepublishState({}).tags, ["前端", "Electron"]);
+assert.deepStrictEqual(buildArticleRepublishState({}).tags, ["前端", "electron"]);
 assert.strictEqual(buildArticleRepublishState({}).form.category, "前端");
 
 console.log("test-article-republish passed");

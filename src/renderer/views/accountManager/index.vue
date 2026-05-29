@@ -1,13 +1,23 @@
 <template>
   <div class="account-manager-page">
-    <div class="header">
-      <el-tag type="danger" size="medium" class="phone-tag">{{ partition.split('-')[0] }}</el-tag>
-      <el-button type="primary" :loading="opening" @click="openLoginWindow">打开登录窗口</el-button>
-      <el-button @click="deleteData">删除账号</el-button>
+    <div class="header-panel">
+      <div class="account-title">
+        <div class="platform-name">{{ title }} 账号登录</div>
+        <div class="platform-meta">
+          <el-tag type="info" size="small" class="phone-tag">{{ partition.split('-')[0] }}</el-tag>
+          <span>{{ partition }}</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <el-button type="primary" icon="el-icon-position" :loading="opening" @click="openLoginWindow">
+          打开登录窗口
+        </el-button>
+        <el-button type="danger" plain icon="el-icon-delete" @click="deleteData">删除账号</el-button>
+      </div>
     </div>
 
     <el-card class="tip-card" shadow="never">
-      <div slot="header" class="tip-title">{{ title }} 账号登录</div>
+      <div slot="header" class="tip-title">登录说明</div>
       <p>
         本平台已切换到 <b>独立 BrowserWindow</b> 进行登录，绕开 <code>&lt;webview&gt;</code>
         被小红书 / 抖音等站点指纹识别（<code>websectiga</code>、<code>sec_poison_id</code>）
@@ -136,21 +146,51 @@ export default {
 
 <style scoped>
 .account-manager-page {
+  min-height: calc(100vh - 100px);
   padding: 24px;
   box-sizing: border-box;
+  background: #f5f7fb;
 }
-.account-manager-page .header {
+.account-manager-page .header-panel {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
-  margin-bottom: 16px;
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  background: #fff;
+  border: 1px solid #e8edf5;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(31, 45, 61, 0.05);
 }
-.account-manager-page .header .phone-tag {
-  margin-right: 4px;
+.account-manager-page .account-title {
+  min-width: 0;
+}
+.account-manager-page .platform-name {
+  font-size: 18px;
+  font-weight: 600;
+  color: #1f2d3d;
+}
+.account-manager-page .platform-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  color: #667085;
+  font-size: 13px;
+}
+.account-manager-page .header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
 }
 .account-manager-page .tip-card {
   max-width: 760px;
   line-height: 1.8;
+  border: 1px solid #e8edf5;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(31, 45, 61, 0.05);
 }
 .account-manager-page .tip-title {
   font-weight: 600;

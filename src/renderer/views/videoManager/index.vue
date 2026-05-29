@@ -11,6 +11,14 @@
         <el-button type="success" @click="openArticlePublish"
           >发布文章</el-button
         >
+        <el-tooltip content="数据刷新" placement="bottom">
+          <el-button
+            icon="el-icon-refresh"
+            circle
+            :loading="recordsLoading"
+            @click="refreshRecords"
+          />
+        </el-tooltip>
       </div>
       <div class="toolbar-right">
 
@@ -20,6 +28,143 @@
     <LocalVideoPublish ref="localPublishRef" @published="loadRecords" />
     <LocalArticlePublish ref="articlePublishRef" @published="loadRecords" />
 
+    <el-dialog
+      title="填写发布内容"
+      :visible.sync="contentDialogVisible"
+      width="860px"
+      top="8vh"
+      append-to-body
+      custom-class="publish-content-dialog"
+    >
+      <div v-if="contentContext" class="content-detail">
+        <div class="content-summary">
+          <div>
+            <div class="content-title">{{ contentContext.bt || "-" }}</div>
+            <div class="content-subtitle">
+              {{ contentContext.textOtherName || contentContext.bookName || "-" }}
+            </div>
+          </div>
+          <el-tag size="small" type="info">{{ contentContext.selectedFile || "未记录文件名" }}</el-tag>
+        </div>
+        <el-descriptions :column="2" border size="small" class="content-descriptions">
+          <el-descriptions-item label="名称">
+            {{ contentContext.textOtherName || contentContext.bookName || "-" }}
+          </el-descriptions-item>
+          <el-descriptions-item label="视频标题">
+            {{ contentContext.bt || "-" }}
+          </el-descriptions-item>
+          <el-descriptions-item label="概括短标题">
+            {{ contentContext.bt2 || "-" }}
+          </el-descriptions-item>
+          <el-descriptions-item label="视频标签">
+            {{ contentContext.bq || "-" }}
+          </el-descriptions-item>
+          <el-descriptions-item label="创作声明">
+            {{ creativeStatementText(contentContext.creativeStatement) }}
+          </el-descriptions-item>
+          <el-descriptions-item label="发布模式">
+            {{ publishModeText(contentContext) }}
+          </el-descriptions-item>
+          <el-descriptions-item label="定时发布">
+            {{ contentContext.scheduledPublishAtText || "-" }}
+          </el-descriptions-item>
+          <el-descriptions-item label="视频路径">
+            {{ contentContext.filePath || "-" }}
+          </el-descriptions-item>
+        </el-descriptions>
+        <div class="content-section-title">发布平台</div>
+        <el-table
+          :data="contentPlatforms"
+          border
+          size="small"
+          class="content-platform-table"
+        >
+          <el-table-column prop="pt" label="平台" min-width="90" />
+          <el-table-column prop="phone" label="账号" min-width="110" show-overflow-tooltip />
+          <el-table-column prop="bt" label="标题" min-width="150" show-overflow-tooltip />
+          <el-table-column prop="bq" label="标签" min-width="140" show-overflow-tooltip />
+          <el-table-column label="声明" min-width="90" show-overflow-tooltip>
+            <template slot-scope="scope">
+              {{ creativeStatementText(scope.row.creativeStatement) }}
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="110">
+            <template slot-scope="scope">
+              <el-tag size="mini" :type="publishStatusType(scope.row.publishStatus)">
+                {{ publishStatusText(scope.row.publishStatus) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="lastPublishMessage" label="结果说明" min-width="180" show-overflow-tooltip />
+        </el-table>
+      </div>
+    </el-dialog>
+
+    <el-dialog
+      title="发布日志"
+      :visible.sync="logDialogVisible"
+      width="76%"
+      top="6vh"
+      append-to-body
+    >
+      <div v-loading="logLoading" class="publish-log-dialog">
+        <div v-if="logContext" class="log-summary">
+          <div>
+            <div class="log-title">{{ logContext.textOtherName || logContext.bookName || "-" }}</div>
+            <div class="log-subtitle">
+              {{ logContext.selectedFile || logContext.filePath || "-" }}
+            </div>
+          </div>
+          <div class="log-actions">
+            <el-button size="mini" @click="copyVisibleLogs">复制日志</el-button>
+            <el-button size="mini" :loading="logLoading" @click="reloadLogs">刷新</el-button>
+          </div>
+        </div>
+        <el-empty v-if="!logLoading && logRuns.length === 0" description="暂无发布日志" />
+        <template v-else>
+          <div class="log-run-list">
+            <div
+              v-for="run in logRuns"
+              :key="run.id"
+              class="log-run-item"
+              :class="{ active: run.id === selectedLogRunId }"
+              @click="selectedLogRunId = run.id"
+            >
+              <div class="log-run-main">
+                <span>{{ run.platform || "-" }}</span>
+                <span>{{ run.phone || "-" }}</span>
+                <span>{{ run.videoFile || "-" }}</span>
+              </div>
+              <el-tag size="mini" :type="publishRunStatusType(run.status)">
+                {{ publishRunStatusText(run.status) }}
+              </el-tag>
+            </div>
+          </div>
+          <el-tabs v-model="activeLogTab" class="log-tabs">
+            <el-tab-pane label="当前记录" name="current" />
+            <el-tab-pane label="同任务全部" name="all" />
+            <el-tab-pane label="错误" name="errors" />
+            <el-tab-pane
+              v-for="platformName in logPlatforms"
+              :key="platformName"
+              :label="platformName"
+              :name="'platform:' + platformName"
+            />
+          </el-tabs>
+          <div class="log-timeline">
+            <div v-for="log in visibleLogEntries" :key="log.id" class="log-line">
+              <span class="log-time">{{ formatLogTime(log.time) }}</span>
+              <el-tag size="mini" :type="logLevelType(log.level)">{{ log.level || "info" }}</el-tag>
+              <span class="log-stage">{{ log.stage || "-" }}</span>
+              <span class="log-message">{{ log.message || "-" }}</span>
+              <span v-if="log.detail" class="log-detail">{{ log.detail }}</span>
+            </div>
+            <el-empty v-if="visibleLogEntries.length === 0" description="当前筛选下暂无日志" />
+          </div>
+        </template>
+      </div>
+    </el-dialog>
+
     <div class="info-box">
       <template v-for="(item, index) in dataList">
         <el-card v-if="item && item.length" :key="index" class="mb16">
@@ -27,11 +172,10 @@
             <span class="date-label">{{ index }}</span>
             <span class="hint">本地发布记录</span>
           </div>
-          <el-table :data="item" border style="width: 100%">
-            <el-table-column prop="textOtherName" label="名称" width="120" />
-            <el-table-column prop="bt" label="标题" width="160" />
-            <el-table-column prop="selectedFile" label="文件" width="140" />
-            <el-table-column label="平台审核状态" width="200">
+          <el-table :data="item" border style="width: 100%" class="responsive-table">
+            <el-table-column prop="textOtherName" label="名称" min-width="120" show-overflow-tooltip />
+            <el-table-column prop="bt" label="标题" width="240" show-overflow-tooltip />
+            <el-table-column label="平台审核状态" width="260">
               <template slot-scope="scope">
                 <div
                   v-for="(sub, si) in scope.row.showAlltype"
@@ -47,8 +191,8 @@
                 </div>
               </template>
             </el-table-column>
-            <el-table-column prop="phone" label="发布账号" />
-            <el-table-column label="发布进度" width="320">
+            <el-table-column prop="phone" label="发布账号" align="center" header-align="center" />
+            <el-table-column label="发布进度" width="396">
               <template slot-scope="scope">
                 <div
                   v-for="(sub, si) in scope.row.showAlltype"
@@ -80,8 +224,26 @@
                 {{ scope.row.textType === "article" ? "文章" : "本地" }}
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="260">
+            <el-table-column label="操作" min-width="200">
               <template slot-scope="scope">
+                <el-button
+                  v-if="canViewPublishContent(scope.row)"
+                  type="success"
+                  size="mini"
+                  class="mb8"
+                  @click="handleViewPublishContent(scope.row)"
+                >
+                  填写内容
+                </el-button>
+                <el-button
+                  type="info"
+                  size="mini"
+                  class="mb8"
+                  :loading="logLoading && logContext === scope.row"
+                  @click="handleGetLogs(scope.row)"
+                >
+                  日志
+                </el-button>
                 <el-button
                   v-if="canGetStatus(scope.row)"
                   type="primary"
@@ -148,9 +310,48 @@ export default {
       dataList: {},
       taskHandlers: new Map(),
       statusLoadingMap: {},
+      recordsLoading: false,
+      logDialogVisible: false,
+      logLoading: false,
+      activeLogTab: "current",
+      selectedLogRunId: "",
+      logRuns: [],
+      logEntries: [],
+      logContext: null,
+      contentDialogVisible: false,
+      contentContext: null,
       loginData: {},
       showLoginDialog: false,
     };
+  },
+  computed: {
+    contentPlatforms() {
+      return (this.contentContext && this.contentContext.showAlltype) || [];
+    },
+    logPlatforms() {
+      return Array.from(
+        new Set((this.logRuns || []).map((run) => run.platform).filter(Boolean))
+      );
+    },
+    visibleLogEntries() {
+      const entries = this.logEntries || [];
+      if (this.activeLogTab === "errors") {
+        return entries.filter((log) => ["error", "warn"].includes(log.level));
+      }
+      if (this.activeLogTab.startsWith("platform:")) {
+        const platform = this.activeLogTab.replace("platform:", "");
+        const runIds = new Set(
+          this.logRuns
+            .filter((run) => run.platform === platform)
+            .map((run) => run.id)
+        );
+        return entries.filter((log) => runIds.has(log.runId));
+      }
+      if (this.activeLogTab === "current" && this.selectedLogRunId) {
+        return entries.filter((log) => log.runId === this.selectedLogRunId);
+      }
+      return entries;
+    },
   },
   mounted() {
     this._onPuppeteerDone = (event, data) => {
@@ -164,15 +365,181 @@ export default {
       }
     };
     ipcRenderer.on("puppeteerFile-done", this._onPuppeteerDone);
+    this._setupResizeObserver();
   },
   beforeDestroy() {
     ipcRenderer.removeListener("puppeteerFile-done", this._onPuppeteerDone);
+    if (this._resizeObserver) {
+      this._resizeObserver.disconnect();
+      this._resizeObserver = null;
+    }
   },
   activated() {
     this.loadRecords();
   },
   methods: {
     copy: copyToClipboard,
+    _setupResizeObserver() {
+      let rafId = null;
+      this._resizeObserver = new ResizeObserver(() => {
+        if (rafId) cancelAnimationFrame(rafId);
+        rafId = requestAnimationFrame(() => {
+          rafId = null;
+          this.$el.querySelectorAll('.el-table').forEach(table => {
+            const vm = table.__vue__;
+            if (vm && vm.doLayout) {
+              vm.doLayout();
+              // Clear inline min-width from col elements so CSS can take effect
+              table.querySelectorAll('colgroup col').forEach(col => {
+                col.style.removeProperty('min-width');
+              });
+            }
+          });
+        });
+      });
+      this._resizeObserver.observe(this.$el);
+    },
+    canViewPublishContent(row) {
+      return row && row.textType === "local";
+    },
+    handleViewPublishContent(row) {
+      if (!this.canViewPublishContent(row)) {
+        this.$message.warning("当前记录不是视频发布内容");
+        return;
+      }
+      this.contentContext = row;
+      this.contentDialogVisible = true;
+    },
+    creativeStatementText(value) {
+      if (!value) return "-";
+      const map = {
+        auto: "自动判断",
+        original: "原创",
+        reproduced: "转载/非原创",
+        ai: "AI 生成",
+      };
+      return map[value] || value;
+    },
+    publishModeText(row) {
+      if (!row) return "-";
+      if (row.publishMode === "draft" || row.publishToDraft) return "保存草稿";
+      if (row.scheduledTask || row.scheduledPublishAt) return "定时发布";
+      return "立即发布";
+    },
+    flattenDataResponse(data) {
+      const result = [];
+      Object.values(data || {}).forEach((rows) => {
+        result.push(...(rows || []));
+      });
+      return result;
+    },
+    getRunPhone(run) {
+      return String((run && run.phone) || "").split("-")[0];
+    },
+    getRunVideoFile(run) {
+      return this.getFileName(run && (run.videoFile || run.filePath));
+    },
+    isRunMatchRecord(run, record) {
+      if (!run || !record) return false;
+      if (run.pushDataId && record.id && run.pushDataId === record.id) {
+        return true;
+      }
+      const runTaskId = this.recordValue(run.taskId);
+      const recordTaskId = this.recordValue(record.taskId);
+      if (runTaskId && recordTaskId && runTaskId === recordTaskId) {
+        return true;
+      }
+      return (
+        this.recordValue(run.taskName) ===
+          this.recordValue(record.textOtherName || record.bookName) &&
+        this.recordValue(run.platform) === this.recordValue(record.pt) &&
+        this.getRunPhone(run) === this.getRecordPhone(record) &&
+        this.getRunVideoFile(run) === this.getFileName(record.selectedFile)
+      );
+    },
+    async handleGetLogs(row) {
+      this.logDialogVisible = true;
+      this.logContext = row;
+      this.activeLogTab = "current";
+      await this.loadPublishLogs(row);
+    },
+    async reloadLogs() {
+      if (!this.logContext) return;
+      await this.loadPublishLogs(this.logContext);
+    },
+    async loadPublishLogs(row) {
+      this.logLoading = true;
+      try {
+        const [runsResponse, logsResponse] = await Promise.all([
+          dataRequest({
+            type: "get",
+            fileName: "publishRuns",
+            item: { pageSize: 90 },
+          }),
+          dataRequest({
+            type: "get",
+            fileName: "publishRunLogs",
+            item: { pageSize: 90 },
+          }),
+        ]);
+        const details = (row && row.showAlltype) || [row];
+        const runs = this.flattenDataResponse(runsResponse.data)
+          .filter((run) => details.some((record) => this.isRunMatchRecord(run, record)))
+          .sort((a, b) => Number(b.startedAt || 0) - Number(a.startedAt || 0));
+        const runIds = new Set(runs.map((run) => run.id));
+        const logs = this.flattenDataResponse(logsResponse.data)
+          .filter((log) => runIds.has(log.runId))
+          .sort((a, b) => Number(a.time || 0) - Number(b.time || 0));
+        this.logRuns = runs;
+        this.logEntries = logs;
+        this.selectedLogRunId = runs[0] ? runs[0].id : "";
+      } catch (error) {
+        console.error("读取发布日志失败", error);
+        this.$message.error("读取发布日志失败");
+      } finally {
+        this.logLoading = false;
+      }
+    },
+    copyVisibleLogs() {
+      const text = this.visibleLogEntries
+        .map(
+          (log) =>
+            `[${this.formatLogTime(log.time)}] [${log.level || "info"}] [${
+              log.stage || "-"
+            }] ${log.message || ""}${log.detail ? " " + log.detail : ""}`
+        )
+        .join("\n");
+      if (!text) {
+        this.$message.warning("当前没有可复制的日志");
+        return;
+      }
+      this.copy(text);
+      this.$message.success("日志已复制");
+    },
+    formatLogTime(value) {
+      const time = Number(value);
+      if (!Number.isFinite(time)) return "-";
+      return new Date(time).toLocaleString();
+    },
+    logLevelType(level) {
+      if (level === "error") return "danger";
+      if (level === "warn") return "warning";
+      if (level === "success") return "success";
+      return "info";
+    },
+    publishRunStatusType(status) {
+      if (status === "success") return "success";
+      if (["failed", "interrupted"].includes(status)) return "danger";
+      if (status === "skipped") return "info";
+      return "warning";
+    },
+    publishRunStatusText(status) {
+      if (status === "success") return "成功";
+      if (status === "failed") return "失败";
+      if (status === "interrupted") return "已中断";
+      if (status === "skipped") return "已跳过";
+      return "发布中";
+    },
     getStatusRowKey(row) {
       if (!row) return "";
       return [
@@ -599,13 +966,32 @@ export default {
       this.$refs.articlePublishRef.open();
     },
 
-    loadRecords() {
-      dataRequest({
+    refreshRecords() {
+      this.loadRecords(true);
+    },
+
+    loadRecords(showMessage = false) {
+      const shouldNotify = showMessage === true;
+      this.recordsLoading = true;
+      return dataRequest({
         type: "get",
         fileName: "pushData",
-      }).then((r) => {
-        this.initDataFiltered(r.data || {});
-      });
+      })
+        .then((r) => {
+          this.initDataFiltered(r.data || {});
+          if (shouldNotify) {
+            this.$message.success("数据已刷新");
+          }
+        })
+        .catch((error) => {
+          console.error("刷新视频管理数据失败", error);
+          if (shouldNotify) {
+            this.$message.error("数据刷新失败");
+          }
+        })
+        .finally(() => {
+          this.recordsLoading = false;
+        });
     },
 
     initDataFiltered(data) {
@@ -761,14 +1147,21 @@ export default {
 .container-box {
   height: calc(100vh - 100px);
   overflow-y: auto;
-  padding: 20px;
+  overflow-x: auto;
+  padding: 22px;
+  background: #f5f7fb;
 }
 
 .toolbar {
-  margin-bottom: 16px;
+  margin-bottom: 18px;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  padding: 16px 18px;
+  background: #fff;
+  border: 1px solid #e8edf5;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(31, 45, 61, 0.05);
 }
 
 .toolbar-left {
@@ -779,6 +1172,177 @@ export default {
 
 .info-box {
   min-height: 200px;
+  overflow: hidden;
+
+  ::v-deep .el-card {
+    overflow: hidden;
+    border: 1px solid #e8edf5;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(31, 45, 61, 0.05);
+  }
+
+  ::v-deep .responsive-table {
+    width: 100% !important;
+
+    .el-table__header th {
+      background: #f8fafd;
+      color: #344054;
+      font-weight: 600;
+    }
+
+    .el-button--mini {
+      margin-left: 0;
+      margin-right: 6px;
+    }
+
+    th,
+    td {
+      min-width: 0 !important;
+    }
+  }
+}
+
+.content-detail {
+  color: #303133;
+}
+
+.content-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 14px;
+}
+
+.content-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1f2d3d;
+}
+
+.content-subtitle {
+  margin-top: 4px;
+  font-size: 13px;
+  color: #667085;
+}
+
+.content-descriptions {
+  margin-bottom: 16px;
+}
+
+.content-section-title {
+  margin: 4px 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #344054;
+}
+
+.content-platform-table {
+  width: 100%;
+}
+
+.publish-log-dialog {
+  min-height: 360px;
+}
+
+.log-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.log-title {
+  font-weight: 600;
+  color: #222;
+}
+
+.log-subtitle {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #777;
+  word-break: break-all;
+}
+
+.log-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.log-run-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.log-run-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.log-run-item.active {
+  border-color: #409eff;
+  background: #ecf5ff;
+}
+
+.log-run-main {
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+  font-size: 13px;
+  color: #444;
+}
+
+.log-tabs {
+  margin-top: 8px;
+}
+
+.log-timeline {
+  max-height: 420px;
+  overflow-y: auto;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #fafafa;
+}
+
+.log-line {
+  display: grid;
+  grid-template-columns: 170px 70px 130px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 13px;
+}
+
+.log-line:last-child {
+  border-bottom: none;
+}
+
+.log-time,
+.log-stage,
+.log-detail {
+  color: #777;
+}
+
+.log-message,
+.log-detail {
+  word-break: break-all;
+}
+
+.log-detail {
+  grid-column: 4;
+  font-size: 12px;
 }
 
 .mb16 {
@@ -792,17 +1356,18 @@ export default {
 .card-head {
   display: flex;
   align-items: center;
-  padding-bottom: 10px;
+  padding-bottom: 12px;
 }
 
 .date-label {
-  color: #c00;
+  color: #1f2d3d;
+  font-weight: 600;
   margin-right: 12px;
 }
 
 .hint {
   font-size: 13px;
-  color: #666;
+  color: #667085;
 }
 
 .status-row {
@@ -822,10 +1387,11 @@ export default {
 .progress-detail {
   display: flex;
   align-items: center;
-  gap: 6px;
-  width: 300px;
+  gap: 4px;
+  max-width: 324px;
+  flex: 1;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
 }
 
 .progress-count {
@@ -843,8 +1409,13 @@ export default {
 
 .pt-name {
   cursor: pointer;
-  width: 60%;
+  flex: 1;
+  min-width: 0;
   word-break: break-all;
+}
+
+.progress-row .pt-name {
+  flex: 0 0 52px;
 }
 
 .fail {

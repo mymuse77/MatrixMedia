@@ -4,8 +4,39 @@ import { resolveDyCreativeStatementLabel } from "../../../shared/creativeStateme
 import {
   WAIT_SELECTOR_APPEAR_MS,
   WAIT_UPLOAD_PROCESSING_MS,
-  pollPageUntil,
 } from "./uploadTimeouts.js";
+
+async function waitForDyUploadReady(page) {
+  const deadline = Date.now() + WAIT_UPLOAD_PROCESSING_MS;
+  const failureTexts = ["上传失败", "重新上传", "上传出错", "上传异常"];
+
+  while (Date.now() < deadline) {
+    const state = await page.evaluate((texts) => {
+      const bodyText = document.body ? document.body.innerText || document.body.textContent || "" : "";
+      const uploadFailed = texts.some((text) => bodyText.includes(text));
+      const previewReady = Array.from(document.querySelectorAll("video")).some((video) => {
+        const src = video.currentSrc || video.getAttribute("src") || "";
+        if (!src.includes("douyin.com")) return false;
+        const parent = video.parentElement;
+        return Boolean(parent && parent.querySelector(".rc-slider.rc-slider-horizontal"));
+      });
+
+      return { uploadFailed, previewReady };
+    }, failureTexts).catch(() => ({ uploadFailed: false, previewReady: false }));
+
+    if (state.uploadFailed) {
+      throw new Error("抖音视频上传失败，请重新上传");
+    }
+
+    if (state.previewReady) {
+      return;
+    }
+
+    await page.waitForTimeout(2000);
+  }
+
+  throw new Error("等待抖音视频上传完成超时");
+}
 
 async function selectDyCreativeStatement(page, data) {
   const value = data.data && data.data.creativeStatement;
@@ -113,6 +144,11 @@ export default async function (page, data, window, event) {
   };
 
   try {
+    event.log?.({
+      stage: "upload-file",
+      message: "抖音：开始查找上传入口并上传视频文件",
+      detail: data.filePath,
+    });
     // 等待 name=upload-btn 的 input 出现
     await page.waitForSelector('input[name="upload-btn"]', {
       timeout: WAIT_SELECTOR_APPEAR_MS,
@@ -124,11 +160,19 @@ export default async function (page, data, window, event) {
       throw new Error("未找到上传文件输入框");
     }
     await uploadFileHandle.uploadFile(path.resolve(data.filePath));
+    event.log?.({
+      stage: "upload-file",
+      message: "抖音：视频文件已提交到上传控件",
+    });
   } catch (e) {
     replyFailureAndStop("输入文件失败", e);
     return;
   }
   try {
+    event.log?.({
+      stage: "fill-content",
+      message: "抖音：开始填写标题、描述和标签",
+    });
     await page.waitForSelector(".semi-input", {
       timeout: WAIT_SELECTOR_APPEAR_MS,
     });
@@ -152,6 +196,10 @@ export default async function (page, data, window, event) {
 
   // 话题输入完后立即选择自主声明（必须声明）
   try {
+    event.log?.({
+      stage: "creative-statement",
+      message: "抖音：开始选择自主声明",
+    });
     await selectDyCreativeStatement(page, data);
   } catch (e) {
     console.warn("抖音自主声明选择未完成:", e?.message || e);
@@ -159,21 +207,15 @@ export default async function (page, data, window, event) {
 
   try {
     // 不依赖会随打包变化的 container-xxx：等预览区 video（抖音 CDN）与同容器内的 rc 进度条同时出现
-    await pollPageUntil(
-      page,
-      () => {
-        for (const v of document.querySelectorAll("video")) {
-          const src = v.currentSrc || v.getAttribute("src") || "";
-          if (!src.includes("douyin.com")) continue;
-          const parent = v.parentElement;
-          if (parent && parent.querySelector(".rc-slider.rc-slider-horizontal")) {
-            return true;
-          }
-        }
-        return false;
-      },
-      WAIT_UPLOAD_PROCESSING_MS
-    );
+    event.log?.({
+      stage: "wait-upload",
+      message: "抖音：等待视频上传和处理完成",
+    });
+    await waitForDyUploadReady(page);
+    event.log?.({
+      stage: "wait-upload",
+      message: "抖音：视频上传处理已完成",
+    });
 
     // 「保存权限」区域往往在预览视频就绪后才挂载；放在预览等待之后，并放宽文案/控件匹配
     await page.waitForFunction(
@@ -217,6 +259,10 @@ export default async function (page, data, window, event) {
     if (!saved) throw new Error("未找到保存权限-不允许");
     const submitSelector = isDraftMode ? "#popover-tip-container+button" : "#popover-tip-container";
     const submitBtn = await page.waitForSelector(submitSelector, { timeout: WAIT_SELECTOR_APPEAR_MS });
+    event.log?.({
+      stage: "submit",
+      message: isDraftMode ? "抖音：点击保存草稿" : "抖音：点击发布",
+    });
     await submitBtn.click({ delay: 200 });
     console.log(isDraftMode ? "✅ 抖音视频已保存草稿" : "✅ 抖音视频上传成功");
     setTimeout(() => {

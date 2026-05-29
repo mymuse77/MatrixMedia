@@ -185,6 +185,7 @@ export default async function (page, data, window,event) {
     await uploadInputs.uploadFile(path.resolve(data.filePath));
   } catch (err) {
     console.error("文件上传失败:", err);
+    throw new Error(`快手文件上传失败：${err?.message || err}`);
   }
 
   try {
@@ -195,6 +196,7 @@ export default async function (page, data, window,event) {
     await page.keyboard.type(data.data.bt1 + " " + data.data.bq, { delay: 50 });
   } catch (e) {
     console.error("❌ 输入标题失败", e);
+    throw new Error(`快手输入标题失败：${e?.message || e}`);
   }
   try {
     await page.click(".ant-checkbox-group>label:nth-of-type(2)", { delay: 200 });
@@ -273,10 +275,11 @@ export default async function (page, data, window,event) {
       maybeClosePublishWindow(data, window);
     }, 5000);
   } catch (e) {
+    const detail = e?.message || e;
     event.reply("puppeteerFile-done", {
       ...data,
       status: false,
-      message: "上传失败",
+      message: `上传失败：${detail}`,
     });
     console.error("❌ 发布失败", e);
   }

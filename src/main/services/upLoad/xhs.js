@@ -322,7 +322,8 @@ export default async function (page, data, window, event) {
       );
       console.log("[xhs] 视频上传完成（重新上传按钮已出现）");
     } catch (_) {
-      console.log("[xhs] 视频上传等待超时，继续走发布流程");
+      console.error("[xhs] 视频上传等待超时，停止发布流程");
+      throw new Error("等待小红书视频上传完成超时");
     }
 
     // 新版发布按钮在 <xhs-publish-btn> 的 closed shadow root 里，
@@ -427,10 +428,11 @@ export default async function (page, data, window, event) {
       maybeClosePublishWindow(data, window);
     }, 5000);
   } catch (err) {
+    const detail = err?.message || err;
     event.reply("puppeteerFile-done", {
       ...data,
       status: false,
-      message: "上传失败",
+      message: `上传失败：${detail}`,
     });
     maybeClosePublishWindow(data, window);
     console.error("❌ 小红书发布失败:", err);

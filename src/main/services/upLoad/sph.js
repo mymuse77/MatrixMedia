@@ -85,6 +85,7 @@ export default async function (page, data, window,event,onFinish) {
     });
   } catch (err) {
     console.error("❌ 文件上传失败:", err);
+    throw new Error(`视频号文件上传失败：${err?.message || err}`);
   }
 
   try {
@@ -99,6 +100,7 @@ export default async function (page, data, window,event,onFinish) {
     await page.keyboard.type(newBt, { delay: 50 });
   } catch (err) {
     console.error("❌ 输入失败:", err);
+    throw new Error(`视频号填写发布内容失败：${err?.message || err}`);
   }
 
   await tryDeclareOriginal(page);
