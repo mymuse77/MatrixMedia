@@ -92,9 +92,33 @@ ipcRenderer.invoke("IsUseSysTitle").then(res => {
   IsUseSysTitle.value = res;
 });
 
+let relayoutRaf = null;
+
+function relayoutAllTables() {
+  if (relayoutRaf) cancelAnimationFrame(relayoutRaf);
+  relayoutRaf = requestAnimationFrame(() => {
+    relayoutRaf = null;
+    document.querySelectorAll('.el-table').forEach(table => {
+      const vm = table.__vue__;
+      if (vm && vm.doLayout) {
+        vm.doLayout();
+        table.querySelectorAll('colgroup col').forEach(col => {
+          col.style.removeProperty('min-width');
+        });
+      }
+    });
+  });
+}
+
+function onWindowResize() {
+  relayoutAllTables();
+}
+
 onMounted(() => {
   ipcRenderer.on(accountChangedChannel, handleMatrixAccountChanged);
   initFeedbackReminder().catch(() => {});
+  window.addEventListener('resize', onWindowResize);
+  ipcRenderer.on('w-max', relayoutAllTables);
 });
 
 onBeforeUnmount(() => {
@@ -103,6 +127,8 @@ onBeforeUnmount(() => {
     clearTimeout(accountRefreshTimer);
     accountRefreshTimer = null;
   }
+  window.removeEventListener('resize', onWindowResize);
+  ipcRenderer.removeListener('w-max', relayoutAllTables);
 });
 
 function handleMatrixAccountChanged(_event, payload) {

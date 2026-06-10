@@ -149,7 +149,7 @@ export default {
   min-height: calc(100vh - 100px);
   padding: 24px;
   box-sizing: border-box;
-  background: #f5f7fb;
+  background: #f7f8fa;
 }
 .account-manager-page .header-panel {
   display: flex;

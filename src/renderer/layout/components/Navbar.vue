@@ -350,9 +350,9 @@ export default {
   color: #8a5a00;
   font-size: 13px;
   line-height: 1.7;
-  padding: 10px 12px;
-  background: #fff7e6;
-  border: 1px solid #ffe0a3;
-  border-radius: 6px;
+  padding: 12px 14px;
+  background: #fffbe6;
+  border: 1px solid #ffe58f;
+  border-radius: 8px;
 }
 </style>

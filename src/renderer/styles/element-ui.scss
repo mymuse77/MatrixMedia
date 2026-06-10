@@ -29,3 +29,55 @@
    }
  }
 
+
+// 发布对话框全局样式
+.publish-dialog {
+  border-radius: 12px;
+  overflow: hidden;
+
+  .el-dialog__header {
+    padding: 18px 24px 14px;
+    border-bottom: 1px solid #f0f2f5;
+  }
+
+  .el-dialog__title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #1f2d3d;
+  }
+
+  .el-dialog__body {
+    padding: 20px 24px 8px;
+  }
+
+  .el-dialog__footer {
+    padding: 12px 24px 18px;
+    border-top: 1px solid #f0f2f5;
+  }
+}
+
+// 全局按钮圆角微调
+.el-button {
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.el-button--primary {
+  box-shadow: 0 2px 4px rgba(22, 119, 255, 0.15);
+}
+
+// 全局对话框圆角
+.el-dialog {
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+// Steps 组件样式统一
+.publish-steps {
+  .el-step__title {
+    font-size: 13px !important;
+  }
+  .el-step__icon {
+    font-size: 14px;
+  }
+}

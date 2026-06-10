@@ -379,24 +379,23 @@ export default {
   },
   methods: {
     copy: copyToClipboard,
-    _setupResizeObserver() {
-      let rafId = null;
-      this._resizeObserver = new ResizeObserver(() => {
-        if (rafId) cancelAnimationFrame(rafId);
-        rafId = requestAnimationFrame(() => {
-          rafId = null;
-          this.$el.querySelectorAll('.el-table').forEach(table => {
-            const vm = table.__vue__;
-            if (vm && vm.doLayout) {
-              vm.doLayout();
-              // Clear inline min-width from col elements so CSS can take effect
-              table.querySelectorAll('colgroup col').forEach(col => {
-                col.style.removeProperty('min-width');
-              });
-            }
-          });
+    _relayoutTables() {
+      if (this._relayoutRaf) cancelAnimationFrame(this._relayoutRaf);
+      this._relayoutRaf = requestAnimationFrame(() => {
+        this._relayoutRaf = null;
+        this.$el && this.$el.querySelectorAll('.el-table').forEach(table => {
+          const vm = table.__vue__;
+          if (vm && vm.doLayout) {
+            vm.doLayout();
+            table.querySelectorAll('colgroup col').forEach(col => {
+              col.style.removeProperty('min-width');
+            });
+          }
         });
       });
+    },
+    _setupResizeObserver() {
+      this._resizeObserver = new ResizeObserver(() => this._relayoutTables());
       this._resizeObserver.observe(this.$el);
     },
     canViewPublishContent(row) {
@@ -1148,20 +1147,20 @@ export default {
   height: calc(100vh - 100px);
   overflow-y: auto;
   overflow-x: auto;
-  padding: 22px;
-  background: #f5f7fb;
+  padding: 20px 24px;
+  background: #f7f8fa;
 }
 
 .toolbar {
-  margin-bottom: 18px;
+  margin-bottom: 16px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 18px;
+  padding: 14px 20px;
   background: #fff;
   border: 1px solid #e8edf5;
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(31, 45, 61, 0.05);
+  border-radius: 10px;
+  box-shadow: 0 2px 12px rgba(31, 45, 61, 0.04);
 }
 
 .toolbar-left {
@@ -1177,8 +1176,13 @@ export default {
   ::v-deep .el-card {
     overflow: hidden;
     border: 1px solid #e8edf5;
-    border-radius: 8px;
-    box-shadow: 0 8px 24px rgba(31, 45, 61, 0.05);
+    border-radius: 10px;
+    box-shadow: 0 2px 12px rgba(31, 45, 61, 0.04);
+    transition: box-shadow 0.2s;
+  }
+
+  ::v-deep .el-card:hover {
+    box-shadow: 0 4px 16px rgba(31, 45, 61, 0.08);
   }
 
   ::v-deep .responsive-table {
@@ -1283,14 +1287,20 @@ export default {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
-  padding: 8px 10px;
-  border: 1px solid #ebeef5;
-  border-radius: 6px;
+  padding: 8px 12px;
+  border: 1px solid #e8edf5;
+  border-radius: 8px;
   cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.log-run-item:hover {
+  border-color: #c0d8ff;
+  background: #f5f8ff;
 }
 
 .log-run-item.active {
-  border-color: #409eff;
+  border-color: #1677ff;
   background: #ecf5ff;
 }
 
@@ -1309,10 +1319,10 @@ export default {
 .log-timeline {
   max-height: 420px;
   overflow-y: auto;
-  border: 1px solid #ebeef5;
-  border-radius: 6px;
-  padding: 8px 10px;
-  background: #fafafa;
+  border: 1px solid #e8edf5;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fafbfc;
 }
 
 .log-line {
@@ -1356,18 +1366,24 @@ export default {
 .card-head {
   display: flex;
   align-items: center;
-  padding-bottom: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #f0f2f5;
+  margin-bottom: 4px;
 }
 
 .date-label {
   color: #1f2d3d;
-  font-weight: 600;
+  font-weight: 700;
+  font-size: 15px;
   margin-right: 12px;
 }
 
 .hint {
-  font-size: 13px;
-  color: #667085;
+  font-size: 12px;
+  color: #98a2b3;
+  background: #f2f4f7;
+  padding: 2px 8px;
+  border-radius: 4px;
 }
 
 .status-row {
@@ -1382,12 +1398,13 @@ export default {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 6px;
+  padding: 4px 0;
 }
 
 .progress-detail {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   max-width: 324px;
   flex: 1;
   flex-wrap: wrap;
@@ -1396,15 +1413,18 @@ export default {
 
 .progress-count {
   font-size: 12px;
-  color: #666;
+  color: #667085;
 }
 
 .progress-count.success {
-  color: #2e8b57;
+  color: #52c41a;
+  font-weight: 500;
 }
 
 .progress-count.fail {
   cursor: default;
+  color: #ff4d4f;
+  font-weight: 500;
 }
 
 .pt-name {
@@ -1412,14 +1432,22 @@ export default {
   flex: 1;
   min-width: 0;
   word-break: break-all;
+  font-weight: 500;
+  color: #344054;
 }
 
 .progress-row .pt-name {
-  flex: 0 0 52px;
+  flex: 0 0 58px;
+  font-size: 13px;
+}
+
+.status-row .pt-name {
+  font-size: 13px;
 }
 
 .fail {
-  color: #c00;
+  color: #ff4d4f;
   cursor: pointer;
+  font-weight: 500;
 }
 </style>
