@@ -1,6 +1,8 @@
-# 命令行（CLI）说明
+## 命令行（CLI）说明
 
 在保留图形界面的前提下，同一可执行文件支持 CLI 子命令。入口为参数中出现 `cli`。
+
+> 返回 [README](../README.md) · 相关：[HTTP API](./http-api.md) · [MCP](./mcp.md)
 
 ## 故障排除
 
@@ -12,25 +14,49 @@ ELECTRON_RUN_AS_NODE= electron . cli publish --help
 
 `yarn dev` 已尝试在子进程中清除该变量；若仍异常，请检查 shell 配置（如 `.zshrc`）是否全局导出了 `ELECTRON_RUN_AS_NODE`。
 
-## 抖音 CLI 登录（设计切片）
+## CLI 登录
 
-与 GUI `getCookie` / `LocalVideoPublish` 对齐的最小闭环：
+与 GUI `getCookie` / `LocalVideoPublish` 对齐的最小闭环，当前支持**抖音**和**视频号**两个平台。
+
+### 通用机制
 
 1. **会话**：`partition` 形如 `persist:<手机号段><平台名>`，与账号树、webview 一致。
-2. **登录判定**：轮询 `https://creator.douyin.com` 下 Cookie **`passport_assist_user`** 是否有值（主进程 `session.fromPartition`）。
-3. **终端扫码**：CLI 自动捕获二维码并在终端展示，用户扫码后继续轮询登录 Cookie。**Linux** 无显示器或 SSH：用 **`xvfb-run -a`** 提供虚拟显示（例：`xvfb-run -a ./矩媒.AppImage cli login ...`）。当前 CLI 登录以终端二维码 / 截图识别方式为主，`--show` 会被忽略。
+2. **Cookie 持久化**：登录成功后自动 `cookies.flushStore()` + `flushStorageData()`，确保 CLI 与 GUI 共用同一 `userData` 下的 `persist:` 分区。
+3. **终端扫码**：CLI 自动捕获二维码并在终端展示，用户扫码后继续轮询登录 Cookie。
 4. **退出**：检测到 Cookie 后关窗；超时 / 用户关窗返回码 3。
 
-可选隔离开发目录：`bash scripts/setup-douyin-cli-worktree.sh`（在 `.worktrees/douyin-cli-login` 创建 worktree）。自动化校验：`yarn test:cli-login`。
+### 抖音 CLI 登录
 
-## 登录（抖音，CLI）
-
-在未登录或 Cookie 失效时，使用 `cli login`（与 GUI 相同 `partition`，Cookie 持久化）。
-
-默认把浏览器窗口放在**屏外**（不透明），在**终端用黑白方块（█）**刷新截图。Linux 服务器/SSH 请用 **`xvfb-run -a`**。当前 CLI 登录不显示 Electron 登录窗口，`--show` 会被忽略。
+- **登录判定**：轮询 `https://creator.douyin.com` 下 Cookie `passport_assist_user`。
+- **窗口模式**：默认屏外隐藏窗口 + 终端二维码；支持 `--puppeteer-headless` 无头模式。
+- `--show` 会被忽略（不弹窗）。
 
 ```bash
-ELECTRON_RUN_AS_NODE= electron . cli login -p dy --phone 13800138000
+electron . cli login -p dy --phone 13800138000
+```
+
+### 视频号 CLI 登录
+
+- **登录判定**：轮询 `https://channels.weixin.qq.com` 下 Cookie `sessionid`，检测与旧值不同的新 sessionid 即为登录成功（支持重复登录）。
+- **窗口模式**：默认透明窗口（`opacity: 0`）+ 终端二维码；支持 `--show` 弹出可见登录窗口。
+- **UA 注入**：通过 puppeteer CDP `page.setUserAgent()` 在导航前设置微信 UA，覆盖主 frame + iframe 所有请求。
+- **QR 提取**：遍历所有 frame（含 wujie micro-frontend 的 `login-for-iframe`），从 `img.qrcode` 的 `data:` URL 直接解码。
+- 不支持 `--puppeteer-headless`。
+
+```bash
+# 终端二维码（默认，无弹窗）
+electron . cli login -p sph --phone 13800138000
+
+# 弹出登录窗口
+electron . cli login -p sph --phone 宠物 --show
+```
+
+### Linux / SSH 环境
+
+无显示器或 SSH 环境下请用 `xvfb-run -a` 提供虚拟显示：
+
+```bash
+xvfb-run -a ./矩媒.AppImage cli login -p dy --phone 13800138000
 ```
 
 若 stdout 不是 TTY（如管道重定向），终端截图可能无法正常展示，请在可交互终端中执行。参数见 `cli login --help`。成功后再执行 `cli publish`。
@@ -49,19 +75,19 @@ electron . cli publish -p dy --phone 13800138000 -f /path/to/video.mp4 -t "标�
 
 与界面 **本地视频发布**（`LocalVideoPublish.vue` → `buildVideoPayload` / `handleBatchPublish`）同一套字段：
 
-| 参数 | 对应 GUI / 载荷字段 |
-|------|---------------------|
-| `-p` / `--platform` | 发布平台 |
-| `-f` / `--file` | 本地视频路径 → `filePath`、`data.textOtherName`（文件名无扩展名） |
-| `--phone` / `--partition` | 会话分区，与账号树一致 |
-| `-t` / `--title` | **视频标题**（必填）→ `data.bt1` |
-| `--name` / `--book-name` | **名称**（任务记录名）→ `bookName`；省略时默认与视频文件名（无扩展名）一致 |
-| `--bt2` | **概括短标题** → `data.bt2`；省略时默认与视频标题一致（视频号等场景） |
-| `--tags` / `--bq` | **视频标签** → `data.bq` |
-| `--address` | **地址** → `data.address`（仅百家号） |
-| `--publish-at` | 一次性定时发布，格式 `YYYY-MM-DD HH:mm:ss`；创建后立即进入发布历史 |
-| `--show` | 当前 CLI 会忽略，仍后台运行 |
-| `--no-close-window` | CLI 下无效，仅与 GUI 显示窗口场景有关 |
+| 参数                      | 对应 GUI / 载荷字段                                                        |
+| ------------------------- | -------------------------------------------------------------------------- |
+| `-p` / `--platform`       | 发布平台                                                                   |
+| `-f` / `--file`           | 本地视频路径 → `filePath`、`data.textOtherName`（文件名无扩展名）          |
+| `--phone` / `--partition` | 会话分区，与账号树一致                                                     |
+| `-t` / `--title`          | **视频标题**（必填）→ `data.bt1`                                           |
+| `--name` / `--book-name`  | **名称**（任务记录名）→ `bookName`；省略时默认与视频文件名（无扩展名）一致 |
+| `--bt2`                   | **概括短标题** → `data.bt2`；省略时默认与视频标题一致（视频号等场景）      |
+| `--tags` / `--bq`         | **视频标签** → `data.bq`                                                   |
+| `--address`               | **地址** → `data.address`（仅百家号）                                      |
+| `--publish-at`            | 一次性定时发布，格式 `YYYY-MM-DD HH:mm:ss`；创建后立即进入发布历史         |
+| `--show`                  | 当前 CLI 会忽略，仍后台运行                                                |
+| `--no-close-window`       | CLI 下无效，仅与 GUI 显示窗口场景有关                                      |
 
 完整说明请执行：
 
@@ -71,16 +97,16 @@ electron . cli publish -p dy --phone 13800138000 -f /path/to/video.mp4 -t "标�
 
 ### 退出码
 
-| 码 | 含义 |
-|----|------|
-| 0 | 成功 |
-| 1 | 未捕获异常 |
-| 2 | 参数错误 |
-| 3 | 任务失败（如未登录、上传失败） |
+| 码  | 含义                           |
+| --- | ------------------------------ |
+| 0   | 成功                           |
+| 1   | 未捕获异常                     |
+| 2   | 参数错误                       |
+| 3   | 任务失败（如未登录、上传失败） |
 
 ### 注意事项
 
-1. **登录态**：CLI 与 GUI 共用同一 `partition` 会话。抖音可使用 **`cli login`** 在终端完成扫码登录，当前 `--show` 会被忽略且 CLI 不显示登录窗口；其它平台可先在 GUI 登录，或保证该 `partition` 已有有效 Cookie。
+1. **登录态**：CLI 与 GUI 共用同一 `partition` 会话（`userData` 固定为 `matrix-video`）。抖音和视频号可使用 **`cli login`** 在终端完成扫码登录；其它平台可先在 GUI 登录，或保证该 `partition` 已有有效 Cookie。
 2. **与 GUI 同时运行**：CLI 模式不会申请单实例锁；若与 GUI 同时使用同一账号 partition，可能导致会话冲突，建议错峰使用。
 3. **定时发布**：`--publish-at "YYYY-MM-DD HH:mm:ss"` 只支持一次性明确时间点，不支持每日/每周/每月。定时任务会写入发布历史，状态为“等待定时发布”；如果应用关闭导致错过执行时间，下次启动会标记为“任务过期”，可在视频管理中重新发布。
 4. **Linux 打包**：使用 `yarn build:linux` 生成 AppImage（需在本机构建环境安装相应依赖）。
@@ -97,22 +123,22 @@ electron . cli publish-article -p juejin --phone 13800138000 -t "文章标题" -
 
 ### 参数摘要
 
-| 参数 | 说明 |
-|------|------|
-| `-p` / `--platform` | 发布平台，当前支持 `juejin` / `jj` / `掘金` |
-| `--phone` / `--partition` | 会话分区，与 GUI 掘金账号一致 |
-| `-t` / `--title` | 文章标题 |
-| `--content` | 文章正文，至少与 `--file` / `-f` 提供一个；同时提供时优先使用 `--content` |
-| `-f` / `--file` | `.md` / `.txt` 正文文件，至少与 `--content` 提供一个；同时提供时优先使用 `--content` |
-| `--cover` | 可选封面图片 |
-| `--category` | 分类，默认“前端” |
-| `--tags` | 空格分隔标签，默认“前端 electron” |
-| `--summary` | 可选摘要，不传则由掘金自动生成 |
-| `--publish-at` | 一次性定时发布，格式 `YYYY-MM-DD HH:mm:ss` |
+| 参数                      | 说明                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------ |
+| `-p` / `--platform`       | 发布平台，当前支持 `juejin` / `jj` / `掘金`                                          |
+| `--phone` / `--partition` | 会话分区，与 GUI 掘金账号一致                                                        |
+| `-t` / `--title`          | 文章标题                                                                             |
+| `--content`               | 文章正文，至少与 `--file` / `-f` 提供一个；同时提供时优先使用 `--content`            |
+| `-f` / `--file`           | `.md` / `.txt` 正文文件，至少与 `--content` 提供一个；同时提供时优先使用 `--content` |
+| `--cover`                 | 可选封面图片                                                                         |
+| `--category`              | 分类，默认“前端”                                                                     |
+| `--tags`                  | 空格分隔标签，默认“前端 electron”                                                    |
+| `--summary`               | 可选摘要，不传则由掘金自动生成                                                       |
+| `--publish-at`            | 一次性定时发布，格式 `YYYY-MM-DD HH:mm:ss`                                           |
 
 ## 构建命令
 
 - `yarn build`：Windows x64 NSIS
-- `yarn build:mac`：macOS dmg（x64 + arm64）
+- `yarn build:mac`：macOS dmg（x64，Apple Silicon 通过 Rosetta 运行）
 - `yarn build:linux`：Linux AppImage
 - `yarn build:all`：Windows + Linux + macOS

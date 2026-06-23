@@ -36,7 +36,13 @@
           ></el-select>
         </el-form-item>
         <el-form-item label="概括短标题">
-          <el-input v-model="form.bt2" placeholder="选填，建议 6～16 字" />
+          <el-input
+            ref="bt2Input"
+            v-model="form.bt2"
+            placeholder="选填，建议 6～16 字"
+            @input="onBt2Input"
+            @keydown.native.capture="onBt2Keydown"
+          />
           <p class="bt2-tip">
             <strong>微信视频号</strong
             >会将本项用于「概括视频主要内容」，选择视频号时必填，长度需为 6～16
@@ -162,6 +168,13 @@
             <div class="platform-leaf-main">
               <span class="platform-leaf-name">{{ data.pt }}</span>
               <span
+                v-if="data.proxyDisplay"
+                class="platform-leaf-proxy"
+                :title="'已配置代理 ' + data.proxyDisplay"
+              >
+                代理 {{ data.proxyDisplay }}
+              </span>
+              <span
                 class="platform-leaf-login"
                 :style="{ color: data.loggedIn ? 'green' : 'red' }"
               >
@@ -206,6 +219,7 @@
       />
 
       <div slot="footer" class="dialog-footer">
+        <el-button @click="goBackToMeta">上一步</el-button>
         <el-button @click="platformVisible = false">取消</el-button>
         <el-button type="primary" @click="handleBatchPublish">发布</el-button>
         <el-button type="primary" @click="handleBatchPublishToDraft"
@@ -227,19 +241,47 @@
       width="700px"
       @close="handleDirPublishClose"
     >
-      <div style="margin-bottom: 16px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+      <div
+        style="
+          margin-bottom: 16px;
+          display: flex;
+          gap: 10px;
+          flex-wrap: wrap;
+          align-items: center;
+        "
+      >
         <el-button size="small" @click="chooseBatchDir">
-          {{ dirPath ? '重新选择目录' : '选择目录' }}
+          {{ dirPath ? "重新选择目录" : "选择目录" }}
         </el-button>
-        <span v-if="dirPath" style="font-size: 13px; color: #606266; word-break: break-all;">{{ dirPath }}</span>
+        <span
+          v-if="dirPath"
+          style="font-size: 13px; color: #606266; word-break: break-all"
+          >{{ dirPath }}</span
+        >
       </div>
-      <div style="margin-bottom: 16px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+      <div
+        style="
+          margin-bottom: 16px;
+          display: flex;
+          gap: 10px;
+          flex-wrap: wrap;
+          align-items: center;
+        "
+      >
         <el-button size="small" @click="chooseBatchXlsx">
-          {{ dirXlsxRows.length ? '重新选择声明文件' : '选择声明文件 (xlsx)' }}
+          {{ dirXlsxRows.length ? "重新选择声明文件" : "选择声明文件 (xlsx)" }}
         </el-button>
-        <el-button size="small" type="text" @click="downloadBatchTemplate">下载模版</el-button>
-        <span v-if="dirXlsxError" style="color: #f56c6c; font-size: 13px;">{{ dirXlsxError }}</span>
-        <span v-else-if="dirXlsxRows.length" style="font-size: 13px; color: #67c23a;">已加载 {{ dirXlsxRows.length }} 条记录</span>
+        <el-button size="small" type="text" @click="downloadBatchTemplate"
+          >下载模版</el-button
+        >
+        <span v-if="dirXlsxError" style="color: #f56c6c; font-size: 13px">{{
+          dirXlsxError
+        }}</span>
+        <span
+          v-else-if="dirXlsxRows.length"
+          style="font-size: 13px; color: #67c23a"
+          >已加载 {{ dirXlsxRows.length }} 条记录</span
+        >
       </div>
 
       <el-table
@@ -247,21 +289,40 @@
         :data="dirXlsxRows"
         size="mini"
         max-height="260"
-        style="width: 100%; margin-bottom: 16px;"
+        style="width: 100%; margin-bottom: 16px"
       >
-        <el-table-column prop="fileName" label="文件名" min-width="160" show-overflow-tooltip />
-        <el-table-column prop="title" label="标题" min-width="160" show-overflow-tooltip />
-        <el-table-column prop="tags" label="标签" min-width="120" show-overflow-tooltip />
+        <el-table-column
+          prop="fileName"
+          label="文件名"
+          min-width="160"
+          show-overflow-tooltip
+        />
+        <el-table-column
+          prop="title"
+          label="标题"
+          min-width="160"
+          show-overflow-tooltip
+        />
+        <el-table-column
+          prop="tags"
+          label="标签"
+          min-width="120"
+          show-overflow-tooltip
+        />
         <el-table-column label="文件状态" width="80">
           <template slot-scope="{ row }">
-            <span :style="{ color: dirFileExists(row.fileName) ? '#67c23a' : '#f56c6c' }">
-              {{ dirFileExists(row.fileName) ? '✓' : '✗' }}
+            <span
+              :style="{
+                color: dirFileExists(row.fileName) ? '#67c23a' : '#f56c6c',
+              }"
+            >
+              {{ dirFileExists(row.fileName) ? "✓" : "✗" }}
             </span>
           </template>
         </el-table-column>
       </el-table>
 
-      <el-form label-width="88px" style="margin-bottom: 8px;">
+      <el-form label-width="88px" style="margin-bottom: 8px">
         <el-form-item label="定时发布">
           <el-switch
             v-model="scheduledPublish"
@@ -282,7 +343,12 @@
 
       <div slot="footer" class="dialog-footer">
         <el-button @click="dirPublishVisible = false">取消</el-button>
-        <el-button type="primary" :disabled="!dirPath || !dirXlsxRows.length" @click="onDirPublishNext">下一步</el-button>
+        <el-button
+          type="primary"
+          :disabled="!dirPath || !dirXlsxRows.length"
+          @click="onDirPublishNext"
+          >下一步</el-button
+        >
       </div>
     </el-dialog>
   </div>
@@ -308,6 +374,22 @@ import {
   normalizeCreativeStatement,
   platformSupportsCreativeStatement,
 } from "../../shared/creativeStatement.js";
+import {
+  getAccountProxyDisplay,
+  isAccountProxyEnabled,
+} from "../../shared/accountProxy.js";
+import {
+  applyXhsConservativePublishOptions,
+  getXhsPlatformStaggerDelayMs,
+  isXhsPlatform,
+} from "../../shared/xhsPublishPolicy.js";
+import { resolveEffectivePublishMode } from "../../shared/accountPublishSettings.js";
+import {
+  isBt2SelectAllShortcut,
+  isVideohaoBt2AllowedChar,
+  sanitizeVideohaoBt2Input,
+  validateVideohaoBt2 as validateVideohaoBt2Value,
+} from "@/utils/localVideoPublishBt2";
 
 function fileBaseName(p) {
   if (!p) return "";
@@ -336,6 +418,10 @@ function formatBqFromTags(tags) {
     .filter(Boolean)
     .map((t) => (t.startsWith("#") ? t : `#${t}`))
     .join(" ");
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export default {
@@ -374,7 +460,7 @@ export default {
       // Directory batch publish state
       dirPublishVisible: false,
       dirPath: "",
-      dirXlsxRows: [],   // [{fileName, title, tags}]
+      dirXlsxRows: [], // [{fileName, title, tags}]
       dirXlsxError: "",
       dirBatchFiles: [],
     };
@@ -393,8 +479,8 @@ export default {
       if (!ids || ids.length === 0) return [];
       const idSet = new Set(ids);
       const result = [];
-      (this.treeData || []).forEach(group => {
-        (group.children || []).forEach(child => {
+      (this.treeData || []).forEach((group) => {
+        (group.children || []).forEach((child) => {
           if (child && child.url && idSet.has(child.id)) result.push(child);
         });
       });
@@ -422,12 +508,14 @@ export default {
     /** 把字符串按 # / 空格 / 逗号 / 分号 / 顿号 切成多个标签 */
     _splitBqTokens(raw) {
       if (!raw) return [];
-      return String(raw)
-        // 在每个 # 前插入空格，保证 "#a#b" 也能切开
-        .replace(/#/g, " #")
-        .split(/[\s,，、;；]+/)
-        .map((s) => s.trim().replace(/^#+/, "").trim())
-        .filter(Boolean);
+      return (
+        String(raw)
+          // 在每个 # 前插入空格，保证 "#a#b" 也能切开
+          .replace(/#/g, " #")
+          .split(/[\s,，、;；]+/)
+          .map((s) => s.trim().replace(/^#+/, "").trim())
+          .filter(Boolean)
+      );
     },
     _pushBqTags(list) {
       if (!Array.isArray(list) || !list.length) return 0;
@@ -771,23 +859,44 @@ export default {
       return "";
     },
     validateVideohaoBt2(value) {
-      const bt2 = String(value || "").trim();
-      if (!bt2) {
-        return "发布视频号时，请填写概括短标题";
+      return validateVideohaoBt2Value(value);
+    },
+    warnBt2SpecialPunctuation() {
+      this.$message.warning("概括短标题不能包含特殊标点符号");
+    },
+    onBt2Input(value) {
+      const nextValue = sanitizeVideohaoBt2Input(value);
+      if (nextValue === value) return;
+      this.form.bt2 = nextValue;
+      this.warnBt2SpecialPunctuation();
+    },
+    onBt2Keydown(e) {
+      if (isBt2SelectAllShortcut(e)) {
+        const target = e.target;
+        if (target && typeof target.select === "function") {
+          e.preventDefault();
+          e.stopPropagation();
+          target.select();
+        }
+        return;
       }
-      const len = Array.from(bt2).length;
-      if (len < 6 || len > 16) {
-        return "视频号概括短标题长度需为 6～16 字";
-      }
-      if (!/^[\u4e00-\u9fa5A-Za-z0-9\s]+$/.test(bt2)) {
-        return "视频号概括短标题不能包含特殊标点符号";
-      }
-      return "";
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const key = String(e.key || "");
+      if (key.length !== 1 || isVideohaoBt2AllowedChar(key)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.warnBt2SpecialPunctuation();
     },
 
     onMetaNext() {
       if (!this.form.bt1 || !this.form.bt1.trim()) {
         this.$message.warning("请填写标题");
+        return;
+      }
+      const nextBt2 = sanitizeVideohaoBt2Input(this.form.bt2);
+      if (nextBt2 !== this.form.bt2) {
+        this.form.bt2 = nextBt2;
+        this.warnBt2SpecialPunctuation();
         return;
       }
       const publishAtError = this.validatePublishAt();
@@ -806,6 +915,10 @@ export default {
         }
         this.onTreeCheck();
       });
+    },
+    goBackToMeta() {
+      this.platformVisible = false;
+      this.metaVisible = true;
     },
 
     handleMetaClose() {
@@ -857,6 +970,8 @@ export default {
             phone: child.meta.phone.split("-")[0],
             date: child.meta.date,
             url: child.meta.url,
+            proxyDisplay: getAccountProxyDisplay(child.meta.proxy),
+            proxyEnabled: isAccountProxyEnabled(child.meta.proxy),
             loggedIn: (() => {
               const name = `${child.meta.phone.split("-")[0]}${
                 child.meta.pt
@@ -934,7 +1049,9 @@ export default {
           this.$message.info("已切换到已打开的登录窗口");
         }
       } catch (e) {
-        this.$message.error("打开登录窗口失败：" + (e && e.message ? e.message : e));
+        this.$message.error(
+          "打开登录窗口失败：" + (e && e.message ? e.message : e)
+        );
       }
       // 旧逻辑里 hideLoginDialog 会在 dialog 关闭后调 loadAccounts；
       // 这里手动延时调一次，让 cookie 落地后刷新登录状态。
@@ -1000,6 +1117,9 @@ export default {
       const scheduledAtMs = this.scheduledPublish
         ? moment(scheduledAtText, "YYYY-MM-DD HH:mm:ss", true).valueOf()
         : null;
+      let submitted = 0;
+      let draftSubmitted = 0;
+      let scheduledSubmitted = 0;
 
       platforms.sort((a, b) => {
         if (a.pt.includes("视频号")) return -1;
@@ -1016,7 +1136,8 @@ export default {
           ? this.closeWindow
           : true;
         const video = this.buildPlatformVideoPayload(p, baseVideo);
-        if (this.scheduledPublish && !isDraftMode) {
+        const effectiveMode = resolveEffectivePublishMode(isDraftMode, p);
+        if (this.scheduledPublish && !effectiveMode.publishToDraft) {
           scheduledWriteTasks.push(
             dataRequest({
               type: "add",
@@ -1045,22 +1166,28 @@ export default {
                 republishCount: 0,
                 publishSuccessCount: 0,
                 publishFailCount: 0,
+                publishMode: effectiveMode.publishMode,
+                publishToDraft: effectiveMode.publishToDraft,
                 publishStatus: "scheduled",
                 lastPublishMessage: "等待定时发布",
                 lastPublishAt: Date.now(),
               },
             })
           );
+          submitted++;
+          scheduledSubmitted++;
           continue;
         }
-        const taskPayload = JSON.parse(JSON.stringify({
+        // 用 JSON 兜底序列化，去掉 Vue 响应式代理 / 不可克隆对象，
+        // 避免 Electron IPC 抛 "object could not be cloned" 导致页面会话提前关闭。
+        const publishPayload = applyXhsConservativePublishOptions({
           ...p,
           taskId,
           ...video,
           textOtherName: video.data.textOtherName,
           selectedFile,
-          publishMode: isDraftMode ? "draft" : "publish",
-          publishToDraft: isDraftMode,
+          publishMode: effectiveMode.publishMode,
+          publishToDraft: effectiveMode.publishToDraft,
           url: this.ptConfig[p.pt].upload,
           show: shouldShow,
           closeWindowAfterPublish: shouldCloseWindowAfterPublish,
@@ -1068,7 +1195,11 @@ export default {
           partition,
           filePath: this.localFilePath,
           date: currentDate,
-        }));
+        });
+        ipcRenderer.send(
+          "puppeteerFile",
+          JSON.parse(JSON.stringify(publishPayload))
+        );
 
         const republishRecord = this.findRepublishRecord(p.pt, p.phone);
         if (republishRecord && republishRecord.id && republishRecord.date) {
@@ -1077,7 +1208,7 @@ export default {
           if (!Number.isFinite(oldRepublish) || oldRepublish < 0) {
             oldRepublish = Math.max(0, oldAttempt - 1);
           }
-          await dataRequest({
+          dataRequest({
             type: "update",
             fileName: "pushData",
             item: {
@@ -1093,16 +1224,19 @@ export default {
               filePath: this.localFilePath,
               publishAttemptCount: oldAttempt + 1,
               republishCount: oldRepublish + 1,
-              publishMode: isDraftMode ? "draft" : "publish",
-              publishStatus: isDraftMode ? "drafting" : "publishing",
-              lastPublishMessage: isDraftMode
+              publishMode: effectiveMode.publishMode,
+              publishToDraft: effectiveMode.publishToDraft,
+              publishStatus: effectiveMode.publishToDraft
+                ? "drafting"
+                : "publishing",
+              lastPublishMessage: effectiveMode.publishToDraft
                 ? "等待保存草稿结果"
                 : "等待发布结果",
               lastPublishAt: Date.now(),
             },
           });
         } else {
-          await dataRequest({
+          dataRequest({
             type: "add",
             fileName: "pushData",
             item: {
@@ -1121,13 +1255,16 @@ export default {
               partition,
               url: this.ptConfig[p.pt].listIndex,
               date: currentDate,
-              publishMode: isDraftMode ? "draft" : "publish",
+              publishMode: effectiveMode.publishMode,
+              publishToDraft: effectiveMode.publishToDraft,
               publishAttemptCount: 1,
               republishCount: 0,
               publishSuccessCount: 0,
               publishFailCount: 0,
-              publishStatus: isDraftMode ? "drafting" : "publishing",
-              lastPublishMessage: isDraftMode
+              publishStatus: effectiveMode.publishToDraft
+                ? "drafting"
+                : "publishing",
+              lastPublishMessage: effectiveMode.publishToDraft
                 ? "等待保存草稿结果"
                 : "等待发布结果",
               lastPublishAt: Date.now(),
@@ -1135,23 +1272,28 @@ export default {
           });
         }
 
-        // 先落发布记录，再启动自动化任务，避免任务很快结束时进度回写找不到记录。
-        ipcRenderer.send("puppeteerFile", taskPayload);
-
-        if (p.pt === "视频号") {
-          await new Promise((resolve) => setTimeout(resolve, 4000));
+        if (isXhsPlatform(p.pt)) {
+          await sleep(getXhsPlatformStaggerDelayMs());
+        } else if (p.pt === "视频号") {
+          await sleep(4000);
         }
+        submitted++;
+        if (effectiveMode.publishToDraft) draftSubmitted++;
       }
 
       if (this.scheduledPublish && !isDraftMode) {
         await Promise.all(scheduledWriteTasks);
         ipcRenderer.send("scheduledPublish:refresh");
       }
-      let successMessage = `已提交 ${platforms.length} 个平台发布`;
-      if (isDraftMode) {
-        successMessage = `已提交 ${platforms.length} 个平台保存草稿`;
-      } else if (this.scheduledPublish) {
-        successMessage = `已创建 ${platforms.length} 个平台定时发布任务`;
+      if (submitted === 0) {
+        this.$message.warning("没有提交新的发布任务");
+        return;
+      }
+      let successMessage = `已提交 ${submitted} 个平台发布`;
+      if (draftSubmitted === submitted) {
+        successMessage = `已提交 ${submitted} 个平台保存草稿`;
+      } else if (scheduledSubmitted === submitted) {
+        successMessage = `已创建 ${submitted} 个平台定时发布任务`;
       }
       this.$message.success(successMessage);
       this.platformVisible = false;
@@ -1199,7 +1341,8 @@ export default {
         this.$message.success("模版已下载到: " + result.path);
       } else {
         this.$message.error(
-          "模版下载失败: " + (result && result.error ? result.error : "未知错误")
+          "模版下载失败: " +
+            (result && result.error ? result.error : "未知错误")
         );
       }
     },
@@ -1253,7 +1396,9 @@ export default {
           `以下文件在目录中不存在（前 5 个）: ${missing
             .slice(0, 5)
             .map((m) => m.fileName)
-            .join("、")}${missing.length > 5 ? ` 等共 ${missing.length} 个` : ""}`
+            .join("、")}${
+            missing.length > 5 ? ` 等共 ${missing.length} 个` : ""
+          }`
         );
         return;
       }
@@ -1265,7 +1410,9 @@ export default {
         const resolved = pathToByName.get(row.fileName);
         return {
           ...row,
-          fileName: resolved ? resolved.matchedFileName || row.fileName : row.fileName,
+          fileName: resolved
+            ? resolved.matchedFileName || row.fileName
+            : row.fileName,
           resolvedPath: resolved ? resolved.resolvedPath : "",
         };
       });
@@ -1312,21 +1459,25 @@ export default {
 
       const path = require("path");
       let submitted = 0;
+      let draftSubmitted = 0;
+      let scheduledSubmitted = 0;
       const scheduledWriteTasks = [];
 
       for (const fileRow of this.dirBatchFiles) {
         // 优先使用 onDirPublishNext 里 IPC 解析好的真实路径（已做存在性 + 后缀补全）。
         // 兜底：老入口或刷新后 resolvedPath 丢失时，回退到 dirPath + fileName 拼接。
         const filePath =
-          fileRow.resolvedPath ||
-          path.join(this.dirPath, fileRow.fileName);
+          fileRow.resolvedPath || path.join(this.dirPath, fileRow.fileName);
         const stem = fileRow.fileName.replace(/\.[^/.]+$/, "");
         const bt1 = (fileRow.title || stem).trim();
         const bt2 = bt1;
         // tags: comma-separated -> space-separated with # prefix for hashtag platforms
         const rawTags = String(fileRow.tags || "").trim();
         const tagList = rawTags
-          ? rawTags.split(",").map((t) => t.trim()).filter(Boolean)
+          ? rawTags
+              .split(",")
+              .map((t) => t.trim())
+              .filter(Boolean)
           : [];
         const bookName = bt1;
         const selectedFile = fileRow.fileName;
@@ -1354,6 +1505,7 @@ export default {
             ? this.closeWindow
             : true;
           const creativeStatement = this.getPlatformStatement(p.id);
+          const effectiveMode = resolveEffectivePublishMode(isDraftMode, p);
 
           // Format bq for this platform
           const hashtagPlatforms = new Set(["视频号", "抖音", "快手"]);
@@ -1366,7 +1518,7 @@ export default {
             bq = tagList.map((t) => t.replace(/^#/, "")).join(" ");
           }
 
-          if (this.scheduledPublish && !isDraftMode) {
+          if (this.scheduledPublish && !effectiveMode.publishToDraft) {
             scheduledWriteTasks.push(
               dataRequest({
                 type: "add",
@@ -1391,6 +1543,8 @@ export default {
                   scheduledTask: true,
                   scheduledPublishAt: scheduledAtMs,
                   scheduledPublishAtText: scheduledAtText,
+                  publishMode: effectiveMode.publishMode,
+                  publishToDraft: effectiveMode.publishToDraft,
                   publishAttemptCount: 1,
                   republishCount: 0,
                   publishSuccessCount: 0,
@@ -1401,31 +1555,42 @@ export default {
                 },
               })
             );
+            submitted++;
+            scheduledSubmitted++;
             continue;
           }
 
-          const taskPayload = JSON.parse(
-            JSON.stringify({
-              ...p,
-              taskId,
-              bookName,
-              textType: "local",
-              data: { textOtherName, bt1, bt2, bq, bdText: "", creativeStatement },
+          const publishPayload = applyXhsConservativePublishOptions({
+            ...p,
+            taskId,
+            bookName,
+            textType: "local",
+            data: {
               textOtherName,
-              selectedFile,
-              publishMode: isDraftMode ? "draft" : "publish",
-              publishToDraft: isDraftMode,
-              url: this.ptConfig[p.pt].upload,
-              show: shouldShow,
-              closeWindowAfterPublish: shouldCloseWindowAfterPublish,
-              useragent: this.ptConfig[p.pt].useragent,
-              partition,
-              filePath,
-              date: currentDate,
-            })
+              bt1,
+              bt2,
+              bq,
+              bdText: "",
+              creativeStatement,
+            },
+            textOtherName,
+            selectedFile,
+            publishMode: effectiveMode.publishMode,
+            publishToDraft: effectiveMode.publishToDraft,
+            url: this.ptConfig[p.pt].upload,
+            show: shouldShow,
+            closeWindowAfterPublish: shouldCloseWindowAfterPublish,
+            useragent: this.ptConfig[p.pt].useragent,
+            partition,
+            filePath,
+            date: currentDate,
+          });
+          ipcRenderer.send(
+            "puppeteerFile",
+            JSON.parse(JSON.stringify(publishPayload))
           );
 
-          await dataRequest({
+          dataRequest({
             type: "add",
             fileName: "pushData",
             item: {
@@ -1445,25 +1610,29 @@ export default {
               url: this.ptConfig[p.pt].listIndex,
               uploadUrl: this.ptConfig[p.pt].upload,
               date: currentDate,
-              publishMode: isDraftMode ? "draft" : "publish",
+              publishMode: effectiveMode.publishMode,
+              publishToDraft: effectiveMode.publishToDraft,
               publishAttemptCount: 1,
               republishCount: 0,
               publishSuccessCount: 0,
               publishFailCount: 0,
-              publishStatus: isDraftMode ? "drafting" : "publishing",
-              lastPublishMessage: isDraftMode
+              publishStatus: effectiveMode.publishToDraft
+                ? "drafting"
+                : "publishing",
+              lastPublishMessage: effectiveMode.publishToDraft
                 ? "等待保存草稿结果"
                 : "等待发布结果",
               lastPublishAt: Date.now(),
             },
           });
 
-          ipcRenderer.send("puppeteerFile", taskPayload);
-
           submitted++;
-          if (p.pt === "视频号") {
-            await new Promise((resolve) => setTimeout(resolve, 4000));
+          if (isXhsPlatform(p.pt)) {
+            await sleep(getXhsPlatformStaggerDelayMs());
+          } else if (p.pt === "视频号") {
+            await sleep(4000);
           }
+          if (effectiveMode.publishToDraft) draftSubmitted++;
         }
       }
 
@@ -1472,13 +1641,15 @@ export default {
         ipcRenderer.send("scheduledPublish:refresh");
       }
 
-      const totalFiles = this.dirBatchFiles.length;
-      const totalPlatforms = platforms.length;
-      let successMessage = `已提交 ${totalFiles} 个视频 × ${totalPlatforms} 个平台发布`;
-      if (isDraftMode) {
-        successMessage = `已提交 ${totalFiles} 个视频 × ${totalPlatforms} 个平台保存草稿`;
-      } else if (this.scheduledPublish) {
-        successMessage = `已创建 ${totalFiles} 个视频 × ${totalPlatforms} 个平台定时发布任务`;
+      if (submitted === 0) {
+        this.$message.warning("没有提交新的发布任务");
+        return;
+      }
+      let successMessage = `已提交 ${submitted} 个目录批量发布任务`;
+      if (draftSubmitted === submitted) {
+        successMessage = `已提交 ${submitted} 个目录批量保存草稿任务`;
+      } else if (scheduledSubmitted === submitted) {
+        successMessage = `已创建 ${submitted} 个目录批量定时发布任务`;
       }
       this.$message.success(successMessage);
       this.platformVisible = false;
@@ -1550,6 +1721,11 @@ export default {
 }
 .platform-leaf-name {
   margin-right: 4px;
+}
+.platform-leaf-proxy {
+  margin-right: 4px;
+  font-size: 12px;
+  color: #409eff;
 }
 .platform-statement-row {
   width: 100%;

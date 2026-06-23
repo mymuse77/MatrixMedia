@@ -1,6 +1,10 @@
 import path from "path";
 import maybeClosePublishWindow from "./closeWindow.js";
-import { WAIT_SELECTOR_APPEAR_MS, WAIT_UPLOAD_PROCESSING_MS, pollPageUntil } from "./uploadTimeouts.js";
+import {
+  WAIT_SELECTOR_APPEAR_MS,
+  WAIT_UPLOAD_PROCESSING_MS,
+  pollPageUntil,
+} from "./uploadTimeouts.js";
 
 const SEL_ORIGINAL_CHECKBOX =
   "wujie-app.wujie_iframe >>> .declare-original-checkbox .ant-checkbox-wrapper";
@@ -15,7 +19,9 @@ const SEL_ORIGINAL_DIALOG_OK =
 async function tryDeclareOriginal(page) {
   let yInput;
   try {
-    yInput = await page.waitForSelector(SEL_ORIGINAL_CHECKBOX, { timeout: 3000 });
+    yInput = await page.waitForSelector(SEL_ORIGINAL_CHECKBOX, {
+      timeout: 3000,
+    });
   } catch (_) {
     console.log("声明原创：未找到勾选入口，跳过");
     return;
@@ -24,7 +30,10 @@ async function tryDeclareOriginal(page) {
   try {
     await yInput.click();
   } catch (e) {
-    console.warn("声明原创：勾选入口点击失败，跳过", e && e.message ? e.message : e);
+    console.warn(
+      "声明原创：勾选入口点击失败，跳过",
+      e && e.message ? e.message : e
+    );
     return;
   }
 
@@ -41,12 +50,20 @@ async function tryDeclareOriginal(page) {
     const clicked = await page.evaluate(() => {
       const app = document.querySelector("wujie-app.wujie_iframe");
       if (!app || !app.shadowRoot) return false;
-      const bodies = app.shadowRoot.querySelectorAll(".weui-desktop-dialog__bd");
+      const bodies = app.shadowRoot.querySelectorAll(
+        ".weui-desktop-dialog__bd"
+      );
       for (const body of bodies) {
         const dlg = body.closest(".weui-desktop-dialog") || body.parentElement;
-        const btns = (dlg || body).querySelectorAll("button.weui-desktop-btn_primary");
+        const btns = (dlg || body).querySelectorAll(
+          "button.weui-desktop-btn_primary"
+        );
         for (const btn of btns) {
-          if (String(btn.textContent || "").trim().includes("声明原创")) {
+          if (
+            String(btn.textContent || "")
+              .trim()
+              .includes("声明原创")
+          ) {
             btn.click();
             return true;
           }
@@ -60,27 +77,34 @@ async function tryDeclareOriginal(page) {
   }
 
   try {
-    const cBox = await page.waitForSelector(SEL_ORIGINAL_DIALOG_CHECK, { timeout: 3000 });
+    const cBox = await page.waitForSelector(SEL_ORIGINAL_DIALOG_CHECK, {
+      timeout: 3000,
+    });
     await cBox.click();
-    const aBtn = await page.waitForSelector(SEL_ORIGINAL_DIALOG_OK, { timeout: 3000 });
+    const aBtn = await page.waitForSelector(SEL_ORIGINAL_DIALOG_OK, {
+      timeout: 3000,
+    });
     await aBtn.click();
   } catch (_) {
     console.log("声明原创：未出现后续确认框或已完成，跳过");
   }
 }
 
-export default async function (page, data, window,event,onFinish) {
-  const isDraftMode = data.publishMode === "draft" || data.publishToDraft === true;
+export default async function (page, data, window, event, onFinish) {
+  const isDraftMode =
+    data.publishMode === "draft" || data.publishToDraft === true;
 
   console.log(data);
   await page.waitForTimeout(1000 * 5);
   try {
     const sel = 'wujie-app.wujie_iframe >>> input[type="file"]';
 
-    const uploadInput = await page.waitForSelector(sel, { timeout: WAIT_SELECTOR_APPEAR_MS });
+    const uploadInput = await page.waitForSelector(sel, {
+      timeout: WAIT_SELECTOR_APPEAR_MS,
+    });
     if (!uploadInput) throw new Error("上传 input 不存在");
     await uploadInput.uploadFile(path.resolve(data.filePath));
-    await uploadInput.evaluate(el => {
+    await uploadInput.evaluate((el) => {
       el.dispatchEvent(new Event("change", { bubbles: true }));
     });
   } catch (err) {
@@ -89,14 +113,20 @@ export default async function (page, data, window,event,onFinish) {
   }
 
   try {
-    const titleInput = await page.waitForSelector("wujie-app.wujie_iframe >>> .post-desc-box .input-editor", { timeout: WAIT_SELECTOR_APPEAR_MS });
+    const titleInput = await page.waitForSelector(
+      "wujie-app.wujie_iframe >>> .post-desc-box .input-editor",
+      { timeout: WAIT_SELECTOR_APPEAR_MS }
+    );
     // 传统input/textarea的操作
     await titleInput.click();
     await page.keyboard.type(data.data.bt1 + " " + data.data.bq, { delay: 50 });
-    const sel2 = 'wujie-app.wujie_iframe >>> input[placeholder="概括视频主要内容，字数建议6-16个字符"]';
-    const uploadInput2 = await page.waitForSelector(sel2, { timeout: WAIT_SELECTOR_APPEAR_MS });
+    const sel2 =
+      'wujie-app.wujie_iframe >>> input[placeholder="填写短标题有机会获得更多流量"]';
+    const uploadInput2 = await page.waitForSelector(sel2, {
+      timeout: WAIT_SELECTOR_APPEAR_MS,
+    });
     await uploadInput2.click();
-    let newBt = data.data.bt2.replace(/[，。、\/,;:!?'"()\[\]{}<>]/g, ' ');
+    let newBt = data.data.bt2.replace(/[，。、\/,;:!?'"()\[\]{}<>]/g, " ");
     await page.keyboard.type(newBt, { delay: 50 });
   } catch (err) {
     console.error("❌ 输入失败:", err);
@@ -121,18 +151,25 @@ export default async function (page, data, window,event,onFinish) {
 
     await page.waitForTimeout(2000);
     // 发布到草稿 第一个按钮
-    const publishDraftBtn = await page.waitForSelector("wujie-app.wujie_iframe >>> .form-btns>div:first-child button", { timeout: WAIT_SELECTOR_APPEAR_MS });
+    const publishDraftBtn = await page.waitForSelector(
+      "wujie-app.wujie_iframe >>> .form-btns>div:first-child button",
+      { timeout: WAIT_SELECTOR_APPEAR_MS }
+    );
     await publishDraftBtn.click({ delay: 200 });
     if (!isDraftMode) {
       // 发布最后一个按钮
-      const publishBtn = await page.waitForSelector("wujie-app.wujie_iframe >>> .form-btns>div:last-child button", { timeout: WAIT_SELECTOR_APPEAR_MS });
+      const publishBtn = await page.waitForSelector(
+        "wujie-app.wujie_iframe >>> .form-btns>div:last-child button",
+        { timeout: WAIT_SELECTOR_APPEAR_MS }
+      );
       await publishBtn.click({ delay: 200 });
       await page.waitForTimeout(1000);
       await publishBtn.click({ delay: 200 });
     }
-    console.log(isDraftMode ? "✅ 视频号视频已保存草稿" : "✅ 视频号视频上传成功");
+    console.log(
+      isDraftMode ? "✅ 视频号视频已保存草稿" : "✅ 视频号视频上传成功"
+    );
     setTimeout(() => {
-      onFinish && onFinish();
       event.reply("puppeteerFile-done", {
         ...data,
         status: true,
@@ -144,20 +181,14 @@ export default async function (page, data, window,event,onFinish) {
     const detail =
       (err && err.message) || (typeof err === "string" ? err : String(err));
     console.error("❌ 视频号发布失败:", err);
-    onFinish && onFinish();
-    try {
-      event.reply("puppeteerFile-done", {
-        ...data,
-        status: false,
-        message:
-          detail && detail.length > 400
-            ? `${detail.slice(0, 400)}…`
-            : detail || "上传失败",
-      });
-    } catch (_) {
-      /* createAttemptTransport 在失败时会 throw，避免吞掉上面的日志 */
-    }
+    event.reply("puppeteerFile-done", {
+      ...data,
+      status: false,
+      message:
+        detail && detail.length > 400
+          ? `${detail.slice(0, 400)}…`
+          : detail || "上传失败",
+    });
     maybeClosePublishWindow(data, window);
   }
-  
 }

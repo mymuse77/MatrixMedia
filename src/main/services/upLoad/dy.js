@@ -4,39 +4,8 @@ import { resolveDyCreativeStatementLabel } from "../../../shared/creativeStateme
 import {
   WAIT_SELECTOR_APPEAR_MS,
   WAIT_UPLOAD_PROCESSING_MS,
+  pollPageUntil,
 } from "./uploadTimeouts.js";
-
-async function waitForDyUploadReady(page) {
-  const deadline = Date.now() + WAIT_UPLOAD_PROCESSING_MS;
-  const failureTexts = ["上传失败", "重新上传", "上传出错", "上传异常"];
-
-  while (Date.now() < deadline) {
-    const state = await page.evaluate((texts) => {
-      const bodyText = document.body ? document.body.innerText || document.body.textContent || "" : "";
-      const uploadFailed = texts.some((text) => bodyText.includes(text));
-      const previewReady = Array.from(document.querySelectorAll("video")).some((video) => {
-        const src = video.currentSrc || video.getAttribute("src") || "";
-        if (!src.includes("douyin.com")) return false;
-        const parent = video.parentElement;
-        return Boolean(parent && parent.querySelector(".rc-slider.rc-slider-horizontal"));
-      });
-
-      return { uploadFailed, previewReady };
-    }, failureTexts).catch(() => ({ uploadFailed: false, previewReady: false }));
-
-    if (state.uploadFailed) {
-      throw new Error("抖音视频上传失败，请重新上传");
-    }
-
-    if (state.previewReady) {
-      return;
-    }
-
-    await page.waitForTimeout(2000);
-  }
-
-  throw new Error("等待抖音视频上传完成超时");
-}
 
 async function selectDyCreativeStatement(page, data) {
   const value = data.data && data.data.creativeStatement;
@@ -47,6 +16,7 @@ async function selectDyCreativeStatement(page, data) {
 
   const opened = await page.evaluate(() => {
     const norm = (t) => String(t).replace(/\s+/g, "").trim();
+    const keywords = ["请选择自主声明", "添加自主声明", "自主声明"];
     const isSelectText = (el) => {
       const cls = el.className;
       if (typeof cls !== "string") return false;
@@ -54,15 +24,24 @@ async function selectDyCreativeStatement(page, data) {
     };
     for (const el of document.querySelectorAll("[class]")) {
       if (!isSelectText(el)) continue;
-      if (!norm(el.textContent).includes("请选择自主声明")) continue;
+      const text = norm(el.textContent);
+      if (!keywords.some((k) => text.includes(norm(k)))) continue;
+      el.click();
+      return true;
+    }
+    for (const el of document.querySelectorAll(
+      "span, div, label, [role='button'], .semi-select"
+    )) {
+      const text = norm(el.textContent);
+      if (!keywords.some((k) => text.includes(norm(k)))) continue;
+      if (text.length > 24) continue;
       el.click();
       return true;
     }
     return false;
   });
   if (!opened) {
-    console.warn("未找到抖音「请选择自主声明」入口，跳过");
-    return;
+    throw new Error("未找到抖音「请选择自主声明」入口");
   }
 
   await page.waitForSelector(".semi-modal-body .semi-radio-addon", {
@@ -85,70 +64,63 @@ async function selectDyCreativeStatement(page, data) {
   }, label);
 
   if (!picked) {
-    console.warn(`未找到抖音自主声明选项: ${label}`);
-    return;
+    throw new Error(`未找到抖音自主声明选项: ${label}`);
   }
   await page.waitForTimeout(400);
 
   // 点击弹窗里的「确认」按钮提交声明
-  try {
-    const confirmed = await page.evaluate(() => {
-      const modal = document.querySelector(".semi-modal-body");
-      const root = modal ? modal.closest(".semi-modal") || modal : document;
-      const btn = root.querySelector(".semi-button.semi-button-primary");
-      if (btn) {
-        btn.click();
-        return true;
-      }
-      return false;
-    });
-    if (!confirmed) {
-      console.warn(
-        "未找到抖音自主声明确认按钮 .semi-button.semi-button-primary"
-      );
-    } else {
-      console.log("[dy] 已点击声明确认按钮");
+  const confirmed = await page.evaluate(() => {
+    const modal = document.querySelector(".semi-modal-body");
+    const root = modal ? modal.closest(".semi-modal") || modal : document;
+    const btn = root.querySelector(".semi-button.semi-button-primary");
+    if (btn) {
+      btn.click();
+      return true;
     }
-    await page.waitForTimeout(400);
-  } catch (e) {
-    console.warn("点击抖音声明确认按钮失败:", e?.message || e);
+    return false;
+  });
+  if (!confirmed) {
+    throw new Error("未找到抖音自主声明确认按钮");
   }
+  console.log("[dy] 已点击声明确认按钮");
+  await page.waitForTimeout(400);
+}
+
+async function selectDyCreativeStatementWithRetry(page, data, maxMs = 60000) {
+  const deadline = Date.now() + maxMs;
+  let lastErr = null;
+  while (Date.now() < deadline) {
+    try {
+      await selectDyCreativeStatement(page, data);
+      return;
+    } catch (e) {
+      lastErr = e;
+      await page.waitForTimeout(2000);
+    }
+  }
+  throw lastErr || new Error("抖音自主声明选择失败");
+}
+
+async function clickDyPublish(page, isDraftMode) {
+  const submitSelector = isDraftMode
+    ? "#popover-tip-container+button"
+    : "#popover-tip-container";
+  const submitBtn = await page.waitForSelector(submitSelector, {
+    timeout: WAIT_SELECTOR_APPEAR_MS,
+  });
+  await submitBtn.click({ delay: 200 });
+  console.log(
+    isDraftMode
+      ? "[dy] 已点击存草稿按钮 (#popover-tip-container+button)"
+      : "[dy] 已点击发布入口 (#popover-tip-container)"
+  );
 }
 
 export default async function (page, data, window, event) {
   const isDraftMode =
     data.publishMode === "draft" || data.publishToDraft === true;
-  let doneSent = false;
-  const replyFailureAndStop = (message, error) => {
-    if (doneSent) return;
-    doneSent = true;
-    event.reply("puppeteerFile-done", {
-      ...data,
-      status: false,
-      message,
-    });
-    if (error) {
-      console.error(`❌ ${message}`, error);
-    } else {
-      console.error(`❌ ${message}`);
-    }
-  };
-  const replySuccess = (message) => {
-    if (doneSent) return;
-    doneSent = true;
-    event.reply("puppeteerFile-done", {
-      ...data,
-      status: true,
-      message,
-    });
-  };
 
   try {
-    event.log?.({
-      stage: "upload-file",
-      message: "抖音：开始查找上传入口并上传视频文件",
-      detail: data.filePath,
-    });
     // 等待 name=upload-btn 的 input 出现
     await page.waitForSelector('input[name="upload-btn"]', {
       timeout: WAIT_SELECTOR_APPEAR_MS,
@@ -156,23 +128,11 @@ export default async function (page, data, window, event) {
     const uploadInputs = await page.$$('input[name="upload-btn"]');
     // 取最后一个 input 元素
     const uploadFileHandle = uploadInputs[uploadInputs.length - 1];
-    if (!uploadFileHandle) {
-      throw new Error("未找到上传文件输入框");
-    }
     await uploadFileHandle.uploadFile(path.resolve(data.filePath));
-    event.log?.({
-      stage: "upload-file",
-      message: "抖音：视频文件已提交到上传控件",
-    });
   } catch (e) {
-    replyFailureAndStop("输入文件失败", e);
-    return;
+    console.error("❌ 输入文件失败", e);
   }
   try {
-    event.log?.({
-      stage: "fill-content",
-      message: "抖音：开始填写标题、描述和标签",
-    });
     await page.waitForSelector(".semi-input", {
       timeout: WAIT_SELECTOR_APPEAR_MS,
     });
@@ -190,43 +150,43 @@ export default async function (page, data, window, event) {
     // bq 末尾没有分隔符会导致最后一个标签没被识别，这里补一次空格触发。
     await page.keyboard.press("Space");
   } catch (e) {
-    replyFailureAndStop("输入标题失败", e);
-    return;
-  }
-
-  // 话题输入完后立即选择自主声明（必须声明）
-  try {
-    event.log?.({
-      stage: "creative-statement",
-      message: "抖音：开始选择自主声明",
-    });
-    await selectDyCreativeStatement(page, data);
-  } catch (e) {
-    console.warn("抖音自主声明选择未完成:", e?.message || e);
+    console.error("❌ 输入标题失败", e);
   }
 
   try {
     // 不依赖会随打包变化的 container-xxx：等预览区 video（抖音 CDN）与同容器内的 rc 进度条同时出现
-    event.log?.({
-      stage: "wait-upload",
-      message: "抖音：等待视频上传和处理完成",
-    });
-    await waitForDyUploadReady(page);
-    event.log?.({
-      stage: "wait-upload",
-      message: "抖音：视频上传处理已完成",
-    });
+    await pollPageUntil(
+      page,
+      () => {
+        for (const v of document.querySelectorAll("video")) {
+          const src = v.currentSrc || v.getAttribute("src") || "";
+          if (!src.includes("douyin.com")) continue;
+          const parent = v.parentElement;
+          if (
+            parent &&
+            parent.querySelector(".rc-slider.rc-slider-horizontal")
+          ) {
+            return true;
+          }
+        }
+        return false;
+      },
+      WAIT_UPLOAD_PROCESSING_MS
+    );
 
     // 「保存权限」区域往往在预览视频就绪后才挂载；放在预览等待之后，并放宽文案/控件匹配
     await page.waitForFunction(
       () => {
         const norm = (t) => String(t).replace(/\s+/g, "").trim();
         const hasSaveTitleIn = (root) =>
-          [...root.querySelectorAll("span")].some((s) => norm(s.textContent).includes("保存权限"));
+          [...root.querySelectorAll("span")].some((s) =>
+            norm(s.textContent).includes("保存权限")
+          );
         for (const label of document.querySelectorAll("label")) {
           if (!label.textContent.includes("不允许")) continue;
           const inp = label.querySelector('input[value="0"]');
-          if (!inp || (inp.type !== "checkbox" && inp.type !== "radio")) continue;
+          if (!inp || (inp.type !== "checkbox" && inp.type !== "radio"))
+            continue;
           let a = label;
           for (let i = 0; i < 28 && a; i++) {
             if (hasSaveTitleIn(a)) return true;
@@ -240,7 +200,9 @@ export default async function (page, data, window, event) {
     const saved = await page.evaluate(() => {
       const norm = (t) => String(t).replace(/\s+/g, "").trim();
       const hasSaveTitleIn = (root) =>
-        [...root.querySelectorAll("span")].some((s) => norm(s.textContent).includes("保存权限"));
+        [...root.querySelectorAll("span")].some((s) =>
+          norm(s.textContent).includes("保存权限")
+        );
       for (const label of document.querySelectorAll("label")) {
         if (!label.textContent.includes("不允许")) continue;
         const inp = label.querySelector('input[value="0"]');
@@ -257,19 +219,27 @@ export default async function (page, data, window, event) {
       return false;
     });
     if (!saved) throw new Error("未找到保存权限-不允许");
-    const submitSelector = isDraftMode ? "#popover-tip-container+button" : "#popover-tip-container";
-    const submitBtn = await page.waitForSelector(submitSelector, { timeout: WAIT_SELECTOR_APPEAR_MS });
-    event.log?.({
-      stage: "submit",
-      message: isDraftMode ? "抖音：点击保存草稿" : "抖音：点击发布",
-    });
-    await submitBtn.click({ delay: 200 });
+
+    // 自主声明入口在视频转码完成后才出现，必须在点击发布前完成
+    await selectDyCreativeStatementWithRetry(page, data);
+
+    await clickDyPublish(page, isDraftMode);
     console.log(isDraftMode ? "✅ 抖音视频已保存草稿" : "✅ 抖音视频上传成功");
     setTimeout(() => {
-      replySuccess(isDraftMode ? "保存草稿成功" : "上传成功");
+      event.reply("puppeteerFile-done", {
+        ...data,
+        status: true,
+        message: isDraftMode ? "保存草稿成功" : "上传成功",
+      });
       maybeClosePublishWindow(data, window);
     }, 5000);
   } catch (e) {
-    replyFailureAndStop("上传失败", e);
+    const detail = (e && e.message) || String(e);
+    event.reply("puppeteerFile-done", {
+      ...data,
+      status: false,
+      message: detail.length > 200 ? `${detail.slice(0, 200)}…` : detail,
+    });
+    console.error("❌ 上传失败", e);
   }
 }

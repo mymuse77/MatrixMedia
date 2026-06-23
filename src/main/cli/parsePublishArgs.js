@@ -1,30 +1,16 @@
 "use strict";
 
-const PLATFORM_ALIASES = {
-  dy: "抖音",
-  douyin: "抖音",
-  抖音: "抖音",
-  sph: "视频号",
-  视频号: "视频号",
-  blbl: "哔哩哔哩",
-  bilibili: "哔哩哔哩",
-  哔哩哔哩: "哔哩哔哩",
-  bjh: "百家号",
-  百家号: "百家号",
-  tt: "头条",
-  toutiao: "头条",
-  头条: "头条",
-  ks: "快手",
-  kuaishou: "快手",
-  快手: "快手",
-  xhs: "小红书",
-  xiaohongshu: "小红书",
-  小红书: "小红书",
-  fqsp: "番茄视频",
-  fanqie: "番茄视频",
-  fq: "番茄视频",
-  番茄视频: "番茄视频",
-};
+import {
+  PLATFORM_ALIASES,
+  VIDEO_PUBLISH_CANONICAL,
+  resolvePublishPlatform,
+} from "../../shared/publishPlatforms.js";
+import {
+  resolveCreativeStatementForPlatform,
+  getCreativeStatementPlatformKey,
+} from "../../shared/creativeStatement.js";
+
+export { PLATFORM_ALIASES, VIDEO_PUBLISH_CANONICAL, resolvePublishPlatform };
 
 /**
  * 解析 `cli publish` 后的 argv（不含子命令名 publish）
@@ -77,11 +63,11 @@ export function parsePublishArgs(subArgv) {
       out.show = true;
     } else if (a === "--no-close-window") {
       out.closeWindowAfterPublish = false;
-    } else if (a === '--dir') {
+    } else if (a === "--dir") {
       out.dir = args[++i];
-    } else if (a === '--config' || a === '--xlsx') {
+    } else if (a === "--config" || a === "--xlsx") {
       out.config = args[++i];
-    } else if (a === '--creative-statement' || a === '--cs') {
+    } else if (a === "--creative-statement" || a === "--cs") {
       out.creativeStatement = args[++i];
     }
   }
@@ -89,23 +75,27 @@ export function parsePublishArgs(subArgv) {
   if (!out.platform) {
     return { ok: false, error: "缺少 --platform（或 -p），例如 dy / 抖音" };
   }
-  const raw = String(out.platform).trim();
-  const lower = raw.toLowerCase();
-  const pt = PLATFORM_ALIASES[raw] || PLATFORM_ALIASES[lower] || raw;
-  const canonical = ["抖音", "视频号", "哔哩哔哩", "百家号", "头条", "快手", "小红书", "番茄视频"];
-  if (!canonical.includes(pt)) {
+  const pt = resolvePublishPlatform(out.platform);
+  if (!VIDEO_PUBLISH_CANONICAL.includes(pt)) {
     return { ok: false, error: `未知平台: ${out.platform}` };
   }
   out.platform = pt;
 
   if (!out.file && !out.dir) {
-    return { ok: false, error: '缺少 --file（或 -f）视频文件路径，或 --dir + --config 批量目录模式' };
+    return {
+      ok: false,
+      error:
+        "缺少 --file（或 -f）视频文件路径，或 --dir + --config 批量目录模式",
+    };
   }
   if (out.file && out.dir) {
-    return { ok: false, error: '--file 和 --dir 不能同时使用' };
+    return { ok: false, error: "--file 和 --dir 不能同时使用" };
   }
   if (out.dir && !out.config) {
-    return { ok: false, error: '--dir 批量模式必须同时提供 --config <xlsx路径>' };
+    return {
+      ok: false,
+      error: "--dir 批量模式必须同时提供 --config <xlsx路径>",
+    };
   }
 
   if (!out.partition) {
@@ -123,7 +113,8 @@ export function parsePublishArgs(subArgv) {
   if (!out.dir && (!out.title || !String(out.title).trim())) {
     return {
       ok: false,
-      error: '缺少 --title（或 -t）视频标题（与 GUI「视频标题」一致，写入 data.bt1）',
+      error:
+        "缺少 --title（或 -t）视频标题（与 GUI「视频标题」一致，写入 data.bt1）",
     };
   }
   // in dir mode title comes from xlsx per row, no global --title needed
@@ -182,6 +173,244 @@ export function parsePublishArgs(subArgv) {
   return { ok: true, value: out };
 }
 
+function pickBodyValue(body, keys) {
+  for (const key of keys) {
+    const val = body[key];
+    if (val != null && String(val).trim() !== "") {
+      return String(val);
+    }
+  }
+  return null;
+}
+
+function normalizeBodyTags(value) {
+  return String(value || "")
+    .split(/[\s,，、;；|]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
+/**
+ * 将 HTTP JSON 请求体转为 cli publish 等价 argv
+ * @param {object} body
+ * @returns {string[]}
+ */
+export function publishBodyToArgv(body) {
+  if (!body || typeof body !== "object") return [];
+  const argv = [];
+  const pushPair = (keys, flag) => {
+    const val = pickBodyValue(body, keys);
+    if (val != null) {
+      argv.push(flag, val);
+    }
+  };
+
+  pushPair(["platform", "p"], "-p");
+  pushPair(["file", "f"], "-f");
+  pushPair(["phone"], "--phone");
+  pushPair(["partition"], "--partition");
+  pushPair(["title", "t"], "-t");
+  pushPair(["bookName", "name", "book-name"], "--name");
+  pushPair(["bt2"], "--bt2");
+  const tags = pickBodyValue(body, ["tags", "bq"]);
+  if (tags != null) argv.push("--tags", normalizeBodyTags(tags));
+  pushPair(["publishAt", "publish-at"], "--publish-at");
+  pushPair(
+    ["creativeStatement", "creative-statement", "cs"],
+    "--creative-statement"
+  );
+
+  if (body.show === true) argv.push("--show");
+  if (body.closeWindowAfterPublish === false) argv.push("--no-close-window");
+
+  return argv;
+}
+
+/**
+ * 解析 HTTP / CLI 共用的发布参数
+ * @param {object} body
+ */
+export function parsePublishRequest(body) {
+  return parsePublishArgs(publishBodyToArgv(body));
+}
+
+const SHARED_PUBLISH_BODY_KEYS = [
+  "file",
+  "f",
+  "title",
+  "t",
+  "phone",
+  "partition",
+  "bookName",
+  "name",
+  "book-name",
+  "bt2",
+  "tags",
+  "bq",
+  "publishAt",
+  "publish-at",
+  "creativeStatement",
+  "creative-statement",
+  "cs",
+  "show",
+  "closeWindowAfterPublish",
+];
+
+function extractSharedPublishBody(body) {
+  const shared = {};
+  for (const key of SHARED_PUBLISH_BODY_KEYS) {
+    if (body[key] != null && body[key] !== "") {
+      shared[key] = body[key];
+    }
+  }
+  return shared;
+}
+
+function normalizePublishTargets(body) {
+  const raw = body.platforms;
+  if (raw == null) return null;
+  const list = Array.isArray(raw)
+    ? raw
+    : String(raw)
+        .split(/[,，|]/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+  if (list.length === 0) return null;
+
+  return list
+    .map((item) => {
+      if (typeof item === "string") {
+        return { platform: item };
+      }
+      if (item && typeof item === "object" && item.platform != null) {
+        return { ...item };
+      }
+      return null;
+    })
+    .filter(Boolean);
+}
+
+function pickCreativeStatementFromMap(map, platformPt) {
+  if (!map || typeof map !== "object" || Array.isArray(map)) return null;
+  const keys = new Set([
+    platformPt,
+    getCreativeStatementPlatformKey(platformPt),
+  ]);
+  for (const [alias, canonical] of Object.entries(PLATFORM_ALIASES)) {
+    if (canonical === platformPt) keys.add(alias);
+  }
+  for (const key of keys) {
+    if (key && map[key] != null && String(map[key]).trim() !== "") {
+      return map[key];
+    }
+  }
+  return null;
+}
+
+function pickTargetCreativeStatement(target) {
+  if (!target || typeof target !== "object") return null;
+  return pickBodyValue(target, [
+    "creativeStatement",
+    "creative-statement",
+    "cs",
+  ]);
+}
+
+/**
+ * HTTP 创作声明解析（对齐 LocalVideoPublish 批量设置 + 单账号覆盖）
+ */
+export function resolveHttpPublishCreativeStatement(body, platformPt, target) {
+  let raw = pickTargetCreativeStatement(target);
+  if (raw == null) {
+    raw = pickCreativeStatementFromMap(body.creativeStatements, platformPt);
+  }
+  if (raw == null) {
+    raw = pickBodyValue(body, [
+      "creativeStatement",
+      "creative-statement",
+      "cs",
+    ]);
+  }
+  return resolveCreativeStatementForPlatform(raw, platformPt);
+}
+
+function applyHttpCreativeStatements(body, parsedValue, target = {}) {
+  return {
+    ...parsedValue,
+    creativeStatement: resolveHttpPublishCreativeStatement(
+      body,
+      parsedValue.platform,
+      target
+    ),
+  };
+}
+
+/**
+ * 解析 HTTP 发布请求；支持单平台 platform 或多平台 platforms
+ * @returns {{ ok: true, multi: boolean, value: object|object[] } | { ok: false, error: string }}
+ */
+export function parseMultiPublishRequest(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, error: "请求体必须是 JSON 对象" };
+  }
+
+  const targets = normalizePublishTargets(body);
+  if (!targets || targets.length === 0) {
+    const single = parsePublishRequest(body);
+    if (!single.ok) return single;
+    return {
+      ok: true,
+      multi: false,
+      value: applyHttpCreativeStatements(body, single.value, body),
+    };
+  }
+
+  if (body.platform != null && String(body.platform).trim() !== "") {
+    return {
+      ok: false,
+      error: "请只使用 platform 或 platforms 其一，不要同时传",
+    };
+  }
+
+  const shared = extractSharedPublishBody(body);
+  const parsed = [];
+
+  for (let i = 0; i < targets.length; i++) {
+    const merged = { ...shared, ...targets[i] };
+    const item = parsePublishRequest(merged);
+    if (!item.ok) {
+      const label =
+        targets[i].platform != null ? String(targets[i].platform) : `#${i + 1}`;
+      return { ok: false, error: `平台 ${label}: ${item.error}` };
+    }
+    if (item.value.dir) {
+      return {
+        ok: false,
+        error: "HTTP API 暂不支持批量目录发布，请使用 cli publish --dir",
+      };
+    }
+    parsed.push(applyHttpCreativeStatements(body, item.value, targets[i]));
+  }
+
+  const publishAtSet = new Set(
+    parsed.map((item) => String(item.publishAt || "").trim()).filter(Boolean)
+  );
+  if (publishAtSet.size > 1) {
+    return {
+      ok: false,
+      error: "多平台定时发布时，各平台 publishAt 必须相同",
+    };
+  }
+
+  const fileSet = new Set(parsed.map((item) => String(item.file || "").trim()));
+  if (fileSet.size > 1) {
+    return { ok: false, error: "多平台发布需使用相同 file" };
+  }
+
+  return { ok: true, multi: parsed.length > 1, value: parsed };
+}
+
 export function publishHelpText() {
   return `
 用法: <应用> cli publish [选项]
@@ -190,7 +419,7 @@ export function publishHelpText() {
 
 选项:
   -p, --platform <id>   平台：dy|抖音、tt|头条、ks|快手、blbl|哔哩哔哩、bjh|百家号、sph|视频号、xhs|小红书、fqsp|番茄视频
-  -f, --file <path>     本地视频文件路径
+  -f, --file <path>     本地视频文件路径，或 http(s) 远程视频 URL（远程会先下载到临时目录，发布结束后自动删除）
       --dir <path>          [batch] video directory path; must be paired with --config
       --config <path>       [batch] xlsx declaration file path (columns: 文件名/标题/标签/创作声明)
       --cs, --creative-statement <val>  creative statement value for single-file mode.

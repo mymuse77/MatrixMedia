@@ -32,11 +32,20 @@ import {
   getMainProcessLogFilePath,
   clearMainProcessLogFile,
 } from "./services/mainProcessLogFile";
-import { getWebSocketClient } from "./services/websocketClient";
-import { registerWebSocketHandlers } from "./services/websocketHandlers";
+import {
+  hasActivePublishTasks,
+  cancelPuppeteerTasks,
+} from "./services/puppeteerFile";
+import { destroyAccountLoginWindows } from "./services/accountLoginWindowManager";
 
 const cliMode = isCliMode(process.argv);
 installMainProcessLogFile(app);
+
+// 确保 dev / cli / 打包后 userData 路径一致（都用 matrix-video）
+// 否则 persist: partition 的 cookie 会存在不同目录，登录状态不共享
+if (app.name !== "matrix-video") {
+  app.name = "matrix-video";
+}
 
 if (process.platform === "win32") {
   app.setAppUserModelId("com.matrix.video");
@@ -58,6 +67,53 @@ if (!cliMode) {
 }
 
 let tray;
+let mainWin = null;
+let allowQuit = false;
+
+function notifyQuitWarning() {
+  const win = mainWin && !mainWin.isDestroyed() ? mainWin : null;
+  if (win && win.webContents && !win.webContents.isDestroyed()) {
+    win.webContents.send("app-quit-toast");
+  }
+}
+
+function performQuit() {
+  if (hasActivePublishTasks()) {
+    cancelPuppeteerTasks("应用退出，已中断发布");
+  }
+  destroyAccountLoginWindows();
+  allowQuit = true;
+  app.quit();
+}
+
+function requestQuit() {
+  if (allowQuit) {
+    app.quit();
+    return;
+  }
+  notifyQuitWarning();
+  const parent = mainWin && !mainWin.isDestroyed() ? mainWin : undefined;
+  const choice = dialog.showMessageBoxSync(parent, {
+    type: "warning",
+    title: "退出程序",
+    message: "退出会停止正在发布的视频，确定要退出吗？",
+    buttons: ["退出", "取消"],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  });
+  if (choice === 0) performQuit();
+}
+
+if (!cliMode) {
+  app.on("before-quit", (event) => {
+    if (allowQuit) return;
+    event.preventDefault();
+    setImmediate(() => {
+      requestQuit();
+    });
+  });
+}
 
 pie.initialize(app).then(() => {
   if (cliMode) {
@@ -85,17 +141,8 @@ pie.initialize(app).then(() => {
 
 function onAppReady() {
   startScheduledPublishScheduler();
-
-  // 启动 WebSocket 客户端连接
-  const wsClient = getWebSocketClient();
-
-  // 注册所有 WebSocket 任务处理器
-  registerWebSocketHandlers(wsClient);
-
-  // 连接到服务器
-  wsClient.connect();
-
   initWindow((win) => {
+    mainWin = win;
     const iconPath = path.join(__static, "logo.png");
     console.log(iconPath);
     let icon = nativeImage.createFromPath(iconPath);
@@ -187,7 +234,8 @@ function onAppReady() {
           const first = await dialog.showMessageBox(win, {
             type: "warning",
             title: "清除日志",
-            message: "将清除日志目录下所有按天保存的日志，且不可恢复。是否继续？",
+            message:
+              "将清除日志目录下所有按天保存的日志，且不可恢复。是否继续？",
             buttons: ["继续", "取消"],
             defaultId: 1,
             cancelId: 1,
@@ -232,6 +280,7 @@ function onAppReady() {
       win.isVisible() ? win.hide() : win.show();
     });
     app.on("will-quit", () => {
+      destroyAccountLoginWindows();
       tray.destroy();
     });
   });
