@@ -6,6 +6,19 @@
 const { io } = require('socket.io-client');
 const config = require('../config/websocket.config');
 const { getClientId } = require('./clientIdentity');
+const packageJson = require('../../../package.json');
+
+const protocolVersion = 'matrix-ws-v1';
+const clientCapabilities = [
+  'accounts.read',
+  'accounts.write',
+  'accounts.group',
+  'publish.video',
+  'publish.videos',
+  'publish.remote-url',
+  'publish.history',
+  'client.status',
+];
 
 class WebSocketClient {
   constructor() {
@@ -124,6 +137,9 @@ class WebSocketClient {
       clientType: config.clientType,
       clientId: this.clientId,
       deviceId: this.getDeviceId(),
+      appVersion: packageJson.version,
+      protocolVersion,
+      capabilities: clientCapabilities,
       timestamp: Date.now(),
       // accounts: [], // 可用账号列表
     };
@@ -172,6 +188,7 @@ class WebSocketClient {
     this.socket.emit('ack', {
       clientType: config.clientType,
       clientId: this.clientId,
+      protocolVersion,
       taskId,
       timestamp: Date.now()
     });
@@ -185,6 +202,7 @@ class WebSocketClient {
     const result = {
       clientType: config.clientType,
       clientId: this.clientId,
+      protocolVersion,
       taskId,
       status, // 'success' | 'failed'
       data,
@@ -202,6 +220,7 @@ class WebSocketClient {
     const progressData = {
       clientType: config.clientType,
       clientId: this.clientId,
+      protocolVersion,
       taskId,
       progress, // 0-100
       message,
@@ -219,6 +238,9 @@ class WebSocketClient {
     this.socket.emit('status', {
       clientType: config.clientType,
       clientId: this.clientId,
+      appVersion: packageJson.version,
+      protocolVersion,
+      capabilities: clientCapabilities,
       ...statusData,
       timestamp: Date.now(),
     });
@@ -266,6 +288,9 @@ class WebSocketClient {
       this.socket.emit('heartbeat', {
         clientType: config.clientType,
         clientId: this.clientId,
+        appVersion: packageJson.version,
+        protocolVersion,
+        capabilities: clientCapabilities,
         timestamp: Date.now()
       });
     }

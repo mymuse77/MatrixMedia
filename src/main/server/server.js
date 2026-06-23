@@ -3,11 +3,15 @@ var indexRouter = require('./routes/index');
 const path = require('path');
 var app = express();
  //设置跨域访问
- app.all('*',function(req,res,next) {
+app.all('*',function(req,res,next) {
   res.header("Access-Control-Allow-Origin","*");
   res.header('Access-Control-Allow-Methods','PUT,GET,POST,DELETE,OPTIONS');
-  res.header("Access-Control-Allow-Headers","X-Requested-With");
-  res.header('Access-Control-Allow-Headers','Content-Type');
+  res.header("Access-Control-Allow-Headers","Content-Type, X-Requested-With, Authorization");
+  res.header("Access-Control-Allow-Private-Network","true");
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(204);
+    return;
+  }
   next();
 });
 app.use(express.json());

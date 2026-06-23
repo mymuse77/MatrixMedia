@@ -11,6 +11,7 @@ import fs from 'fs';
 import { app, BrowserWindow } from 'electron';
 import { getAccountLoginStatus, getAccountPartition } from './accountLoginStatus';
 import { openAccountLoginWindow } from './accountLoginWindow';
+import { resolvePublishFile } from './resolvePublishFile';
 
 /**
  * 获取账号数据目录
@@ -46,6 +47,30 @@ function getAllAccounts() {
   });
 
   return allAccounts;
+}
+
+function readAccountFile(filePath) {
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const accounts = JSON.parse(content);
+    return Array.isArray(accounts) ? accounts : [];
+  } catch (error) {
+    console.error(`[WebSocket] 读取账号文件失败: ${path.basename(filePath)}`, error);
+    return [];
+  }
+}
+
+function writeAccountFile(filePath, accounts) {
+  fs.writeFileSync(filePath, JSON.stringify(accounts, null, 2), 'utf-8');
+}
+
+function getAccountFiles() {
+  const accountDir = getAccountDataDir();
+  if (!fs.existsSync(accountDir)) return [];
+  return fs
+    .readdirSync(accountDir)
+    .filter(fileName => fileName.endsWith('.json'))
+    .map(fileName => path.join(accountDir, fileName));
 }
 
 function notifyAccountChanged(payload) {
@@ -169,6 +194,7 @@ export async function handleGetAccounts(taskData, wsClient) {
         phone: acc.phone,
         platform: acc.pt,
         partition: loginStatus.partition,
+        group: acc.group || '',
         url: acc.url,
         createTime: acc.createTime,
         ...loginStatus,
@@ -230,7 +256,79 @@ export async function handleDeleteAccount(taskData, wsClient) {
 }
 
 /**
- * 4. 打开账号登录/管理窗口
+ * 4. 更新媒体账号分组
+ */
+export async function handleUpdateAccountGroup(taskData, wsClient) {
+  const { taskId, data = {} } = taskData;
+  const targetGroup = cleanText(data.group);
+  const targetAccounts = asList(data.accounts);
+
+  if (!targetAccounts.length) {
+    throw new Error('没有要更新分组的账号');
+  }
+
+  wsClient.sendProgress(taskId, 40, '正在更新账号分组');
+
+  const matchers = targetAccounts.map(account => ({
+    id: cleanText(account.id),
+    phone: cleanText(account.phone),
+    platform: getAccountPlatformValue(account),
+  }));
+
+  const updatedAccounts = [];
+  let changed = 0;
+
+  for (const filePath of getAccountFiles()) {
+    const accounts = readAccountFile(filePath);
+    let fileChanged = false;
+    const nextAccounts = accounts.map(account => {
+      const accountPlatform = getAccountPlatformValue(account);
+      const matched = matchers.some(matcher => {
+        if (matcher.id && cleanText(account.id) === matcher.id) return true;
+        return matcher.phone && matcher.platform && cleanText(account.phone) === matcher.phone && accountPlatform === matcher.platform;
+      });
+
+      if (!matched) return account;
+
+      fileChanged = true;
+      changed += 1;
+      const nextAccount = {
+        ...account,
+        group: targetGroup,
+      };
+      updatedAccounts.push({
+        ...nextAccount,
+        platform: accountPlatform,
+        partition: getAccountPartition(nextAccount.phone, accountPlatform),
+      });
+      return nextAccount;
+    });
+
+    if (fileChanged) {
+      writeAccountFile(filePath, nextAccounts);
+    }
+  }
+
+  notifyAccountChanged({
+    reason: 'group',
+    taskId,
+    group: targetGroup,
+    count: changed,
+  });
+
+  wsClient.sendProgress(taskId, 100, '账号分组已更新');
+
+  return {
+    success: true,
+    action: 'update_account_group',
+    group: targetGroup,
+    updatedAccounts,
+    message: changed > 0 ? '账号分组已更新' : '未找到匹配账号',
+  };
+}
+
+/**
+ * 5. 打开账号登录/管理窗口
  */
 export async function handleOpenAccountLogin(taskData, wsClient) {
   const { taskId, data = {} } = taskData;
@@ -531,6 +629,7 @@ export async function handlePublishVideo(taskData, wsClient) {
     progressRange,
     localPublishRecord,
   } = data;
+  let cleanupDownloadedVideo = null;
 
   try {
     sendScopedProgress(wsClient, taskId, 5, '准备发布任务', progressRange);
@@ -552,8 +651,9 @@ export async function handlePublishVideo(taskData, wsClient) {
     let localVideoPath = videoPath;
     if (videoUrl && !videoPath) {
       sendScopedProgress(wsClient, taskId, 10, '正在下载视频', progressRange);
-      // TODO: 实现视频下载逻辑
-      throw new Error('暂不支持从 URL 下载视频，请提供本地路径');
+      const resolved = await resolvePublishFile(videoUrl);
+      localVideoPath = resolved.localPath;
+      cleanupDownloadedVideo = resolved.cleanup;
     }
 
     // 验证视频文件是否存在
@@ -592,10 +692,17 @@ export async function handlePublishVideo(taskData, wsClient) {
     // 执行发布任务
     return new Promise((resolve, reject) => {
       let settled = false;
+      const cleanupOnce = () => {
+        if (cleanupDownloadedVideo) {
+          cleanupDownloadedVideo();
+          cleanupDownloadedVideo = null;
+        }
+      };
       const resolveOnce = async (result, message) => {
         if (settled) return;
         settled = true;
         await updateLocalPublishRecord(publishData, 'success', message || '视频发布成功');
+        cleanupOnce();
         resolve(result);
       };
       const rejectOnce = async (error, payload) => {
@@ -603,6 +710,7 @@ export async function handlePublishVideo(taskData, wsClient) {
         settled = true;
         const status = payload?.skipped ? 'skipped' : 'failed';
         await updateLocalPublishRecord(publishData, status, error?.message || '发布失败');
+        cleanupOnce();
         reject(error);
       };
       const transport = {
@@ -652,6 +760,9 @@ export async function handlePublishVideo(taskData, wsClient) {
       });
     });
   } catch (error) {
+    if (cleanupDownloadedVideo) {
+      cleanupDownloadedVideo();
+    }
     console.error('[WebSocket] 发布视频失败:', error);
     throw error;
   }
@@ -953,27 +1064,32 @@ export function registerWebSocketHandlers(wsClient) {
     handleDeleteAccount(taskData, wsClient)
   );
 
-  // 4. 打开账号登录/管理窗口
+  // 4. 更新账号分组
+  wsClient.registerTaskHandler('update_account_group', (taskData) =>
+    handleUpdateAccountGroup(taskData, wsClient)
+  );
+
+  // 5. 打开账号登录/管理窗口
   wsClient.registerTaskHandler('open_account_login', (taskData) =>
     handleOpenAccountLogin(taskData, wsClient)
   );
 
-  // 5. 发布视频任务
+  // 6. 发布视频任务
   wsClient.registerTaskHandler('publish_video', (taskData) =>
     handlePublishVideo(taskData, wsClient)
   );
 
-  // 6. 批量发布视频任务
+  // 7. 批量发布视频任务
   wsClient.registerTaskHandler('publish_videos', (taskData) =>
     handlePublishVideos(taskData, wsClient)
   );
 
-  // 7. 查询发布历史
+  // 8. 查询发布历史
   wsClient.registerTaskHandler('get_publish_history', (taskData) =>
     handleGetPublishHistory(taskData, wsClient)
   );
 
-  // 8. 获取客户端状态
+  // 9. 获取客户端状态
   wsClient.registerTaskHandler('get_client_status', (taskData) =>
     handleGetClientStatus(taskData, wsClient)
   );

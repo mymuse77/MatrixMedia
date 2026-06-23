@@ -37,6 +37,11 @@ import {
   cancelPuppeteerTasks,
 } from "./services/puppeteerFile";
 import { destroyAccountLoginWindows } from "./services/accountLoginWindowManager";
+import { registerWebSocketHandlers } from "./services/websocketHandlers";
+import Server from "./server/index";
+
+const websocketConfig = require("./config/websocket.config");
+const { getWebSocketClient } = require("./services/websocketClient");
 
 const cliMode = isCliMode(process.argv);
 installMainProcessLogFile(app);
@@ -69,6 +74,7 @@ if (!cliMode) {
 let tray;
 let mainWin = null;
 let allowQuit = false;
+let matrixWebSocketStarted = false;
 
 function notifyQuitWarning() {
   const win = mainWin && !mainWin.isDestroyed() ? mainWin : null;
@@ -103,6 +109,36 @@ function requestQuit() {
     noLink: true,
   });
   if (choice === 0) performQuit();
+}
+
+function startMatrixWebSocketClient() {
+  if (matrixWebSocketStarted || !websocketConfig.autoConnect) return;
+
+  matrixWebSocketStarted = true;
+  try {
+    const wsClient = getWebSocketClient();
+    registerWebSocketHandlers(wsClient);
+    wsClient.connect();
+  } catch (error) {
+    matrixWebSocketStarted = false;
+    console.error(
+      "[WebSocket] 客户端启动失败:",
+      error && error.message ? error.message : error
+    );
+  }
+}
+
+function startBuiltInHttpServer() {
+  Server.StatrServer()
+    .then((message) => {
+      console.log("[HTTP] 内置服务状态:", message);
+    })
+    .catch((error) => {
+      console.error(
+        "[HTTP] 内置服务启动失败:",
+        error && error.message ? error.message : error
+      );
+    });
 }
 
 if (!cliMode) {
@@ -141,6 +177,8 @@ pie.initialize(app).then(() => {
 
 function onAppReady() {
   startScheduledPublishScheduler();
+  startBuiltInHttpServer();
+  startMatrixWebSocketClient();
   initWindow((win) => {
     mainWin = win;
     const iconPath = path.join(__static, "logo.png");
