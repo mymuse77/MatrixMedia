@@ -704,6 +704,7 @@ function isPlainObject(value) {
 
 function createLocalPublishData({
   taskId,
+  itemId,
   phone,
   platform,
   partition,
@@ -746,6 +747,7 @@ function createLocalPublishData({
     partition: partition || getAccountPartition(phone, platform),
     pt: platform,
     phone,
+    matrixItemId: cleanText(itemId),
     matrixSourceVideoPath: cleanText(sourceVideoPath || videoPath),
     matrixSourceVideoUrl: cleanText(sourceVideoUrl),
     date: new Date().toISOString().split('T')[0],
@@ -770,6 +772,10 @@ function normalizeLocalPublishData(localPublishRecord, overrides = {}) {
 
   if (!next.textOtherName) {
     next.textOtherName = cleanText(next.bookName || next.taskName || next.bt);
+  }
+
+  if (overrides.itemId || next.matrixItemId) {
+    next.matrixItemId = cleanText(overrides.itemId || next.matrixItemId);
   }
 
   if (overrides.sourceVideoPath || next.matrixSourceVideoPath) {
@@ -870,6 +876,7 @@ export async function handlePublishVideo(taskData, wsClient) {
   const {
     phone,
     platform,
+    itemId,
     partition,
     videoUrl,
     videoPath,
@@ -926,6 +933,7 @@ export async function handlePublishVideo(taskData, wsClient) {
     const publishData = isPlainObject(localPublishRecord)
       ? normalizeLocalPublishData(localPublishRecord, {
         taskId,
+        itemId,
         phone,
         pt: platform,
         partition,
@@ -940,6 +948,7 @@ export async function handlePublishVideo(taskData, wsClient) {
       })
       : createLocalPublishData({
         taskId,
+        itemId,
         phone,
         platform,
         partition,
@@ -961,6 +970,7 @@ export async function handlePublishVideo(taskData, wsClient) {
         item: {
           id: publishData.id,
           date: publishData.date,
+          matrixItemId: publishData.matrixItemId || cleanText(itemId),
           filePath: publishData.filePath || '',
           selectedFile: publishData.selectedFile || '',
           partition: publishData.partition || partition || '',
@@ -1099,6 +1109,7 @@ export async function handlePublishVideos(taskData, wsClient) {
   let failCount = 0;
   let detailIndex = 0;
   const publishQueue = [];
+  const publishItemIds = asList(data.publishItemIds).map(item => cleanText(item));
 
   for (const account of publishAccounts) {
     const phone = cleanText(account.phone);
@@ -1115,6 +1126,7 @@ export async function handlePublishVideos(taskData, wsClient) {
       const progressEnd = (currentIndex / total) * 100;
       const publishData = createLocalPublishData({
         taskId,
+        itemId: publishItemIds[detailIndex] || '',
         phone,
         platform,
         partition,
@@ -1126,6 +1138,7 @@ export async function handlePublishVideos(taskData, wsClient) {
       });
 
       publishQueue.push({
+        itemId: publishItemIds[detailIndex] || '',
         phone,
         platform,
         partition,
@@ -1154,6 +1167,7 @@ export async function handlePublishVideos(taskData, wsClient) {
     const {
       phone,
       platform,
+      itemId,
       partition,
       videoPath,
       videoUrl,
@@ -1173,6 +1187,7 @@ export async function handlePublishVideos(taskData, wsClient) {
         data: {
           phone,
           platform,
+          itemId,
           partition,
           videoUrl,
           videoPath,
@@ -1191,6 +1206,7 @@ export async function handlePublishVideos(taskData, wsClient) {
       successCount += 1;
       const detail = {
         success: true,
+        itemId,
         phone,
         platform,
         videoPath,
@@ -1210,6 +1226,7 @@ export async function handlePublishVideos(taskData, wsClient) {
       const message = error?.message || '发布失败';
       const detail = {
         success: false,
+        itemId,
         phone,
         platform,
         videoPath,
@@ -1314,6 +1331,7 @@ export async function handleGetPublishTaskStatus(taskData, wsClient) {
         const status = normalizePublishSnapshotStatus(record);
         return {
           id: cleanText(record.id),
+          itemId: cleanText(record.matrixItemId),
           phone: cleanText(record.phone),
           platform: cleanText(record.pt || record.platform),
           partition: cleanText(record.partition),

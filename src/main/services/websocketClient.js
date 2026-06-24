@@ -181,6 +181,7 @@ class WebSocketClient {
             const taskPayload = taskData && typeof taskData.data === 'object' && taskData.data !== null ? taskData.data : {};
             this.sendTaskResult(taskId, 'success', {
               action: 'publish_video',
+              itemId: taskPayload.itemId || '',
               phone: taskPayload.phone || '',
               platform: taskPayload.platform || '',
               videoPath: taskPayload.videoPath || taskPayload.sourceFilePath || taskPayload.filePath || '',
@@ -198,6 +199,7 @@ class WebSocketClient {
             const taskPayload = taskData && typeof taskData.data === 'object' && taskData.data !== null ? taskData.data : {};
             this.sendTaskResult(taskId, 'failed', {
               action: 'publish_video',
+              itemId: taskPayload.itemId || '',
               phone: taskPayload.phone || '',
               platform: taskPayload.platform || '',
               videoPath: taskPayload.videoPath || taskPayload.sourceFilePath || taskPayload.filePath || '',
