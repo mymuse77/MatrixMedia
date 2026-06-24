@@ -1361,8 +1361,4 @@ export function registerWebSocketHandlers(wsClient) {
   );
 
   console.log('[WebSocket] 已注册所有任务处理器');
-
-  setTimeout(() => {
-    sendAccountSnapshot(wsClient, 'startup');
-  }, 1000);
 }

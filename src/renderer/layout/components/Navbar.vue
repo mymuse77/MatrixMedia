@@ -13,68 +13,20 @@
       </el-menu>
       <div class="account-actions">
         <el-button
-          type="primary"
+          type="info"
           size="small"
-          @click="showDialog = true"
+          plain
+          @click="showWebManagedMessage"
         >
-          添加媒体账号
+          账号由 Web 端管理
         </el-button>
       </div>
     </div>
-    <el-dialog
-      :visible.sync="showDialog"
-      title="添加账号"
-      width="600px"
-      :close-on-click-modal="false"
-      :close-on-press-escape="false"
-    >
-      <el-form
-        ref="form"
-        :model="pushData"
-        label-width="80px"
-      >
-        <el-form-item label="手机号码">
-          <el-input
-            v-model="pushData.phone"
-            placeholder="请输入手机号码"
-          ></el-input>
-        </el-form-item>
-        <el-form-item label="选择平台">
-          <el-select
-            v-model="pushData.pt"
-            placeholder="请选择平台"
-          >
-            <el-option
-              v-for="(val, key) in ptConfig"
-              :key="key"
-              :value="key"
-              >{{ key }}</el-option
-            >
-          </el-select>
-        </el-form-item>
-        <el-form-item label="提示">
-          <div class="tips-content">
-            新增账号需要手动去上传页面上传一次然后取消上传，因为有的平台会出现引导提示，需要手动取消。
-          </div>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button
-          type="primary"
-          @click="addAccount"
-          >新增</el-button
-        >
-        <el-button @click="showDialog = false">取消</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
 <script>
 import { useAppStore } from '@/store/app'
-import dataRequest from '@/utils/dataRequest'
-import ptConfig from '@/utils/configUrl'
-import { usePermissionStore } from '@/store/permission'
 
 const MEDIA_MENU_NO_ACCOUNT = '__media_no_account__'
 
@@ -84,13 +36,6 @@ export default {
     return {
       activeIndex: '/',
       getAccoutIndex: '',
-      ptConfig,
-      showDialog: false,
-      pushData: {
-        phone: '',
-        pt: '',
-        url: ''
-      }
     }
   },
   computed: {
@@ -150,7 +95,7 @@ export default {
     },
     selectFn(index) {
       if (index === MEDIA_MENU_NO_ACCOUNT) {
-        this.showDialog = true
+        this.showWebManagedMessage()
         this.syncActiveIndexToCurrentRoute()
         return
       }
@@ -160,49 +105,8 @@ export default {
       }
       this.applyIsRouteFromPath(index)
     },
-    addAccount() {
-      dataRequest({
-        type: 'add',
-        fileName: 'account',
-        item: { ...this.pushData, url: this.ptConfig[this.pushData.pt].index }
-      }).then(() => {
-        this.$message({
-          type: 'success',
-          message: '添加成功!'
-        })
-
-        this.showDialog = false
-        this.pushData = {
-          phone: '',
-          pt: '',
-          url: ''
-        }
-
-        usePermissionStore()
-          .GenerateRoutes()
-          .then(() => {
-            setTimeout(() => {
-              this.refreshAccountMenuIndex()
-              const accountRoutes = this.$router
-                .getRoutes()
-                .filter(
-                  route =>
-                    typeof route.path === 'string' &&
-                    route.path.startsWith('/accountManager')
-                )
-              if (accountRoutes.length > 0) {
-                const targetPath = accountRoutes[0].path
-                if (this.$route.path !== targetPath) {
-                  this.$router.push(targetPath)
-                }
-                this.applyIsRouteFromPath(targetPath)
-                if (this.getAccoutIndex) {
-                  this.activeIndex = this.getAccoutIndex
-                }
-              }
-            }, 200)
-          })
-      })
+    showWebManagedMessage() {
+      this.$message.warning('媒体账号请在 Web 端新增并管理，客户端仅负责登录与发布')
     }
   }
 }
@@ -293,10 +197,5 @@ export default {
 
 .dragTitle {
   -webkit-app-region: drag;
-}
-.tips-content {
-  color: red;
-  font-size: 14px;
-  font-weight: bold;
 }
 </style>

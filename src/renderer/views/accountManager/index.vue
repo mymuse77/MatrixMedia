@@ -7,7 +7,7 @@
       <el-button type="primary" :loading="opening" @click="openLoginWindow"
         >打开登录窗口</el-button
       >
-      <el-button @click="deleteData">删除账号</el-button>
+      <el-button @click="showWebManagedMessage">账号由 Web 端管理</el-button>
     </div>
 
     <el-card class="tip-card" shadow="never">
@@ -104,7 +104,6 @@ import ptConfig from "@/utils/configUrl";
 import dataRequest from "@/utils/dataRequest";
 import openLoginWindow from "@/utils/openLoginWindow";
 import { usePermissionStore } from "@/store/permission";
-import { useAppStore } from "@/store/app";
 import {
   normalizeAccountProxy,
   getAccountProxyDisplay,
@@ -296,47 +295,8 @@ export default {
         this.opening = false;
       }
     },
-    deleteData() {
-      this.$confirm("此操作将永久删除该数据, 是否继续?", "提示", {
-        confirmButtonText: "确定",
-        cancelButtonText: "取消",
-        type: "warning",
-      }).then(() => {
-        dataRequest({
-          type: "delete",
-          fileName: "account",
-          item: this.urldata,
-        }).then(() => {
-          this.$message({
-            type: "success",
-            message: "删除成功!",
-          });
-
-          usePermissionStore()
-            .GenerateRoutes()
-            .then(() => {
-              setTimeout(() => {
-                const accountRoutes = this.$router
-                  .getRoutes()
-                  .filter(
-                    (route) =>
-                      typeof route.path === "string" &&
-                      route.path.startsWith("/accountManager")
-                  );
-                if (accountRoutes.length > 0) {
-                  const targetPath = accountRoutes[0].path;
-                  if (this.$route.path !== targetPath) {
-                    this.$router.push(targetPath);
-                  }
-                  useAppStore().setData("isRoute", "accountManager");
-                } else {
-                  this.$router.push("/");
-                  useAppStore().setData("isRoute", "/");
-                }
-              }, 200);
-            });
-        });
-      });
+    showWebManagedMessage() {
+      this.$message.warning("媒体账号请在 Web 端新增和删除，客户端仅负责登录与发布");
     },
   },
 };

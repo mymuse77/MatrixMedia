@@ -6,6 +6,7 @@
 const { io } = require('socket.io-client');
 const config = require('../config/websocket.config');
 const { getClientId } = require('./clientIdentity');
+const { sendAccountSnapshot } = require('./websocketHandlers');
 const packageJson = require('../../../package.json');
 
 const protocolVersion = 'matrix-ws-v1';
@@ -68,6 +69,7 @@ class WebSocketClient {
 
       // 发送认证信息（可以包含设备ID、账号列表等）
       this.authenticate();
+      this.pushInitialAccountSnapshot();
 
       // 启动心跳
       this.startHeartbeat();
@@ -146,6 +148,12 @@ class WebSocketClient {
 
     console.log('[WebSocket] 发送认证信息:', authData);
     this.socket.emit('auth', authData);
+  }
+
+  pushInitialAccountSnapshot() {
+    sendAccountSnapshot(this, 'client_connected').catch((error) => {
+      console.error('[WebSocket] 初始账号快照推送失败:', error && error.message ? error.message : error);
+    });
   }
 
   /**
