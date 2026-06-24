@@ -169,10 +169,36 @@ class WebSocketClient {
     if (handler) {
       handler(taskData)
         .then((result) => {
+          if (type === 'publish_video') {
+            const taskPayload = taskData && typeof taskData.data === 'object' && taskData.data !== null ? taskData.data : {};
+            this.sendTaskResult(taskId, 'success', {
+              action: 'publish_video',
+              phone: taskPayload.phone || '',
+              platform: taskPayload.platform || '',
+              videoPath: taskPayload.videoPath || taskPayload.sourceFilePath || taskPayload.filePath || '',
+              videoUrl: taskPayload.videoUrl || taskPayload.url || '',
+              ...(result && typeof result === 'object' ? result : { result }),
+            });
+            return;
+          }
+
           this.sendTaskResult(taskId, 'success', result);
         })
         .catch((error) => {
           console.error(`[WebSocket] 任务执行失败 (${taskId}):`, error);
+          if (type === 'publish_video') {
+            const taskPayload = taskData && typeof taskData.data === 'object' && taskData.data !== null ? taskData.data : {};
+            this.sendTaskResult(taskId, 'failed', {
+              action: 'publish_video',
+              phone: taskPayload.phone || '',
+              platform: taskPayload.platform || '',
+              videoPath: taskPayload.videoPath || taskPayload.sourceFilePath || taskPayload.filePath || '',
+              videoUrl: taskPayload.videoUrl || taskPayload.url || '',
+              error: error.message,
+            });
+            return;
+          }
+
           this.sendTaskResult(taskId, 'failed', { error: error.message });
         });
     } else {

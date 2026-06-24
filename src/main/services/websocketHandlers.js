@@ -56,6 +56,69 @@ function flattenAccountData(data) {
   return Object.entries(data).flatMap(([date, value]) => normalizeAccountList(value, date));
 }
 
+function getPushDataDir() {
+  const documents = app.getPath('documents');
+  return path.join(documents, 'MatrixMedia', 'data', 'pushData');
+}
+
+function getAllPushDataRecords() {
+  const folderPath = getPushDataDir();
+  if (!fs.existsSync(folderPath)) return [];
+
+  return fs
+    .readdirSync(folderPath)
+    .filter(fileName => fileName.endsWith('.json'))
+    .flatMap((fileName) => {
+      try {
+        const filePath = path.join(folderPath, fileName);
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const parsed = JSON.parse(content);
+        return Array.isArray(parsed) ? parsed.filter(item => item && typeof item === 'object') : [];
+      } catch (error) {
+        console.error(`[WebSocket] 读取发布历史失败: ${fileName}`, error);
+        return [];
+      }
+    });
+}
+
+function normalizePublishSnapshotStatus(record) {
+  const rawStatus = cleanText(record?.publishStatus).toLowerCase();
+  if (rawStatus === 'success') return 'success';
+  if (rawStatus === 'failed' || rawStatus === 'skipped' || rawStatus === 'interrupted' || rawStatus === 'expired') {
+    return 'failed';
+  }
+  if (rawStatus === 'publishing' || rawStatus === 'scheduled') return 'running';
+  if (Number(record?.publishSuccessCount) > 0) return 'success';
+  if (Number(record?.publishFailCount) > 0) return 'failed';
+  return 'pending';
+}
+
+function summarizePublishSnapshotStatus(results) {
+  const successCount = results.filter(item => item.status === 'success').length;
+  const failCount = results.filter(item => item.status === 'failed').length;
+  const runningCount = results.filter(item => item.status === 'running').length;
+  const pendingCount = results.filter(item => item.status === 'pending').length;
+  const total = results.length;
+
+  const status =
+    runningCount > 0 ? 'running'
+      : failCount > 0 && successCount > 0 ? 'partial'
+        : failCount > 0 && successCount === 0 && pendingCount === 0 ? 'failed'
+          : total > 0 && successCount >= total ? 'completed'
+            : pendingCount > 0 ? 'running'
+              : successCount > 0 ? 'partial'
+                : 'running';
+
+  return {
+    total,
+    successCount,
+    failCount,
+    runningCount,
+    pendingCount,
+    status,
+  };
+}
+
 /**
  * 读取媒体平台管理账号数据
  */
@@ -489,7 +552,7 @@ function getAccountPlatformValue(account) {
 }
 
 function getVideoPathValue(video) {
-  return cleanText(video?.videoPath) || cleanText(video?.filePath) || cleanText(video?.path);
+  return cleanText(video?.videoPath) || cleanText(video?.filePath) || cleanText(video?.path) || cleanText(video?.sourceFilePath);
 }
 
 function getCaptionText(caption) {
@@ -550,6 +613,8 @@ function createLocalPublishData({
   platform,
   partition,
   videoPath,
+  sourceVideoPath,
+  sourceVideoUrl,
   title,
   taskName,
   description,
@@ -586,12 +651,41 @@ function createLocalPublishData({
     partition: partition || getAccountPartition(phone, platform),
     pt: platform,
     phone,
+    matrixSourceVideoPath: cleanText(sourceVideoPath || videoPath),
+    matrixSourceVideoUrl: cleanText(sourceVideoUrl),
     date: new Date().toISOString().split('T')[0],
     coverPath: coverPath || '',
     publishStatus: 'publishing',
     lastPublishMessage: '等待发布结果',
     lastPublishAt: Date.now(),
   };
+}
+
+function normalizeLocalPublishData(localPublishRecord, overrides = {}) {
+  const next = {
+    ...(isPlainObject(localPublishRecord) ? localPublishRecord : {}),
+    ...overrides,
+  };
+  const nextVideoPath = cleanText(next.filePath || overrides.videoPath);
+
+  if (nextVideoPath) {
+    next.filePath = nextVideoPath;
+    next.selectedFile = path.basename(nextVideoPath);
+  }
+
+  if (!next.textOtherName) {
+    next.textOtherName = cleanText(next.bookName || next.taskName || next.bt);
+  }
+
+  if (overrides.sourceVideoPath || next.matrixSourceVideoPath) {
+    next.matrixSourceVideoPath = cleanText(overrides.sourceVideoPath || next.matrixSourceVideoPath);
+  }
+
+  if (overrides.sourceVideoUrl || next.matrixSourceVideoUrl) {
+    next.matrixSourceVideoUrl = cleanText(overrides.sourceVideoUrl || next.matrixSourceVideoUrl);
+  }
+
+  return next;
 }
 
 function sendBatchPublishItemResult(wsClient, taskId, payload) {
@@ -720,21 +814,43 @@ export async function handlePublishVideo(taskData, wsClient) {
       cleanupDownloadedVideo = resolved.cleanup;
     }
 
-    // 验证视频文件是否存在
+    // 本地路径失效但仍有可下载地址时，回退到下载模式，兼容 web 端重发场景。
     if (!fs.existsSync(localVideoPath)) {
-      throw new Error(`视频文件不存在: ${localVideoPath}`);
+      if (videoUrl) {
+        sendScopedProgress(wsClient, taskId, 10, '正在下载视频', progressRange);
+        const resolved = await resolvePublishFile(videoUrl);
+        localVideoPath = resolved.localPath;
+        cleanupDownloadedVideo = resolved.cleanup;
+      } else {
+        throw new Error(`视频文件不存在: ${localVideoPath}`);
+      }
     }
 
     sendScopedProgress(wsClient, taskId, 20, '正在准备发布数据', progressRange);
 
     const publishData = isPlainObject(localPublishRecord)
-      ? localPublishRecord
+      ? normalizeLocalPublishData(localPublishRecord, {
+        taskId,
+        phone,
+        pt: platform,
+        partition,
+        filePath: localVideoPath,
+        sourceVideoPath: videoPath,
+        sourceVideoUrl: videoUrl,
+        url: ptConfig[platform]?.upload,
+        bt: title || localPublishRecord.bt || '',
+        bt2: description || title || localPublishRecord.bt2 || '',
+        bq: tags || localPublishRecord.bq || '',
+        coverPath: coverPath || localPublishRecord.coverPath || '',
+      })
       : createLocalPublishData({
         taskId,
         phone,
         platform,
         partition,
         videoPath: localVideoPath,
+        sourceVideoPath: videoPath,
+        sourceVideoUrl: videoUrl,
         title,
         taskName,
         description,
@@ -742,6 +858,29 @@ export async function handlePublishVideo(taskData, wsClient) {
         coverPath,
         location,
       });
+
+    if (isPlainObject(localPublishRecord) && publishData.id && publishData.date) {
+      await changeData({
+        type: 'update',
+        fileName: 'pushData',
+        item: {
+          id: publishData.id,
+          date: publishData.date,
+          filePath: publishData.filePath || '',
+          selectedFile: publishData.selectedFile || '',
+          partition: publishData.partition || partition || '',
+          pt: publishData.pt || platform,
+          phone: publishData.phone || phone,
+          matrixSourceVideoPath: publishData.matrixSourceVideoPath || videoPath || '',
+          matrixSourceVideoUrl: publishData.matrixSourceVideoUrl || videoUrl || '',
+          bt: publishData.bt || title || '',
+          bt2: publishData.bt2 || description || title || '',
+          bq: publishData.bq || tags || '',
+          lastPublishMessage: '等待发布结果',
+          lastPublishAt: Date.now(),
+        },
+      });
+    }
 
     sendScopedProgress(wsClient, taskId, 30, '正在启动发布流程', progressRange);
 
@@ -1061,7 +1200,65 @@ export async function handleGetPublishHistory(taskData, wsClient) {
 }
 
 /**
- * 6. 获取客户端状态
+ * 6. 查询单个发布任务状态
+ */
+export async function handleGetPublishTaskStatus(taskData, wsClient) {
+  const { taskId, data = {} } = taskData;
+  const matrixTaskId = cleanText(data.matrixTaskId || data.taskId);
+
+  try {
+    wsClient.sendProgress(taskId, 30, '正在读取发布状态');
+
+    if (!matrixTaskId) {
+      throw new Error('缺少 matrixTaskId');
+    }
+
+    const results = getAllPushDataRecords()
+      .filter((record) => cleanText(record.taskId) === matrixTaskId)
+      .map((record) => {
+        const status = normalizePublishSnapshotStatus(record);
+        return {
+          id: cleanText(record.id),
+          phone: cleanText(record.phone),
+          platform: cleanText(record.pt || record.platform),
+          partition: cleanText(record.partition),
+          videoPath: cleanText(record.matrixSourceVideoPath || record.filePath),
+          videoUrl: cleanText(record.matrixSourceVideoUrl || record.videoUrl),
+          status,
+          success: status === 'success',
+          error: status === 'failed' ? cleanText(record.lastPublishMessage) || '发布失败' : '',
+          message: cleanText(record.lastPublishMessage),
+          lastPublishAt: Number(record.lastPublishAt) || 0,
+          date: cleanText(record.date),
+        };
+      })
+      .sort((left, right) => (right.lastPublishAt || 0) - (left.lastPublishAt || 0));
+
+    const summary = summarizePublishSnapshotStatus(results);
+
+    wsClient.sendProgress(taskId, 100, `已同步 ${summary.total} 条发布状态`);
+
+    return {
+      success: true,
+      action: 'get_publish_task_status',
+      matrixTaskId,
+      status: summary.status,
+      total: summary.total,
+      successCount: summary.successCount,
+      failCount: summary.failCount,
+      runningCount: summary.runningCount,
+      pendingCount: summary.pendingCount,
+      results,
+      message: `已同步 ${summary.total} 条发布状态`,
+    };
+  } catch (error) {
+    console.error('[WebSocket] 获取发布任务状态失败:', error);
+    throw error;
+  }
+}
+
+/**
+ * 7. 获取客户端状态
  */
 export async function handleGetClientStatus(taskData, wsClient) {
   const { taskId } = taskData;
@@ -1153,7 +1350,12 @@ export function registerWebSocketHandlers(wsClient) {
     handleGetPublishHistory(taskData, wsClient)
   );
 
-  // 9. 获取客户端状态
+  // 9. 查询单个发布任务状态
+  wsClient.registerTaskHandler('get_publish_task_status', (taskData) =>
+    handleGetPublishTaskStatus(taskData, wsClient)
+  );
+
+  // 10. 获取客户端状态
   wsClient.registerTaskHandler('get_client_status', (taskData) =>
     handleGetClientStatus(taskData, wsClient)
   );

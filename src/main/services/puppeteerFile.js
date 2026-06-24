@@ -312,9 +312,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       browser = await pie.connect(app, puppeteer);
       activeBrowser = browser;
       win = new BrowserWindow({
-        show: isXhsTask
-          ? true
-          : data.mmCliSuppressWindow
+        show: data.mmCliSuppressWindow
           ? false
           : data?.show ?? false,
         width: data?.width ?? 1300,
