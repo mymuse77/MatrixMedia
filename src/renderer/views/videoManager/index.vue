@@ -198,7 +198,7 @@
             </div>
           </div>
           <el-table :data="item" border style="width: 100%" class="responsive-table">
-            <el-table-column label="名称" min-width="180" show-overflow-tooltip>
+            <el-table-column label="任务" min-width="220" show-overflow-tooltip>
               <template slot-scope="scope">
                 <div class="record-name-cell">
                   <div class="record-name">{{ scope.row.textOtherName || "-" }}</div>
@@ -206,100 +206,108 @@
                     <span>{{ scope.row.bt || "-" }}</span>
                     <el-tag size="mini" type="info">{{ scope.row.textType === "article" ? "文章" : "视频" }}</el-tag>
                   </div>
-                </div>
-              </template>
-            </el-table-column>
-            <el-table-column label="平台状态" min-width="280">
-              <template slot-scope="scope">
-                <div
-                  v-for="(sub, si) in scope.row.showAlltype"
-                  :key="si"
-                  class="status-row"
-                >
-                  <span class="pt-name" @click="copy(sub.videoLink)">{{ sub.pt }}</span>
-                  <el-tag size="mini" :type="sub.videoLink ? 'success' : 'danger'">
-                    {{ sub.videoLink ? "通过" : "未通过" }}
-                  </el-tag>
-                </div>
-              </template>
-            </el-table-column>
-            <el-table-column prop="phone" label="发布账号" align="center" header-align="center" min-width="110" />
-            <el-table-column label="发布进度" min-width="420">
-              <template slot-scope="scope">
-                <div
-                  v-for="(sub, si) in scope.row.showAlltype"
-                  :key="si"
-                  class="progress-row"
-                >
-                  <span class="pt-name">{{ sub.pt }}</span>
-                  <div class="progress-detail">
-                    <span class="progress-count">重发 {{ normalizeCount(sub.republishCount) }} 次</span>
-                    <span class="progress-count success">成功 {{ normalizeCount(sub.publishSuccessCount) }}</span>
-                    <span class="progress-count fail">失败 {{ normalizeCount(sub.publishFailCount) }}</span>
-                    <el-tag size="mini" :type="publishStatusType(sub.publishStatus)">
-                      {{ publishStatusText(sub.publishStatus) }}
-                    </el-tag>
+                  <div class="record-tags">
+                    <el-tag size="mini" type="info">{{ (scope.row.showAlltype || []).length }} 个平台</el-tag>
+                    <el-tag size="mini" type="success">成功 {{ normalizeCount(scope.row.publishSuccessCount) }}</el-tag>
+                    <el-tag size="mini" type="danger">失败 {{ normalizeCount(scope.row.publishFailCount) }}</el-tag>
                   </div>
                 </div>
               </template>
             </el-table-column>
+            <el-table-column label="平台明细" min-width="420">
+              <template slot-scope="scope">
+                <div v-for="(sub, si) in scope.row.showAlltype" :key="si" class="detail-item">
+                  <div class="detail-main">
+                    <div class="detail-title-row">
+                      <span class="pt-name" @click="copy(sub.videoLink)">{{ sub.pt }}</span>
+                      <el-tag size="mini" :type="publishStatusType(sub.publishStatus)">
+                        {{ publishStatusText(sub.publishStatus) }}
+                      </el-tag>
+                      <el-tag size="mini" :type="sub.videoLink ? 'success' : 'danger'">
+                        {{ sub.videoLink ? "链接已回填" : "未回填链接" }}
+                      </el-tag>
+                    </div>
+                    <div class="detail-subline">
+                      <span>{{ sub.phone ? String(sub.phone).split("-")[0] : "-" }}</span>
+                      <span>重发 {{ normalizeCount(sub.republishCount) }} 次</span>
+                      <span>成功 {{ normalizeCount(sub.publishSuccessCount) }}</span>
+                      <span>失败 {{ normalizeCount(sub.publishFailCount) }}</span>
+                    </div>
+                  </div>
+                  <div class="detail-actions">
+                    <el-button
+                      v-if="sub.videoLink"
+                      type="text"
+                      size="mini"
+                      @click="copy(sub.videoLink)"
+                    >
+                      复制链接
+                    </el-button>
+                    <el-button
+                      type="text"
+                      size="mini"
+                      @click="opPt(sub)"
+                    >
+                      打开平台
+                    </el-button>
+                  </div>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column prop="phone" label="发布账号" align="center" header-align="center" min-width="110" />
             <el-table-column label="来源" width="72">
               <template slot-scope="scope">
                 {{ scope.row.textType === "article" ? "文章" : "本地" }}
               </template>
             </el-table-column>
-            <el-table-column label="操作" min-width="200">
+            <el-table-column label="操作" min-width="220">
               <template slot-scope="scope">
-                <el-button
-                  v-if="canViewPublishContent(scope.row)"
-                  type="success"
-                  size="mini"
-                  class="mb8"
-                  @click="handleViewPublishContent(scope.row)"
-                >
-                  填写内容
-                </el-button>
-                <el-button
-                  type="info"
-                  size="mini"
-                  class="mb8"
-                  :loading="logLoading && logContext === scope.row"
-                  @click="handleGetLogs(scope.row)"
-                >
-                  日志
-                </el-button>
-                <el-button
-                  v-if="canGetStatus(scope.row)"
-                  type="primary"
-                  size="mini"
-                  class="mb8"
-                  :loading="isStatusLoading(scope.row)"
-                  :disabled="isStatusLoading(scope.row)"
-                  @click="handleGetStatus(scope.row)"
-                >
-                  获取状态
-                </el-button>
-                <el-popconfirm
-                  confirm-button-text="删除"
-                  cancel-button-text="取消"
-                  icon="el-icon-info"
-                  icon-color="red"
-                  title="确定删除这条记录吗？"
-                  @confirm="handleDelete(scope.row, index, scope.$index)"
-                >
-                  <el-button slot="reference" type="danger" size="mini"
-                    >删除</el-button
+                <div class="action-grid">
+                  <el-button
+                    v-if="canViewPublishContent(scope.row)"
+                    type="success"
+                    size="mini"
+                    @click="handleViewPublishContent(scope.row)"
                   >
-                </el-popconfirm>
-                <el-button
-                  v-if="canRepublish(scope.row)"
-                  type="warning"
-                  size="mini"
-                  class="mb8"
-                  @click="handleRepublish(scope.row)"
-                >
-                  重新发布
-                </el-button>
+                    填写内容
+                  </el-button>
+                  <el-button
+                    type="info"
+                    size="mini"
+                    :loading="logLoading && logContext === scope.row"
+                    @click="handleGetLogs(scope.row)"
+                  >
+                    日志
+                  </el-button>
+                  <el-button
+                    v-if="canGetStatus(scope.row)"
+                    type="primary"
+                    size="mini"
+                    :loading="isStatusLoading(scope.row)"
+                    :disabled="isStatusLoading(scope.row)"
+                    @click="handleGetStatus(scope.row)"
+                  >
+                    获取状态
+                  </el-button>
+                  <el-button
+                    v-if="canRepublish(scope.row)"
+                    type="warning"
+                    size="mini"
+                    @click="handleRepublish(scope.row)"
+                  >
+                    重新发布
+                  </el-button>
+                  <el-popconfirm
+                    confirm-button-text="删除"
+                    cancel-button-text="取消"
+                    icon="el-icon-info"
+                    icon-color="red"
+                    title="确定删除这条记录吗？"
+                    @confirm="handleDelete(scope.row, index, scope.$index)"
+                  >
+                    <el-button slot="reference" type="danger" size="mini">删除</el-button>
+                  </el-popconfirm>
+                </div>
               </template>
             </el-table-column>
           </el-table>
@@ -1441,23 +1449,52 @@ export default {
   font-size: 12px;
 }
 
-.status-row,
-.progress-row {
+.record-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.detail-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.detail-item + .detail-item {
+  border-top: 1px dashed #eef2f7;
+}
+
+.detail-main {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  flex: 1;
+}
+
+.detail-title-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  margin-bottom: 6px;
+  flex-wrap: wrap;
 }
 
-.status-row {
-  padding: 2px 0;
+.detail-subline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  font-size: 12px;
+  color: #64748b;
 }
 
-.status-row + .status-row,
-.progress-row + .progress-row {
-  border-top: 1px dashed #eef2f7;
-  padding-top: 6px;
+.detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .pt-name {
@@ -1469,49 +1506,20 @@ export default {
   color: #334155;
 }
 
-.progress-row .pt-name {
-  flex: 0 0 58px;
+.detail-item .pt-name {
   font-size: 13px;
-}
-
-.status-row .pt-name {
-  font-size: 13px;
-}
-
-.progress-detail {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  flex-wrap: wrap;
-  justify-content: flex-start;
-}
-
-.progress-count {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  padding: 0 8px;
-  border-radius: 999px;
-  background: #f1f5f9;
-  color: #475569;
-  font-size: 12px;
-}
-
-.progress-count.success {
-  color: #15803d;
-  background: #ecfdf3;
-}
-
-.progress-count.fail {
-  color: #dc2626;
-  background: #fef2f2;
 }
 
 .fail {
   color: #dc2626;
   cursor: pointer;
   font-weight: 600;
+}
+
+.action-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .mb16 {
@@ -1548,7 +1556,7 @@ export default {
 
 .info-box ::v-deep .el-button--mini {
   margin-left: 0;
-  margin-right: 6px;
+  margin-right: 0;
 }
 
 .info-box ::v-deep th,
