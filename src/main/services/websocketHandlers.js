@@ -138,6 +138,76 @@ function getAllAccounts() {
   return [];
 }
 
+function formatDateKey(value) {
+  const date = value instanceof Date && !Number.isNaN(value.getTime()) ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  }
+
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function getAccountIdentityKey(account) {
+  return [cleanText(account?.id), cleanText(account?.phone), getAccountPlatformValue(account)].join('|');
+}
+
+function replaceAccountsFromSnapshot(snapshotAccounts) {
+  const accountDir = getAccountDataDir();
+  fs.mkdirSync(accountDir, { recursive: true });
+
+  const existingAccounts = getAllAccounts();
+
+  for (const filePath of getAccountFiles()) {
+    fs.unlinkSync(filePath);
+  }
+
+  const existingByIdentity = new Map(existingAccounts.map((account) => [getAccountIdentityKey(account), account]));
+  const existingByPhonePlatform = new Map(
+    existingAccounts.map((account) => [[cleanText(account.phone), getAccountPlatformValue(account)].join('|'), account]),
+  );
+
+  const groupedAccounts = new Map();
+  const now = Date.now();
+
+  snapshotAccounts.forEach((account, index) => {
+    const phone = cleanText(account?.phone);
+    const platform = getAccountPlatformValue(account);
+    if (!phone || !platform || !ptConfig[platform]) return;
+
+    const existingRecord =
+      existingByIdentity.get(getAccountIdentityKey(account)) ??
+      existingByPhonePlatform.get([phone, platform].join('|'));
+
+    const createTime =
+      Number(account?.createTime) ||
+      Date.parse(cleanText(account?.createdAt)) ||
+      Number(existingRecord?.createTime) ||
+      now + index;
+    const dateKey = cleanText(account?.date) || formatDateKey(createTime);
+
+    const nextRecord = {
+      ...existingRecord,
+      id: cleanText(account?.id) || cleanText(existingRecord?.id) || `sync-${createTime}-${index}`,
+      phone,
+      pt: platform,
+      url: cleanText(account?.url) || cleanText(existingRecord?.url) || ptConfig[platform].index,
+      group: cleanText(account?.group),
+      createTime,
+    };
+
+    const currentGroup = groupedAccounts.get(dateKey) || [];
+    groupedAccounts.set(dateKey, [...currentGroup, nextRecord]);
+  });
+
+  for (const [dateKey, accounts] of groupedAccounts.entries()) {
+    const filePath = path.join(accountDir, `${dateKey}.json`);
+    writeAccountFile(filePath, accounts);
+  }
+
+  return Array.from(groupedAccounts.values()).reduce((total, accounts) => total + accounts.length, 0);
+}
+
 async function getFormattedAccounts(platform) {
   let accounts = getAllAccounts();
 
@@ -451,6 +521,31 @@ export async function handleUpdateAccountGroup(taskData, wsClient) {
     group: targetGroup,
     updatedAccounts,
     message: changed > 0 ? '账号分组已更新' : '未找到匹配账号',
+  };
+}
+
+export async function handleSyncAccountsSnapshot(taskData, wsClient) {
+  const { taskId, data = {} } = taskData;
+  const snapshotAccounts = asList(data.accounts);
+
+  wsClient.sendProgress(taskId, 20, '正在同步账号快照');
+
+  const count = replaceAccountsFromSnapshot(snapshotAccounts);
+
+  notifyAccountChanged({
+    reason: 'sync',
+    taskId,
+    count,
+  });
+  await sendAccountSnapshot(wsClient, 'sync');
+
+  wsClient.sendProgress(taskId, 100, '账号快照已同步');
+
+  return {
+    success: true,
+    action: 'sync_accounts_snapshot',
+    total: count,
+    message: `已同步 ${count} 个账号`,
   };
 }
 
@@ -1310,6 +1405,10 @@ export async function handleGetClientStatus(taskData, wsClient) {
  * 注册所有任务处理器
  */
 export function registerWebSocketHandlers(wsClient) {
+  wsClient.registerTaskHandler('sync_accounts_snapshot', (taskData) =>
+    handleSyncAccountsSnapshot(taskData, wsClient)
+  );
+
   // 1. 新增媒体账号
   wsClient.registerTaskHandler('add_account', (taskData) =>
     handleAddAccount(taskData, wsClient)
