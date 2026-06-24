@@ -1,7 +1,14 @@
 <template>
   <div class="container-box">
-    <div class="toolbar">
-      <div class="toolbar-left">
+    <header class="manager-header">
+      <div class="manager-header-copy">
+        <div class="manager-eyebrow">本地发布工具</div>
+        <h1>视频管理</h1>
+        <p>
+          统一查看本机发布记录、状态同步和发布日志。失败项可直接重发，所有内容都来自本机 pushData。
+        </p>
+      </div>
+      <div class="manager-header-actions">
         <el-button type="primary" @click="selectVideoFile"
           >选择视频发布</el-button
         >
@@ -20,10 +27,20 @@
           />
         </el-tooltip>
       </div>
-      <div class="toolbar-right">
+    </header>
 
+    <section class="summary-grid">
+      <div
+        v-for="card in summaryCards"
+        :key="card.label"
+        class="summary-card"
+        :class="card.className"
+      >
+        <div class="summary-card-label">{{ card.label }}</div>
+        <div class="summary-card-value">{{ card.value }}</div>
+        <div class="summary-card-hint">{{ card.hint }}</div>
       </div>
-    </div>
+    </section>
 
     <LocalVideoPublish ref="localPublishRef" @published="loadRecords" />
     <LocalArticlePublish ref="articlePublishRef" @published="loadRecords" />
@@ -167,32 +184,47 @@
 
     <div class="info-box">
       <template v-for="(item, index) in dataList">
-        <el-card v-if="item && item.length" :key="index" class="mb16">
+        <el-card v-if="item && item.length" :key="index" class="record-card mb16">
           <div class="card-head">
-            <span class="date-label">{{ index }}</span>
-            <span class="hint">本地发布记录</span>
+            <div class="card-head-copy">
+              <span class="date-label">{{ index }}</span>
+              <span class="hint">本地发布记录</span>
+              <span class="head-meta">{{ getGroupSummary(item).taskCount }} 条任务 · {{ getGroupSummary(item).platformCount }} 条平台明细</span>
+            </div>
+            <div class="card-head-stats">
+              <el-tag size="mini" type="success">成功 {{ getGroupSummary(item).successCount }}</el-tag>
+              <el-tag size="mini" type="danger">失败 {{ getGroupSummary(item).failCount }}</el-tag>
+              <el-tag size="mini" type="warning">进行中 {{ getGroupSummary(item).activeCount }}</el-tag>
+            </div>
           </div>
           <el-table :data="item" border style="width: 100%" class="responsive-table">
-            <el-table-column prop="textOtherName" label="名称" min-width="120" show-overflow-tooltip />
-            <el-table-column prop="bt" label="标题" width="240" show-overflow-tooltip />
-            <el-table-column label="平台审核状态" width="260">
+            <el-table-column label="名称" min-width="180" show-overflow-tooltip>
+              <template slot-scope="scope">
+                <div class="record-name-cell">
+                  <div class="record-name">{{ scope.row.textOtherName || "-" }}</div>
+                  <div class="record-subtitle">
+                    <span>{{ scope.row.bt || "-" }}</span>
+                    <el-tag size="mini" type="info">{{ scope.row.textType === "article" ? "文章" : "视频" }}</el-tag>
+                  </div>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="平台状态" min-width="280">
               <template slot-scope="scope">
                 <div
                   v-for="(sub, si) in scope.row.showAlltype"
                   :key="si"
                   class="status-row"
                 >
-                  <span class="pt-name" @click="copy(sub.videoLink)">{{
-                    sub.pt
-                  }}</span>
-                  <span :class="{ fail: !sub.videoLink }" @click="opPt(sub)">{{
-                    sub.videoLink ? "通过" : "未通过"
-                  }}</span>
+                  <span class="pt-name" @click="copy(sub.videoLink)">{{ sub.pt }}</span>
+                  <el-tag size="mini" :type="sub.videoLink ? 'success' : 'danger'">
+                    {{ sub.videoLink ? "通过" : "未通过" }}
+                  </el-tag>
                 </div>
               </template>
             </el-table-column>
-            <el-table-column prop="phone" label="发布账号" align="center" header-align="center" />
-            <el-table-column label="发布进度" width="396">
+            <el-table-column prop="phone" label="发布账号" align="center" header-align="center" min-width="110" />
+            <el-table-column label="发布进度" min-width="420">
               <template slot-scope="scope">
                 <div
                   v-for="(sub, si) in scope.row.showAlltype"
@@ -201,20 +233,12 @@
                 >
                   <span class="pt-name">{{ sub.pt }}</span>
                   <div class="progress-detail">
-                    <span class="progress-count"
-                      >重发 {{ normalizeCount(sub.republishCount) }} 次</span
-                    >
-                    <span class="progress-count success"
-                      >成功 {{ normalizeCount(sub.publishSuccessCount) }}</span
-                    >
-                    <span class="progress-count fail"
-                      >失败 {{ normalizeCount(sub.publishFailCount) }}</span
-                    >
-                    <el-tag
-                      size="mini"
-                      :type="publishStatusType(sub.publishStatus)"
-                      >{{ publishStatusText(sub.publishStatus) }}</el-tag
-                    >
+                    <span class="progress-count">重发 {{ normalizeCount(sub.republishCount) }} 次</span>
+                    <span class="progress-count success">成功 {{ normalizeCount(sub.publishSuccessCount) }}</span>
+                    <span class="progress-count fail">失败 {{ normalizeCount(sub.publishFailCount) }}</span>
+                    <el-tag size="mini" :type="publishStatusType(sub.publishStatus)">
+                      {{ publishStatusText(sub.publishStatus) }}
+                    </el-tag>
                   </div>
                 </div>
               </template>
@@ -351,6 +375,51 @@ export default {
         return entries.filter((log) => log.runId === this.selectedLogRunId);
       }
       return entries;
+    },
+    videoManagerSummary() {
+      const summary = {
+        groupCount: 0,
+        taskCount: 0,
+        platformCount: 0,
+        successCount: 0,
+        failCount: 0,
+        activeCount: 0,
+      };
+
+      Object.values(this.dataList || {}).forEach((rows) => {
+        if (!Array.isArray(rows) || rows.length === 0) return;
+        summary.groupCount += 1;
+
+        rows.forEach((row) => {
+          summary.taskCount += 1;
+          const details = Array.isArray(row && row.showAlltype) && row.showAlltype.length ? row.showAlltype : [row];
+          summary.platformCount += details.length;
+
+          details.forEach((sub) => {
+            const status = String((sub && sub.publishStatus) || "").toLowerCase();
+            if (status === "success") {
+              summary.successCount += 1;
+            } else if (["fail", "failed", "expired"].includes(status)) {
+              summary.failCount += 1;
+            } else {
+              summary.activeCount += 1;
+            }
+          });
+        });
+      });
+
+      return summary;
+    },
+    summaryCards() {
+      const summary = this.videoManagerSummary;
+      return [
+        { label: "日期分组", value: summary.groupCount, hint: "按日期归档的记录", className: "is-neutral" },
+        { label: "发布任务", value: summary.taskCount, hint: "去重后的任务条目", className: "is-primary" },
+        { label: "平台明细", value: summary.platformCount, hint: "账号 / 平台维度", className: "is-info" },
+        { label: "成功", value: summary.successCount, hint: "已写入成功状态", className: "is-success" },
+        { label: "失败", value: summary.failCount, hint: "可直接重发", className: "is-danger" },
+        { label: "进行中", value: summary.activeCount, hint: "发布中或待刷新", className: "is-warning" },
+      ];
     },
   },
   mounted() {
@@ -656,6 +725,34 @@ export default {
       if (status === "draft") return "已保存草稿";
       if (status === "drafting") return "保存草稿中";
       return "发布中";
+    },
+    getGroupSummary(rows) {
+      const summary = {
+        taskCount: 0,
+        platformCount: 0,
+        successCount: 0,
+        failCount: 0,
+        activeCount: 0,
+      };
+
+      (rows || []).forEach((row) => {
+        summary.taskCount += 1;
+        const details = Array.isArray(row && row.showAlltype) && row.showAlltype.length ? row.showAlltype : [row];
+        summary.platformCount += details.length;
+
+        details.forEach((sub) => {
+          const status = String((sub && sub.publishStatus) || "").toLowerCase();
+          if (status === "success") {
+            summary.successCount += 1;
+          } else if (["fail", "failed", "expired"].includes(status)) {
+            summary.failCount += 1;
+          } else {
+            summary.activeCount += 1;
+          }
+        });
+      });
+
+      return summary;
     },
     isPublishFailed(row) {
       if (!row) return false;
@@ -1148,7 +1245,109 @@ export default {
   overflow-y: auto;
   overflow-x: auto;
   padding: 20px 24px;
-  background: #f7f8fa;
+  background: #f3f6fb;
+}
+
+.manager-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 22px;
+  margin-bottom: 16px;
+  background: #ffffff;
+  border: 1px solid #e5ebf3;
+  border-radius: 14px;
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.04);
+}
+
+.manager-header-copy {
+  min-width: 0;
+}
+
+.manager-eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  color: #0f766e;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.manager-header-copy h1 {
+  margin: 6px 0 0;
+  font-size: 22px;
+  line-height: 1.2;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.manager-header-copy p {
+  margin: 8px 0 0;
+  max-width: 820px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.manager-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.summary-card {
+  padding: 14px 16px;
+  background: #fff;
+  border: 1px solid #e5ebf3;
+  border-radius: 14px;
+  box-shadow: 0 2px 12px rgba(15, 23, 42, 0.03);
+}
+
+.summary-card-label {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.summary-card-value {
+  margin-top: 8px;
+  font-size: 24px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.summary-card-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.summary-card.is-primary .summary-card-value {
+  color: #2563eb;
+}
+
+.summary-card.is-info .summary-card-value {
+  color: #0f766e;
+}
+
+.summary-card.is-success .summary-card-value {
+  color: #16a34a;
+}
+
+.summary-card.is-danger .summary-card-value {
+  color: #dc2626;
+}
+
+.summary-card.is-warning .summary-card-value {
+  color: #d97706;
 }
 
 .toolbar {
@@ -1172,38 +1371,189 @@ export default {
 .info-box {
   min-height: 200px;
   overflow: hidden;
+}
 
-  ::v-deep .el-card {
-    overflow: hidden;
-    border: 1px solid #e8edf5;
-    border-radius: 10px;
-    box-shadow: 0 2px 12px rgba(31, 45, 61, 0.04);
-    transition: box-shadow 0.2s;
-  }
+.record-card {
+  overflow: hidden;
+  border: 1px solid #e5ebf3;
+  border-radius: 14px;
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.04);
+}
 
-  ::v-deep .el-card:hover {
-    box-shadow: 0 4px 16px rgba(31, 45, 61, 0.08);
-  }
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #eef2f7;
+  margin-bottom: 14px;
+}
 
-  ::v-deep .responsive-table {
-    width: 100% !important;
+.card-head-copy {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+}
 
-    .el-table__header th {
-      background: #f8fafd;
-      color: #344054;
-      font-weight: 600;
-    }
+.head-meta {
+  font-size: 12px;
+  color: #64748b;
+}
 
-    .el-button--mini {
-      margin-left: 0;
-      margin-right: 6px;
-    }
+.date-label {
+  color: #0f172a;
+  font-weight: 700;
+  font-size: 15px;
+}
 
-    th,
-    td {
-      min-width: 0 !important;
-    }
-  }
+.hint {
+  font-size: 12px;
+  color: #0f766e;
+  background: #ecfdf3;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.card-head-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.record-name-cell {
+  display: grid;
+  gap: 6px;
+}
+
+.record-name {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.record-subtitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.status-row,
+.progress-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.status-row {
+  padding: 2px 0;
+}
+
+.status-row + .status-row,
+.progress-row + .progress-row {
+  border-top: 1px dashed #eef2f7;
+  padding-top: 6px;
+}
+
+.pt-name {
+  cursor: pointer;
+  flex: 0 0 auto;
+  min-width: 0;
+  word-break: break-all;
+  font-weight: 600;
+  color: #334155;
+}
+
+.progress-row .pt-name {
+  flex: 0 0 58px;
+  font-size: 13px;
+}
+
+.status-row .pt-name {
+  font-size: 13px;
+}
+
+.progress-detail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.progress-count {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 12px;
+}
+
+.progress-count.success {
+  color: #15803d;
+  background: #ecfdf3;
+}
+
+.progress-count.fail {
+  color: #dc2626;
+  background: #fef2f2;
+}
+
+.fail {
+  color: #dc2626;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.mb16 {
+  margin-bottom: 16px;
+}
+
+.mb8 {
+  margin-bottom: 8px;
+}
+
+.info-box ::v-deep .responsive-table {
+  width: 100% !important;
+}
+
+.info-box ::v-deep .el-card__body {
+  padding: 18px 20px 20px;
+}
+
+.info-box ::v-deep .el-table__header th {
+  background: #f8fafc;
+  color: #344054;
+  font-weight: 600;
+}
+
+.info-box ::v-deep .el-table__body tr:hover > td {
+  background: #f8fbff !important;
+}
+
+.info-box ::v-deep .el-table__row td {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  vertical-align: top;
+}
+
+.info-box ::v-deep .el-button--mini {
+  margin-left: 0;
+  margin-right: 6px;
+}
+
+.info-box ::v-deep th,
+.info-box ::v-deep td {
+  min-width: 0 !important;
 }
 
 .content-detail {
@@ -1355,99 +1705,4 @@ export default {
   font-size: 12px;
 }
 
-.mb16 {
-  margin-bottom: 16px;
-}
-
-.mb8 {
-  margin-bottom: 8px;
-}
-
-.card-head {
-  display: flex;
-  align-items: center;
-  padding-bottom: 14px;
-  border-bottom: 1px solid #f0f2f5;
-  margin-bottom: 4px;
-}
-
-.date-label {
-  color: #1f2d3d;
-  font-weight: 700;
-  font-size: 15px;
-  margin-right: 12px;
-}
-
-.hint {
-  font-size: 12px;
-  color: #98a2b3;
-  background: #f2f4f7;
-  padding: 2px 8px;
-  border-radius: 4px;
-}
-
-.status-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 4px;
-}
-
-.progress-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
-  padding: 4px 0;
-}
-
-.progress-detail {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 324px;
-  flex: 1;
-  flex-wrap: wrap;
-  justify-content: flex-start;
-}
-
-.progress-count {
-  font-size: 12px;
-  color: #667085;
-}
-
-.progress-count.success {
-  color: #52c41a;
-  font-weight: 500;
-}
-
-.progress-count.fail {
-  cursor: default;
-  color: #ff4d4f;
-  font-weight: 500;
-}
-
-.pt-name {
-  cursor: pointer;
-  flex: 1;
-  min-width: 0;
-  word-break: break-all;
-  font-weight: 500;
-  color: #344054;
-}
-
-.progress-row .pt-name {
-  flex: 0 0 58px;
-  font-size: 13px;
-}
-
-.status-row .pt-name {
-  font-size: 13px;
-}
-
-.fail {
-  color: #ff4d4f;
-  cursor: pointer;
-  font-weight: 500;
-}
 </style>
