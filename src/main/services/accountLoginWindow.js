@@ -1,4 +1,11 @@
 import { BrowserWindow } from 'electron';
+import {
+  closeOtherAccountLoginWindows,
+  getAccountLoginWindowByPartition,
+  registerAccountLoginWindow,
+} from './accountLoginWindowManager';
+
+const openingWindows = new Map();
 
 export async function openAccountLoginWindow(args) {
   const partition = args && args.partition;
@@ -10,29 +17,67 @@ export async function openAccountLoginWindow(args) {
     return { ok: false, message: 'partition/url 必填' };
   }
 
+  const pending = openingWindows.get(partition);
+  if (pending) {
+    await pending.catch(() => undefined);
+    const existingWin = getAccountLoginWindowByPartition(partition) || findWindowByPartition(partition);
+    if (existingWin) {
+      focusWindow(existingWin);
+      return { ok: true, reused: true };
+    }
+  }
+
+  const promise = openAccountLoginWindowOnce({ partition, url, useragent, title });
+  openingWindows.set(partition, promise);
+  try {
+    return await promise;
+  } finally {
+    if (openingWindows.get(partition) === promise) {
+      openingWindows.delete(partition);
+    }
+  }
+}
+
+function findWindowByPartition(partition) {
   let existingWin = null;
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win || win.isDestroyed()) continue;
     if (!win._mmAccountLoginPartition) continue;
     if (win._mmAccountLoginPartition === partition) {
       existingWin = win;
-    } else {
-      try {
-        win.close();
-      } catch (_) {
-        /* ignore */
-      }
     }
   }
+  return existingWin;
+}
+
+function focusWindow(win) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    if (win.isMinimized()) win.restore();
+    win.focus();
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+async function openAccountLoginWindowOnce({ partition, url, useragent, title }) {
+  closeOtherAccountLoginWindows(partition);
+  const existingWin = getAccountLoginWindowByPartition(partition) || findWindowByPartition(partition);
 
   if (existingWin) {
+    registerAccountLoginWindow(existingWin, partition);
+    focusWindow(existingWin);
+    return { ok: true, reused: true };
+  }
+
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win || win.isDestroyed()) continue;
+    if (!win._mmAccountLoginPartition || win._mmAccountLoginPartition === partition) continue;
     try {
-      if (existingWin.isMinimized()) existingWin.restore();
-      existingWin.focus();
+      win.close();
     } catch (_) {
       /* ignore */
     }
-    return { ok: true, reused: true };
   }
 
   const win = new BrowserWindow({
@@ -48,7 +93,7 @@ export async function openAccountLoginWindow(args) {
       devTools: true,
     },
   });
-  win._mmAccountLoginPartition = partition;
+  registerAccountLoginWindow(win, partition);
 
   if (useragent) {
     try {
@@ -64,11 +109,9 @@ export async function openAccountLoginWindow(args) {
     /* ignore */
   }
 
-  try {
-    await win.loadURL(url);
-  } catch (error) {
+  win.loadURL(url).catch((error) => {
     console.warn('[open-account-login-window] loadURL failed:', error && error.message);
-  }
+  });
 
   return { ok: true };
 }

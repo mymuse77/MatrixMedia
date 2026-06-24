@@ -22,31 +22,113 @@ function getAccountDataDir() {
 }
 
 /**
- * 读取所有账号数据
+ * 归一化媒体平台管理账号数据
  */
-function getAllAccounts() {
-  const accountDir = getAccountDataDir();
-  if (!fs.existsSync(accountDir)) {
+function normalizeAccountList(value, date) {
+  if (Array.isArray(value)) {
+    return value
+      .filter(item => item && typeof item === 'object')
+      .map(item => ({
+        ...item,
+        date: item.date || date,
+      }));
+  }
+
+  if (value && typeof value === 'object' && (value.phone || value.pt || value.platform)) {
+    return [{
+      ...value,
+      date: value.date || date,
+    }];
+  }
+
+  return [];
+}
+
+function flattenAccountData(data) {
+  if (Array.isArray(data)) {
+    return normalizeAccountList(data);
+  }
+
+  if (!data || typeof data !== 'object') {
     return [];
   }
 
-  const files = fs.readdirSync(accountDir).filter(f => f.endsWith('.json'));
-  const allAccounts = [];
+  return Object.entries(data).flatMap(([date, value]) => normalizeAccountList(value, date));
+}
 
-  files.forEach(fileName => {
-    const filePath = path.join(accountDir, fileName);
-    try {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      const accounts = JSON.parse(content);
-      if (Array.isArray(accounts)) {
-        allAccounts.push(...accounts);
-      }
-    } catch (error) {
-      console.error(`[WebSocket] 读取账号文件失败: ${fileName}`, error);
-    }
+/**
+ * 读取媒体平台管理账号数据
+ */
+function getAllAccounts() {
+  const result = changeData({
+    type: 'get',
+    fileName: 'account',
+    item: {
+      pageSize: 9999,
+    },
   });
 
-  return allAccounts;
+  if (result && result.success) {
+    return flattenAccountData(result.data);
+  }
+
+  return [];
+}
+
+async function getFormattedAccounts(platform) {
+  let accounts = getAllAccounts();
+
+  if (platform) {
+    accounts = accounts.filter(acc => getAccountPlatformValue(acc) === platform);
+  }
+
+  return Promise.all(accounts.map(async acc => {
+    const accountPlatform = getAccountPlatformValue(acc);
+    const loginStatus = await getAccountLoginStatus({
+      phone: acc.phone,
+      platform: accountPlatform,
+      url: acc.url || ptConfig[accountPlatform]?.index,
+      partition: getAccountPartition(acc.phone, accountPlatform),
+    });
+
+    return {
+      id: acc.id,
+      phone: acc.phone,
+      platform: accountPlatform,
+      pt: accountPlatform,
+      partition: loginStatus.partition,
+      group: acc.group || '',
+      url: acc.url || ptConfig[accountPlatform]?.index,
+      date: acc.date,
+      createTime: acc.createTime,
+      ...loginStatus,
+    };
+  }));
+}
+
+export async function sendAccountSnapshot(wsClient, reason = 'snapshot') {
+  if (!wsClient || typeof wsClient.sendStatus !== 'function') {
+    return;
+  }
+
+  try {
+    const accounts = await getFormattedAccounts();
+    wsClient.sendStatus({
+      action: 'accounts_snapshot',
+      reason,
+      accounts,
+      total: accounts.length,
+    });
+  } catch (error) {
+    console.error('[WebSocket] 推送账号快照失败:', error);
+    wsClient.sendStatus({
+      action: 'accounts_snapshot',
+      reason,
+      accounts: [],
+      total: 0,
+      error: error && error.message ? error.message : String(error),
+    });
+  }
 }
 
 function readAccountFile(filePath) {
@@ -143,6 +225,7 @@ export async function handleAddAccount(taskData, wsClient) {
       pt: platform,
       platform,
     });
+    await sendAccountSnapshot(wsClient, 'add');
 
     wsClient.sendProgress(taskId, 100, '账号创建成功');
 
@@ -173,35 +256,15 @@ export async function handleGetAccounts(taskData, wsClient) {
   try {
     wsClient.sendProgress(taskId, 50, '正在查询账号列表');
 
-    let accounts = getAllAccounts();
-
-    // 按平台筛选
-    if (platform) {
-      accounts = accounts.filter(acc => acc.pt === platform);
-    }
-
-    // 格式化账号数据
-    const formattedAccounts = await Promise.all(accounts.map(async acc => {
-      const loginStatus = await getAccountLoginStatus({
-        phone: acc.phone,
-        platform: acc.pt,
-        url: acc.url || ptConfig[acc.pt]?.index,
-        partition: getAccountPartition(acc.phone, acc.pt),
-      });
-
-      return {
-        id: acc.id,
-        phone: acc.phone,
-        platform: acc.pt,
-        partition: loginStatus.partition,
-        group: acc.group || '',
-        url: acc.url,
-        createTime: acc.createTime,
-        ...loginStatus,
-      };
-    }));
+    const formattedAccounts = await getFormattedAccounts(platform);
 
     wsClient.sendProgress(taskId, 100, '查询完成');
+    wsClient.sendStatus({
+      action: 'accounts_snapshot',
+      reason: 'get_accounts',
+      accounts: formattedAccounts,
+      total: formattedAccounts.length,
+    });
 
     return {
       success: true,
@@ -309,12 +372,13 @@ export async function handleUpdateAccountGroup(taskData, wsClient) {
     }
   }
 
-  notifyAccountChanged({
-    reason: 'group',
-    taskId,
-    group: targetGroup,
-    count: changed,
-  });
+    notifyAccountChanged({
+      reason: 'group',
+      taskId,
+      group: targetGroup,
+      count: changed,
+    });
+  await sendAccountSnapshot(wsClient, 'group');
 
   wsClient.sendProgress(taskId, 100, '账号分组已更新');
 
@@ -1095,4 +1159,8 @@ export function registerWebSocketHandlers(wsClient) {
   );
 
   console.log('[WebSocket] 已注册所有任务处理器');
+
+  setTimeout(() => {
+    sendAccountSnapshot(wsClient, 'startup');
+  }, 1000);
 }
