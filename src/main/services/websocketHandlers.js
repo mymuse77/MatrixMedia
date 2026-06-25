@@ -650,6 +650,54 @@ function getVideoPathValue(video) {
   return cleanText(video?.videoPath) || cleanText(video?.filePath) || cleanText(video?.path) || cleanText(video?.sourceFilePath);
 }
 
+function getVideoUrlValue(video) {
+  return cleanText(video?.videoUrl) || cleanText(video?.url) || cleanText(video?.downloadUrl) || cleanText(video?.download?.url);
+}
+
+function normalizeRequestHeaders(headers) {
+  if (!headers || typeof headers !== 'object' || Array.isArray(headers)) {
+    return null;
+  }
+
+  const normalized = {};
+  for (const [rawKey, rawValue] of Object.entries(headers)) {
+    const key = cleanText(rawKey);
+    if (!key) continue;
+
+    const value = Array.isArray(rawValue)
+      ? rawValue.map(item => cleanText(item)).filter(Boolean).join(', ')
+      : cleanText(rawValue);
+
+    if (value) {
+      normalized[key] = value;
+    }
+  }
+
+  return Object.keys(normalized).length ? normalized : null;
+}
+
+function createDownloadRequest(videoUrl, download, downloadHeaders, downloadExpiresAt) {
+  const normalizedDownload = isPlainObject(download) ? download : null;
+  const url = cleanText(normalizedDownload?.url || videoUrl);
+  if (!url) {
+    return null;
+  }
+
+  const headers = normalizeRequestHeaders(normalizedDownload?.headers || downloadHeaders);
+  const expiresAt = cleanText(normalizedDownload?.expiresAt || downloadExpiresAt);
+  const request = { url };
+
+  if (headers) {
+    request.headers = headers;
+  }
+
+  if (expiresAt) {
+    request.expiresAt = expiresAt;
+  }
+
+  return request;
+}
+
 function getCaptionText(caption) {
   return (
     cleanText(caption?.textContent) ||
@@ -880,6 +928,9 @@ export async function handlePublishVideo(taskData, wsClient) {
     partition,
     videoUrl,
     videoPath,
+    download,
+    downloadHeaders,
+    downloadExpiresAt,
     title,
     taskName,
     description,
@@ -903,24 +954,32 @@ export async function handlePublishVideo(taskData, wsClient) {
       throw new Error(`不支持的平台: ${platform}`);
     }
 
-    if (!videoUrl && !videoPath) {
+    const downloadRequest = createDownloadRequest(videoUrl, download, downloadHeaders, downloadExpiresAt);
+    const resolvedVideoUrl = cleanText(downloadRequest?.url || videoUrl);
+    const persistedSourceVideoUrl = downloadRequest?.headers ? '' : resolvedVideoUrl;
+
+    if (!resolvedVideoUrl && !videoPath) {
       throw new Error('必须提供 videoUrl 或 videoPath');
     }
 
     // 如果是 URL，需要先下载
     let localVideoPath = videoPath;
-    if (videoUrl && !videoPath) {
+    if (resolvedVideoUrl && !videoPath) {
       sendScopedProgress(wsClient, taskId, 10, '正在下载视频', progressRange);
-      const resolved = await resolvePublishFile(videoUrl);
+      const resolved = await resolvePublishFile(resolvedVideoUrl, {
+        headers: downloadRequest?.headers,
+      });
       localVideoPath = resolved.localPath;
       cleanupDownloadedVideo = resolved.cleanup;
     }
 
     // 本地路径失效但仍有可下载地址时，回退到下载模式，兼容 web 端重发场景。
     if (!fs.existsSync(localVideoPath)) {
-      if (videoUrl) {
+      if (resolvedVideoUrl) {
         sendScopedProgress(wsClient, taskId, 10, '正在下载视频', progressRange);
-        const resolved = await resolvePublishFile(videoUrl);
+        const resolved = await resolvePublishFile(resolvedVideoUrl, {
+          headers: downloadRequest?.headers,
+        });
         localVideoPath = resolved.localPath;
         cleanupDownloadedVideo = resolved.cleanup;
       } else {
@@ -939,7 +998,7 @@ export async function handlePublishVideo(taskData, wsClient) {
         partition,
         filePath: localVideoPath,
         sourceVideoPath: videoPath,
-        sourceVideoUrl: videoUrl,
+        sourceVideoUrl: persistedSourceVideoUrl,
         url: ptConfig[platform]?.upload,
         bt: title || localPublishRecord.bt || '',
         bt2: description || title || localPublishRecord.bt2 || '',
@@ -954,7 +1013,7 @@ export async function handlePublishVideo(taskData, wsClient) {
         partition,
         videoPath: localVideoPath,
         sourceVideoPath: videoPath,
-        sourceVideoUrl: videoUrl,
+        sourceVideoUrl: persistedSourceVideoUrl,
         title,
         taskName,
         description,
@@ -977,7 +1036,7 @@ export async function handlePublishVideo(taskData, wsClient) {
           pt: publishData.pt || platform,
           phone: publishData.phone || phone,
           matrixSourceVideoPath: publishData.matrixSourceVideoPath || videoPath || '',
-          matrixSourceVideoUrl: publishData.matrixSourceVideoUrl || videoUrl || '',
+          matrixSourceVideoUrl: publishData.matrixSourceVideoUrl || persistedSourceVideoUrl || '',
           bt: publishData.bt || title || '',
           bt2: publishData.bt2 || description || title || '',
           bq: publishData.bq || tags || '',
@@ -1085,7 +1144,7 @@ export async function handlePublishVideos(taskData, wsClient) {
   const captionMode = cleanText(data.captionMode) || 'random';
   const taskTags = data.tags;
   const platforms = new Set(asList(data.platforms).map(cleanText).filter(Boolean));
-  const videos = asList(data.videos).filter(video => getVideoPathValue(video) || cleanText(video?.url));
+  const videos = asList(data.videos).filter(video => getVideoPathValue(video) || getVideoUrlValue(video));
   const captions = asList(data.captions);
   const accounts = asList(data.accounts);
   const publishAccounts = accounts.filter(account => {
@@ -1118,7 +1177,8 @@ export async function handlePublishVideos(taskData, wsClient) {
 
     for (const video of videos) {
       const videoPath = getVideoPathValue(video);
-      const videoUrl = cleanText(video.url);
+      const videoUrl = getVideoUrlValue(video);
+      const download = createDownloadRequest(videoUrl, video?.download, video?.downloadHeaders, video?.downloadExpiresAt);
       const caption = pickCaption(captions, detailIndex, captionMode);
       const publishText = buildPublishText({ caption, video, videoPath, taskName, taskTags, platform });
       const currentIndex = detailIndex + 1;
@@ -1144,6 +1204,7 @@ export async function handlePublishVideos(taskData, wsClient) {
         partition,
         videoPath,
         videoUrl,
+        download,
         publishText,
         publishData,
         currentIndex,
@@ -1171,6 +1232,7 @@ export async function handlePublishVideos(taskData, wsClient) {
       partition,
       videoPath,
       videoUrl,
+      download,
       publishText,
       publishData,
       currentIndex,
@@ -1191,6 +1253,7 @@ export async function handlePublishVideos(taskData, wsClient) {
           partition,
           videoUrl,
           videoPath,
+          download,
           taskName,
           title: publishText.title,
           description: publishText.description,

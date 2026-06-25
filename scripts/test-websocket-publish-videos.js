@@ -24,6 +24,8 @@ const xhsUploadUrl = "https://creator.xiaohongshu.com/publish/publish?from=menu&
 const capturedPublishPayloads = [];
 const progressEvents = [];
 const changeDataCalls = [];
+const resolvePublishCalls = [];
+let remoteDownloadIndex = 0;
 
 const originalLoad = Module._load;
 Module._load = function patchedLoad(request, parent, isMain) {
@@ -58,6 +60,38 @@ Module._load = function patchedLoad(request, parent, isMain) {
       },
       createIpcTransport() {
         return { reply() {} };
+      },
+    };
+  }
+
+  if (request === "./resolvePublishFile") {
+    return {
+      resolvePublishFile: async (file, options = {}) => {
+        resolvePublishCalls.push({ file, options });
+        const raw = String(file || "").trim();
+
+        if (/^https?:\/\//i.test(raw)) {
+          const localPath = path.join(
+            os.tmpdir(),
+            `matrixmedia-remote-${Date.now()}-${remoteDownloadIndex++}.mp4`,
+          );
+          fs.writeFileSync(localPath, "downloaded remote video");
+          return {
+            localPath,
+            remoteUrl: raw,
+            cleanup: () => {
+              if (fs.existsSync(localPath)) {
+                fs.unlinkSync(localPath);
+              }
+            },
+          };
+        }
+
+        return {
+          localPath: path.resolve(raw),
+          remoteUrl: null,
+          cleanup: null,
+        };
       },
     };
   }
@@ -176,7 +210,12 @@ async function main() {
   assert.strictEqual(result.failCount, 0);
   assert.strictEqual(capturedPublishPayloads.length, 6);
   assert.strictEqual(changeDataCalls.filter((call) => call.type === "add").length, 6);
-  assert.strictEqual(changeDataCalls.filter((call) => call.type === "update").length, 6);
+  assert.strictEqual(
+    changeDataCalls.filter(
+      (call) => call.type === "update" && call.item && call.item.publishStatus === "success",
+    ).length,
+    6,
+  );
 
   assert.strictEqual(capturedPublishPayloads[0].pt, platform);
   assert.ok(capturedPublishPayloads[0].id);
@@ -242,7 +281,9 @@ async function main() {
     ],
   );
 
-  const successUpdates = changeDataCalls.filter((call) => call.type === "update");
+  const successUpdates = changeDataCalls.filter(
+    (call) => call.type === "update" && call.item && call.item.publishStatus === "success",
+  );
   assert.strictEqual(successUpdates[0].item.id, capturedPublishPayloads[0].id);
   assert.strictEqual(successUpdates[0].item.date, capturedPublishPayloads[0].date);
   assert.strictEqual(successUpdates[0].item.publishStatus, "success");
@@ -270,6 +311,57 @@ async function main() {
   assert.strictEqual(failedResult.successCount, 0);
   assert.strictEqual(failedResult.failCount, 1);
   assert.match(failedResult.results[0].error, /视频文件不存在/);
+
+  const remoteChangeCallCountBefore = changeDataCalls.length;
+  const remotePublishCountBefore = capturedPublishPayloads.length;
+  const remoteUrl = "https://matrix.example.com/api/matrix/publish/download/job-1/0";
+  const remoteResult = await handlePublishVideos(
+    {
+      taskId: "matrix-task-remote-test",
+      type: "publish_videos",
+      data: {
+        taskName: "Authorized download test",
+        captionMode: "batch",
+        platforms: [platform],
+        accounts: [{ id: "account-1", phone: "13800138000", platform }],
+        videos: [
+          {
+            id: "remote-video",
+            videoUrl: remoteUrl,
+            download: {
+              url: remoteUrl,
+              headers: {
+                Authorization: "Bearer secure-token",
+                "X-Matrix-Client-Id": "client-1",
+                "X-Matrix-Task-Id": "task-1",
+              },
+              expiresAt: "2026-06-25T10:00:00.000Z",
+            },
+          },
+        ],
+        captions: [{ id: "caption-1", textContent: "Remote caption" }],
+      },
+    },
+    wsClient,
+  );
+
+  assert.strictEqual(remoteResult.success, true);
+  assert.strictEqual(remoteResult.status, "completed");
+  assert.strictEqual(capturedPublishPayloads.length, remotePublishCountBefore + 1);
+  assert.strictEqual(resolvePublishCalls.at(-1).file, remoteUrl);
+  assert.deepStrictEqual(resolvePublishCalls.at(-1).options.headers, {
+    Authorization: "Bearer secure-token",
+    "X-Matrix-Client-Id": "client-1",
+    "X-Matrix-Task-Id": "task-1",
+  });
+  assert.notStrictEqual(capturedPublishPayloads.at(-1).filePath, remoteUrl);
+
+  const remoteChangeCalls = changeDataCalls.slice(remoteChangeCallCountBefore);
+  const remoteRecordUpdate = remoteChangeCalls.find(
+    (call) => call.type === "update" && Object.prototype.hasOwnProperty.call(call.item || {}, "matrixSourceVideoUrl"),
+  );
+  assert(remoteRecordUpdate);
+  assert.strictEqual(remoteRecordUpdate.item.matrixSourceVideoUrl, "");
 
   console.log("test-websocket-publish-videos passed");
 }

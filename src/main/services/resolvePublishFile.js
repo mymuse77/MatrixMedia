@@ -43,12 +43,35 @@ function safeUnlink(filePath) {
   }
 }
 
+function normalizeRequestHeaders(headers) {
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
+    return undefined;
+  }
+
+  const normalized = {};
+  for (const [rawKey, rawValue] of Object.entries(headers)) {
+    const key = String(rawKey || "").trim();
+    if (!key) continue;
+
+    const value = Array.isArray(rawValue)
+      ? rawValue.map((item) => String(item || "").trim()).filter(Boolean).join(", ")
+      : String(rawValue || "").trim();
+
+    if (value) {
+      normalized[key] = value;
+    }
+  }
+
+  return Object.keys(normalized).length ? normalized : undefined;
+}
+
 /**
  * 将发布 file 解析为本地路径；若为 http(s) URL 则下载到临时目录。
  * @param {string} file 本地路径或 http(s) URL
+ * @param {{ headers?: Record<string, string|string[]> }} [options]
  * @returns {Promise<{ localPath: string, remoteUrl: string|null, cleanup: (() => void)|null }>}
  */
-export async function resolvePublishFile(file) {
+export async function resolvePublishFile(file, options = {}) {
   const raw = String(file || "").trim();
   if (!raw) {
     throw new Error("file 不能为空");
@@ -69,10 +92,12 @@ export async function resolvePublishFile(file) {
   const localPath = path.join(tmpDir, `${Date.now()}-${fileName}`);
 
   console.log("[resolvePublishFile] 开始下载远程视频:", raw);
+  const headers = normalizeRequestHeaders(options?.headers);
 
   const response = await axios({
     method: "GET",
     url: raw,
+    headers,
     responseType: "stream",
     timeout: DEFAULT_DOWNLOAD_TIMEOUT_MS,
     maxRedirects: 5,
