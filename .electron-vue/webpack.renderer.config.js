@@ -109,9 +109,6 @@ let rendererConfig = {
       },
       templateParameters(compilation, assets, options) {
         return {
-          compilation: compilation,
-          webpack: compilation.getStats().toJson(),
-          webpackConfig: compilation.options,
           htmlWebpackPlugin: {
             files: assets,
             options: options
@@ -213,7 +210,7 @@ if (process.env.NODE_ENV === 'production') {
   }
   rendererConfig.optimization.runtimeChunk = { name: 'runtime' }
 } else {
-  rendererConfig.devtool = 'eval-source-map'
+  rendererConfig.devtool = 'cheap-module-source-map'
   // eslint
   // rendererConfig.plugins.push(new ESLintPlugin(config.dev.ESLintoptions))
 }
