@@ -18,6 +18,29 @@ const TT_SUPPORTED_STATEMENT_LABELS = new Set([
   '取自站外'
 ])
 
+const TT_TITLE_FIELD_SELECTORS = [
+  'input[placeholder="请输入 0～30 个字符"]',
+  'input[placeholder*="0～30"]',
+  'input[placeholder*="0-30"]',
+  'input[placeholder*="字符"]',
+  'input[placeholder*="标题"]',
+  'textarea[placeholder*="0～30"]',
+  'textarea[placeholder*="0-30"]',
+  'textarea[placeholder*="字符"]',
+  'textarea[placeholder*="标题"]',
+  '[contenteditable="true"][placeholder*="0～30"]',
+  '[contenteditable="true"][placeholder*="0-30"]',
+  '[contenteditable="true"][placeholder*="字符"]',
+  '[contenteditable="true"][placeholder*="标题"]',
+  '[contenteditable="true"][aria-label*="0～30"]',
+  '[contenteditable="true"][aria-label*="0-30"]',
+  '[contenteditable="true"][aria-label*="字符"]',
+  '[contenteditable="true"][aria-label*="标题"]',
+  '.video-form textarea',
+  '.video-form [contenteditable="true"]',
+  '.video-form input[type="text"]'
+].join(', ')
+
 async function selectTtCreativeStatement(page, data) {
   const value = data.data && data.data.creativeStatement
   console.log('[tt] creativeStatement 值 =', value)
@@ -82,6 +105,34 @@ async function selectTtCreativeStatement(page, data) {
   console.log(
     `[tt] 已勾选视频来源: ${label}（checkedAfter=${pickResult.checkedAfter}）`
   )
+}
+
+async function dumpToutiaoFieldState(page, tag) {
+  try {
+    const info = await page.evaluate(() => {
+      const toInfo = (el) => ({
+        tag: el.tagName.toLowerCase(),
+        placeholder: el.placeholder || el.getAttribute('placeholder') || '',
+        ariaLabel: el.getAttribute('aria-label') || '',
+        type: el.type || '',
+        id: el.id || '',
+        className: el.className || '',
+        contenteditable: el.getAttribute('contenteditable') || '',
+        text: (el.textContent || '').trim().slice(0, 40)
+      })
+
+      return {
+        inputs: [...document.querySelectorAll('input')].map(toInfo),
+        textareas: [...document.querySelectorAll('textarea')].map(toInfo),
+        editables: [...document.querySelectorAll('[contenteditable="true"]')].map(toInfo)
+      }
+    })
+    console.log(`[tt] 表单状态(${tag}) inputs:`, JSON.stringify(info.inputs))
+    console.log(`[tt] 表单状态(${tag}) textareas:`, JSON.stringify(info.textareas))
+    console.log(`[tt] 表单状态(${tag}) editables:`, JSON.stringify(info.editables))
+  } catch (e) {
+    console.log(`[tt] 表单状态(${tag})读取失败:`, e?.message || e)
+  }
 }
 
 const {
@@ -647,16 +698,8 @@ export default async function (page, data, window, event) {
 
   console.log('[tt] 开始：等待标题输入框')
   try {
-    // 新版标题输入框 placeholder 可能变化，多个候选 OR
-    const TITLE_SELECTORS = [
-      'input[placeholder="请输入 0～30 个字符"]',
-      'input[placeholder*="0～30"]',
-      'input[placeholder*="0-30"]',
-      'input[placeholder*="字符"]'
-    ]
-    const titleSelector = TITLE_SELECTORS.join(', ')
-    await page.waitForSelector(titleSelector, { timeout: 60 * 1000 })
-    const input = await page.$(titleSelector)
+    await page.waitForSelector(TT_TITLE_FIELD_SELECTORS, { timeout: 60 * 1000 })
+    const input = await page.$(TT_TITLE_FIELD_SELECTORS)
     if (!input) throw new Error('未找到头条标题输入框')
     await input.click({ clickCount: 3 })
     await page.keyboard.press('Backspace')
@@ -664,17 +707,7 @@ export default async function (page, data, window, event) {
     console.log('[tt] 标题已输入')
   } catch (e) {
     console.error('[tt] ❌ 输入标题失败:', e?.message || e)
-    // 也 dump 一下当前页面所有 input，便于追新的 placeholder
-    try {
-      const dump = await page.evaluate(() =>
-        [...document.querySelectorAll('input')].map(el => ({
-          placeholder: el.placeholder || '',
-          type: el.type || '',
-          id: el.id || ''
-        }))
-      )
-      console.log('[tt] 当前页 inputs:', JSON.stringify(dump))
-    } catch (_) {}
+    await dumpToutiaoFieldState(page, 'title-fail')
     throw new Error(`头条输入标题失败：${e?.message || e}`)
   }
   // 勾选「视频来源」声明（无标注则不勾选）—— 与横/竖屏无关，提前到上传等待之前执行
