@@ -17,11 +17,26 @@ function isBrokenPipeError(err) {
   );
 }
 
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
 function formatLogDate(date = new Date()) {
   const yyyy = String(date.getFullYear());
   const mm = String(date.getMonth() + 1).padStart(2, "0");
   const dd = String(date.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
+}
+
+function formatLogTimestamp(date = new Date()) {
+  const yyyy = String(date.getFullYear());
+  const mm = pad2(date.getMonth() + 1);
+  const dd = pad2(date.getDate());
+  const hh = pad2(date.getHours());
+  const mi = pad2(date.getMinutes());
+  const ss = pad2(date.getSeconds());
+  const ms = String(date.getMilliseconds()).padStart(3, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}.${ms}`;
 }
 
 function getLogFilePath(app) {
@@ -56,10 +71,10 @@ export function installMainProcessLogFile(app) {
   if (installed) return;
   installed = true;
   openLogStream(app).write(
-    `[${new Date().toISOString()}] [LOG] MatrixMedia 主进程日志文件已就绪。\n`
+    `[${formatLogTimestamp()}] [LOG] MatrixMedia 主进程日志文件已就绪。\n`
   );
 
-  const stamp = () => new Date().toISOString();
+  const stamp = () => formatLogTimestamp();
   const line = (level, args) =>
     `[${stamp()}] [${level}] ${util.format(...args)}\n`;
 
@@ -109,6 +124,6 @@ export function clearMainProcessLogFile(app) {
     return;
   }
   openLogStream(app).write(
-    `[${new Date().toISOString()}] [LOG] MatrixMedia 主进程日志已清空。\n`
+    `[${formatLogTimestamp()}] [LOG] MatrixMedia 主进程日志已清空。\n`
   );
 }

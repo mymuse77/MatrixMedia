@@ -91,48 +91,67 @@ export async function resolvePublishFile(file, options = {}) {
   const fileName = guessFileNameFromUrl(raw);
   const localPath = path.join(tmpDir, `${Date.now()}-${fileName}`);
 
-  console.log("[resolvePublishFile] 开始下载远程视频:", raw);
   const headers = normalizeRequestHeaders(options?.headers);
-
-  const response = await axios({
-    method: "GET",
-    url: raw,
-    headers,
-    responseType: "stream",
-    timeout: DEFAULT_DOWNLOAD_TIMEOUT_MS,
-    maxRedirects: 5,
-    validateStatus: (status) => status >= 200 && status < 300,
-  });
-
-  await new Promise((resolve, reject) => {
-    const writer = fs.createWriteStream(localPath);
-    response.data.pipe(writer);
-    writer.on("finish", resolve);
-    writer.on("error", (err) => {
-      safeUnlink(localPath);
-      reject(err);
-    });
-    response.data.on("error", (err) => {
-      safeUnlink(localPath);
-      reject(err);
-    });
-  });
-
-  const stat = fs.statSync(localPath);
-  if (!stat.isFile() || stat.size <= 0) {
-    safeUnlink(localPath);
-    throw new Error("下载的视频文件为空");
-  }
-
   console.log(
-    "[resolvePublishFile] 下载完成:",
-    localPath,
-    `(${(stat.size / 1024 / 1024).toFixed(2)} MB)`
+    "[resolvePublishFile] 开始下载远程视频:",
+    JSON.stringify({ remoteUrl: raw, localPath })
   );
 
-  return {
-    localPath,
-    remoteUrl: raw,
-    cleanup: () => safeUnlink(localPath),
-  };
+  try {
+    const response = await axios({
+      method: "GET",
+      url: raw,
+      headers,
+      responseType: "stream",
+      timeout: DEFAULT_DOWNLOAD_TIMEOUT_MS,
+      maxRedirects: 5,
+      validateStatus: (status) => status >= 200 && status < 300,
+    });
+
+    await new Promise((resolve, reject) => {
+      const writer = fs.createWriteStream(localPath);
+      response.data.pipe(writer);
+      writer.on("finish", resolve);
+      writer.on("error", (err) => {
+        safeUnlink(localPath);
+        reject(err);
+      });
+      response.data.on("error", (err) => {
+        safeUnlink(localPath);
+        reject(err);
+      });
+    });
+
+    const stat = fs.statSync(localPath);
+    if (!stat.isFile() || stat.size <= 0) {
+      safeUnlink(localPath);
+      throw new Error("下载的视频文件为空");
+    }
+
+    console.log(
+      "[resolvePublishFile] 下载完成:",
+      JSON.stringify({
+        remoteUrl: raw,
+        localPath,
+        sizeMB: Number((stat.size / 1024 / 1024).toFixed(2)),
+      })
+    );
+
+    return {
+      localPath,
+      remoteUrl: raw,
+      cleanup: () => safeUnlink(localPath),
+    };
+  } catch (error) {
+    console.error(
+      "[resolvePublishFile] 下载失败:",
+      JSON.stringify({
+        remoteUrl: raw,
+        localPath,
+        error: error && error.message ? error.message : String(error),
+      })
+    );
+    safeUnlink(localPath);
+    throw error;
+  }
 }

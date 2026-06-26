@@ -798,7 +798,7 @@ function createLocalPublishData({
     matrixItemId: cleanText(itemId),
     matrixSourceVideoPath: cleanText(sourceVideoPath || videoPath),
     matrixSourceVideoUrl: cleanText(sourceVideoUrl),
-    date: new Date().toISOString().split('T')[0],
+    date: formatDateKey(new Date()),
     coverPath: coverPath || '',
     publishStatus: 'publishing',
     lastPublishMessage: '等待发布结果',
