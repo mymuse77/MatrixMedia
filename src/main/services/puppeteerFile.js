@@ -1,6 +1,7 @@
 "use strict";
 
 import { ipcMain, app, BrowserWindow, dialog } from "electron";
+import fs from "fs";
 import puppeteerCore from "puppeteer-core";
 import { addExtra } from "puppeteer-extra";
 import pie from "puppeteer-in-electron";
@@ -178,6 +179,46 @@ function isExpectedPublishUrl(data, currentUrl) {
   return false;
 }
 
+function createPublishStageLogger(data) {
+  const startedAt = Date.now();
+  let lastAt = startedAt;
+  const label = `${data.pt || "未知平台"} ${data.phone || data.partition || ""}`.trim();
+
+  return (stage, extra = {}) => {
+    const now = Date.now();
+    const payload = {
+      platform: data.pt,
+      phone: data.phone,
+      attempt: extra.attempt,
+      elapsedMs: now - startedAt,
+      stepMs: now - lastAt,
+      ...extra,
+    };
+    lastAt = now;
+    console.log(`[publish-timing] ${label} ${stage}:`, JSON.stringify(payload));
+  };
+}
+
+function getPublishFileInfo(filePath) {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) {
+      return { filePath, exists: false };
+    }
+    const stat = fs.statSync(filePath);
+    return {
+      filePath,
+      exists: true,
+      sizeMB: Number((stat.size / 1024 / 1024).toFixed(2)),
+    };
+  } catch (error) {
+    return {
+      filePath,
+      exists: false,
+      error: error?.message || String(error),
+    };
+  }
+}
+
 /**
  * 注册渲染进程 `puppeteerFile` IPC，与历史行为一致
  */
@@ -206,6 +247,8 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
   data.partition = data.partition.split("-")[0];
   const isXhsTask = isXhsPlatform(data.pt);
   const maxRetries = getPublishAttemptLimit(data, 5);
+  const logStage = createPublishStageLogger(data);
+  logStage("任务开始", getPublishFileInfo(data.filePath));
   let currentAttempt = 0;
   let finished = false;
   let activeBrowser = null;
@@ -245,6 +288,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
 
   const finishOnce = () => {
     if (finished) return;
+    logStage("任务结束", { attempt: currentAttempt });
     finished = true;
     cleanupTaskResources();
     if (queueDone) queueDone();
@@ -298,6 +342,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     let page;
 
     try {
+      logStage("开始尝试", { attempt: currentAttempt, maxRetries });
       const proxyResult = await applyAccountProxyForTask({
         partition: data.partition,
         phone: data.phone,
@@ -311,6 +356,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
 
       browser = await pie.connect(app, puppeteer);
       activeBrowser = browser;
+      logStage("浏览器已连接", { attempt: currentAttempt });
       win = new BrowserWindow({
         show: data.mmCliSuppressWindow
           ? false
@@ -328,6 +374,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       activeWin = win;
       openPublishWindows.add(win);
       page = await pie.getPage(browser, win);
+      logStage("发布窗口已创建", { attempt: currentAttempt });
 
       // Block any window.open() calls from the publish page (e.g. Juejin OAuth popups)
       win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -402,6 +449,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       } else {
         await win.loadURL(data.url);
       }
+      logStage("发布页已加载", { attempt: currentAttempt, url: data.url });
 
       win.on("closed", () => {
         openPublishWindows.delete(win);
@@ -484,7 +532,9 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
               finishOnce();
               return;
             }
+            logStage("进入平台脚本", { attempt: currentAttempt });
             await action(page, data, win, createAttemptTransport(), finishOnce);
+            logStage("平台脚本已返回", { attempt: currentAttempt });
           } else {
             console.log(
               `尝试${currentAttempt} URL不匹配: ${currentUrl}，关闭窗口并重新尝试`

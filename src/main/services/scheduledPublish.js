@@ -243,7 +243,14 @@ async function executeScheduledRecordAsync(record) {
 
     if (isRemotePublishFile(publishFilePath)) {
       try {
-        const resolved = await resolvePublishFile(publishFilePath);
+        const resolved = await resolvePublishFile(publishFilePath, {
+          cacheKey:
+            record.matrixItemId ||
+            record.serverId ||
+            record.itemId ||
+            record.id ||
+            "",
+        });
         publishFilePath = resolved.localPath;
         cleanupDownload = resolved.cleanup;
       } catch (e) {

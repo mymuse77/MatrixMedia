@@ -4,9 +4,11 @@ import fs from "fs";
 import path from "path";
 import axios from "axios";
 import { app } from "electron";
+import crypto from "crypto";
 
 const REMOTE_FILE_RE = /^https?:\/\//i;
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1000;
+const activeDownloads = new Map();
 
 export function isRemotePublishFile(file) {
   return REMOTE_FILE_RE.test(String(file || "").trim());
@@ -25,8 +27,8 @@ export function guessFileNameFromUrl(url) {
   return `matrixmedia-${Date.now()}.mp4`;
 }
 
-function getPublishTempDir() {
-  return path.join(app.getPath("temp"), "matrixmedia-publish");
+function getPublishCacheDir() {
+  return path.join(app.getPath("documents"), "MatrixMedia", "cache", "publish-media");
 }
 
 function safeUnlink(filePath) {
@@ -40,6 +42,65 @@ function safeUnlink(filePath) {
       filePath,
       e && e.message ? e.message : e
     );
+  }
+}
+
+function safeRename(from, to) {
+  try {
+    if (fs.existsSync(to)) {
+      safeUnlink(to);
+    }
+    fs.renameSync(from, to);
+  } catch (error) {
+    safeUnlink(from);
+    throw error;
+  }
+}
+
+function sanitizeCacheKey(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 96);
+}
+
+function hashRemoteUrl(url) {
+  return crypto
+    .createHash("sha256")
+    .update(String(url || ""))
+    .digest("hex")
+    .slice(0, 24);
+}
+
+function getCacheKey(raw, options = {}) {
+  const explicitKey = sanitizeCacheKey(
+    options.cacheKey ||
+      options.serverId ||
+      options.matrixItemId ||
+      options.itemId ||
+      ""
+  );
+  if (explicitKey) return explicitKey;
+  return `url-${hashRemoteUrl(raw)}`;
+}
+
+function getCacheFilePath(raw, options = {}) {
+  const cacheDir = getPublishCacheDir();
+  const cacheKey = getCacheKey(raw, options);
+  const guessedName = guessFileNameFromUrl(options.fileName || raw);
+  const ext = path.extname(guessedName) || ".mp4";
+  return path.join(cacheDir, `${cacheKey}${ext}`);
+}
+
+function isUsableLocalFile(filePath) {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return false;
+    const stat = fs.statSync(filePath);
+    return stat.isFile() && stat.size > 0;
+  } catch (_) {
+    return false;
   }
 }
 
@@ -66,9 +127,9 @@ function normalizeRequestHeaders(headers) {
 }
 
 /**
- * 将发布 file 解析为本地路径；若为 http(s) URL 则下载到临时目录。
+ * 将发布 file 解析为本地路径；若为 http(s) URL 则下载到可复用缓存目录。
  * @param {string} file 本地路径或 http(s) URL
- * @param {{ headers?: Record<string, string|string[]> }} [options]
+ * @param {{ headers?: Record<string, string|string[]>, cacheKey?: string, serverId?: string, matrixItemId?: string, itemId?: string, fileName?: string }} [options]
  * @returns {Promise<{ localPath: string, remoteUrl: string|null, cleanup: (() => void)|null }>}
  */
 export async function resolvePublishFile(file, options = {}) {
@@ -85,11 +146,43 @@ export async function resolvePublishFile(file, options = {}) {
     };
   }
 
-  const tmpDir = getPublishTempDir();
-  fs.mkdirSync(tmpDir, { recursive: true });
+  const localPath = getCacheFilePath(raw, options);
+  const partPath = `${localPath}.download`;
+  fs.mkdirSync(path.dirname(localPath), { recursive: true });
 
-  const fileName = guessFileNameFromUrl(raw);
-  const localPath = path.join(tmpDir, `${Date.now()}-${fileName}`);
+  if (isUsableLocalFile(localPath)) {
+    const stat = fs.statSync(localPath);
+    console.log(
+      "[resolvePublishFile] 使用本地缓存视频:",
+      JSON.stringify({
+        remoteUrl: raw,
+        localPath,
+        sizeMB: Number((stat.size / 1024 / 1024).toFixed(2)),
+      })
+    );
+    return {
+      localPath,
+      remoteUrl: raw,
+      cleanup: null,
+    };
+  }
+
+  const activeDownload = activeDownloads.get(localPath);
+  if (activeDownload) {
+    console.log(
+      "[resolvePublishFile] 等待同一视频下载完成:",
+      JSON.stringify({ remoteUrl: raw, localPath })
+    );
+    await activeDownload;
+    if (!isUsableLocalFile(localPath)) {
+      throw new Error(`视频缓存不可用: ${localPath}`);
+    }
+    return {
+      localPath,
+      remoteUrl: raw,
+      cleanup: null,
+    };
+  }
 
   const headers = normalizeRequestHeaders(options?.headers);
   console.log(
@@ -97,7 +190,9 @@ export async function resolvePublishFile(file, options = {}) {
     JSON.stringify({ remoteUrl: raw, localPath })
   );
 
-  try {
+  const downloadPromise = (async () => {
+    safeUnlink(partPath);
+
     const response = await axios({
       method: "GET",
       url: raw,
@@ -109,38 +204,46 @@ export async function resolvePublishFile(file, options = {}) {
     });
 
     await new Promise((resolve, reject) => {
-      const writer = fs.createWriteStream(localPath);
+      const writer = fs.createWriteStream(partPath);
       response.data.pipe(writer);
       writer.on("finish", resolve);
       writer.on("error", (err) => {
-        safeUnlink(localPath);
+        safeUnlink(partPath);
         reject(err);
       });
       response.data.on("error", (err) => {
-        safeUnlink(localPath);
+        safeUnlink(partPath);
         reject(err);
       });
     });
 
-    const stat = fs.statSync(localPath);
+    const stat = fs.statSync(partPath);
     if (!stat.isFile() || stat.size <= 0) {
-      safeUnlink(localPath);
+      safeUnlink(partPath);
       throw new Error("下载的视频文件为空");
     }
+
+    safeRename(partPath, localPath);
+    const finalStat = fs.statSync(localPath);
 
     console.log(
       "[resolvePublishFile] 下载完成:",
       JSON.stringify({
         remoteUrl: raw,
         localPath,
-        sizeMB: Number((stat.size / 1024 / 1024).toFixed(2)),
+        sizeMB: Number((finalStat.size / 1024 / 1024).toFixed(2)),
       })
     );
+  })();
 
+  activeDownloads.set(localPath, downloadPromise);
+
+  try {
+    await downloadPromise;
     return {
       localPath,
       remoteUrl: raw,
-      cleanup: () => safeUnlink(localPath),
+      cleanup: null,
     };
   } catch (error) {
     console.error(
@@ -151,7 +254,11 @@ export async function resolvePublishFile(file, options = {}) {
         error: error && error.message ? error.message : String(error),
       })
     );
-    safeUnlink(localPath);
+    safeUnlink(partPath);
     throw error;
+  } finally {
+    if (activeDownloads.get(localPath) === downloadPromise) {
+      activeDownloads.delete(localPath);
+    }
   }
 }

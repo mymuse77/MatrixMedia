@@ -36,6 +36,17 @@ function derivePhoneForRecord(v) {
   return idx > 0 ? stripped.slice(0, idx) : stripped;
 }
 
+function getRemoteCacheKey(v) {
+  return String(
+    v.serverId ||
+      v.matrixItemId ||
+      v.itemId ||
+      v.videoId ||
+      v.id ||
+      ""
+  ).trim();
+}
+
 /**
  * 单文件发布（与 cli publish 单文件模式一致）
  * @param {object} v parsePublishArgs 解析后的参数
@@ -71,7 +82,9 @@ export async function runSingleFilePublish(
     resolvedFile = fileContext.resolvedFile;
   } else if (!deferRemoteDownload) {
     try {
-      const resolved = await resolvePublishFile(sourceFile);
+      const resolved = await resolvePublishFile(sourceFile, {
+        cacheKey: getRemoteCacheKey(v),
+      });
       resolvedFile = resolved.localPath;
       cleanupDownload = resolved.cleanup;
     } catch (e) {
@@ -345,7 +358,7 @@ function sortPublishPlatforms(list) {
 }
 
 /**
- * 多平台顺序发布；远程视频只下载一次，全部完成后清理临时文件
+ * 多平台顺序发布；远程视频会复用本地缓存，避免重复下载
  * @param {object[]} parsedList
  */
 export async function runMultiPlatformPublish(parsedList) {
@@ -401,7 +414,9 @@ export async function runMultiPlatformPublish(parsedList) {
 
   if (!deferRemoteDownload) {
     try {
-      const resolved = await resolvePublishFile(sourceFile);
+      const resolved = await resolvePublishFile(sourceFile, {
+        cacheKey: getRemoteCacheKey(parsedList[0]),
+      });
       fileContext = {
         sourceFile,
         resolvedFile: resolved.localPath,

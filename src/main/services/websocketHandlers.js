@@ -695,7 +695,42 @@ function createDownloadRequest(videoUrl, download, downloadHeaders, downloadExpi
     request.expiresAt = expiresAt;
   }
 
+  for (const key of ['jobId', 'outputIndex', 'matrixTaskId', 'clientId']) {
+    const value = normalizedDownload?.[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      request[key] = value;
+    }
+  }
+
   return request;
+}
+
+function getRemoteVideoCacheKey({
+  itemId,
+  video,
+  downloadRequest,
+  localPublishRecord,
+}) {
+  const jobId = cleanText(downloadRequest?.jobId || video?.jobId);
+  const outputIndexValue = downloadRequest?.outputIndex ?? video?.outputIndex;
+  const outputIndex = Number(outputIndexValue);
+  if (jobId && Number.isInteger(outputIndex) && outputIndex >= 0) {
+    return `${jobId}-${outputIndex}`;
+  }
+
+  const directId =
+    cleanText(video?.matrixItemId) ||
+    cleanText(video?.videoId) ||
+    cleanText(video?.id) ||
+    cleanText(video?._id) ||
+    cleanText(localPublishRecord?.matrixSourceVideoId) ||
+    cleanText(localPublishRecord?.matrixVideoId) ||
+    cleanText(itemId) ||
+    cleanText(video?.itemId) ||
+    cleanText(localPublishRecord?.matrixItemId);
+  if (directId) return directId;
+
+  return '';
 }
 
 function getCaptionText(caption) {
@@ -925,6 +960,7 @@ export async function handlePublishVideo(taskData, wsClient) {
     phone,
     platform,
     itemId,
+    serverId,
     partition,
     videoUrl,
     videoPath,
@@ -968,6 +1004,11 @@ export async function handlePublishVideo(taskData, wsClient) {
       sendScopedProgress(wsClient, taskId, 10, '正在下载视频', progressRange);
       const resolved = await resolvePublishFile(resolvedVideoUrl, {
         headers: downloadRequest?.headers,
+        cacheKey: getRemoteVideoCacheKey({
+          itemId: cleanText(serverId) || itemId,
+          downloadRequest,
+          localPublishRecord,
+        }),
       });
       localVideoPath = resolved.localPath;
       cleanupDownloadedVideo = resolved.cleanup;
@@ -979,6 +1020,11 @@ export async function handlePublishVideo(taskData, wsClient) {
         sendScopedProgress(wsClient, taskId, 10, '正在下载视频', progressRange);
         const resolved = await resolvePublishFile(resolvedVideoUrl, {
           headers: downloadRequest?.headers,
+          cacheKey: getRemoteVideoCacheKey({
+            itemId: cleanText(serverId) || itemId,
+            downloadRequest,
+            localPublishRecord,
+          }),
         });
         localVideoPath = resolved.localPath;
         cleanupDownloadedVideo = resolved.cleanup;
@@ -1199,6 +1245,11 @@ export async function handlePublishVideos(taskData, wsClient) {
 
       publishQueue.push({
         itemId: publishItemIds[detailIndex] || '',
+        serverId: getRemoteVideoCacheKey({
+          itemId: publishItemIds[detailIndex] || '',
+          video,
+          downloadRequest: download,
+        }),
         phone,
         platform,
         partition,
@@ -1229,6 +1280,7 @@ export async function handlePublishVideos(taskData, wsClient) {
       phone,
       platform,
       itemId,
+      serverId,
       partition,
       videoPath,
       videoUrl,
@@ -1250,6 +1302,7 @@ export async function handlePublishVideos(taskData, wsClient) {
           phone,
           platform,
           itemId,
+          serverId,
           partition,
           videoUrl,
           videoPath,
