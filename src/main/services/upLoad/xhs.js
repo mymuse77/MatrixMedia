@@ -21,6 +21,89 @@ const XHS_SUPPORTED_STATEMENT_LABELS = new Set([
   "内容包含营销广告",
 ]);
 
+const XHS_TITLE_SELECTOR =
+  ".publish-page-content-base .edit-container .d-input input.d-text";
+const XHS_TITLE_FILL_ATTEMPTS = 3;
+const XHS_TITLE_SELECTOR_WAIT_MS = 90 * 1000;
+
+function getErrorMessage(err) {
+  return err?.message || String(err);
+}
+
+async function dumpXhsTitleFieldState(page, tag) {
+  const state = await page
+    .evaluate(
+      "(function(){" +
+        "function pick(el){" +
+        "return {" +
+        "tag:el.tagName," +
+        "type:el.getAttribute('type')||''," +
+        "placeholder:el.getAttribute('placeholder')||''," +
+        "className:el.className||''," +
+        "ariaLabel:el.getAttribute('aria-label')||''," +
+        "value:el.value||el.textContent||''" +
+        "};" +
+        "}" +
+        "var nodes=Array.prototype.slice.call(document.querySelectorAll('input,textarea,[contenteditable=\"true\"]'));" +
+        "return {url:location.href, fields:nodes.slice(0,20).map(pick)};" +
+        "})()"
+    )
+    .catch((err) => ({ error: getErrorMessage(err) }));
+  console.log(`[xhs] 标题输入框状态(${tag}):`, JSON.stringify(state));
+}
+
+async function waitForXhsTitleInput(page) {
+  await pollPageUntil(
+    page,
+    "(function(){return !!document.querySelector('.publish-page-content-base .edit-container .d-input input.d-text');})()",
+    XHS_TITLE_SELECTOR_WAIT_MS,
+    1000,
+    "等待小红书标题输入框出现超时"
+  );
+
+  const titleInput = await page.$(XHS_TITLE_SELECTOR);
+  if (!titleInput) {
+    throw new Error("未找到标题输入框");
+  }
+  return titleInput;
+}
+
+async function fillXhsTitle(page, data) {
+  const rawTitle = (data.data?.bt1 || data.data?.bt2 || "").trim();
+  const titleText = rawTitle.slice(0, 20);
+  if (rawTitle.length > 20) {
+    console.warn(
+      `[xhs] ⚠️ 标题共${rawTitle.length}字，超过20字限制，已截断为: "${titleText}"`
+    );
+  }
+
+  for (let attempt = 1; attempt <= XHS_TITLE_FILL_ATTEMPTS; attempt++) {
+    try {
+      console.log(
+        `[xhs] 填写标题 (${attempt}/${XHS_TITLE_FILL_ATTEMPTS})`
+      );
+      const titleInput = await waitForXhsTitleInput(page);
+      await titleInput.click({ clickCount: 3 });
+      await page.keyboard.press("Backspace");
+      if (titleText) {
+        await titleInput.type(titleText, { delay: xhsTypeDelay() });
+      }
+      console.log("[xhs] 标题填写完成");
+      return;
+    } catch (err) {
+      const message = getErrorMessage(err);
+      console.warn(
+        `[xhs] 标题填写第 ${attempt} 次失败: ${message}`
+      );
+      if (attempt >= XHS_TITLE_FILL_ATTEMPTS) {
+        await dumpXhsTitleFieldState(page, "final-fail");
+        throw new Error(`小红书标题填写失败：${message}`);
+      }
+      await waitXhs(page, 1500, 3000);
+    }
+  }
+}
+
 async function selectXhsCreativeStatement(page, data) {
   const value = data.data && data.data.creativeStatement;
   console.log("[xhs] creativeStatement 值 =", value);
@@ -278,31 +361,7 @@ export default async function (page, data, window, event) {
     throw new Error(`小红书文件上传失败：${err?.message || err}`);
   }
 
-  try {
-    const titleSelector =
-      ".publish-page-content-base .edit-container .d-input input.d-text";
-    await page.waitForSelector(titleSelector, {
-      timeout: WAIT_SELECTOR_APPEAR_MS,
-    });
-    const titleInput = await page.$(titleSelector);
-    if (!titleInput) throw new Error("未找到标题输入框");
-    const rawTitle = (data.data?.bt1 || data.data?.bt2 || "").trim();
-    const titleText = rawTitle.slice(0, 20);
-    if (rawTitle.length > 20) {
-      console.warn(
-        `[xhs] ⚠️ 标题共${rawTitle.length}字，超过20字限制，已截断为: "${titleText}"`
-      );
-    }
-    await titleInput.click({ clickCount: 3 });
-    await page.keyboard.press("Backspace");
-    if (titleText) {
-      await page.type(titleSelector, titleText, { delay: xhsTypeDelay() });
-    }
-  } catch (err) {
-    console.error("❌ 小红书标题填写失败:", err);
-    // 标题也是必填，挂了直接抛触发重试
-    throw new Error(`小红书标题填写失败：${err?.message || err}`);
-  }
+  await fillXhsTitle(page, data);
 
   await waitXhs(page);
 
