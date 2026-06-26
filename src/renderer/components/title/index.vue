@@ -106,7 +106,8 @@ export default {
 
   components: {},
   created() {
-    this.checkForUpdates();
+    // 本地开发：关闭自动更新
+    // this.checkForUpdates();
     ipcRenderer.invoke("IsUseSysTitle").then((res) => {
       this.IsUseSysTitle = res;
     });
