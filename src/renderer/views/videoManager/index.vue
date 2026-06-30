@@ -1,313 +1,115 @@
 <template>
-  <div class="container-box">
-    <header class="manager-header">
-      <div class="manager-header-copy">
-        <div class="manager-eyebrow">本地发布工具</div>
-        <h1>视频管理</h1>
-        <p>
-          统一查看本机发布记录、状态同步和发布日志。失败项可直接重发，所有内容都来自本机 pushData。
-        </p>
-      </div>
-      <div class="manager-header-actions">
-        <el-button type="primary" @click="selectVideoFile"
-          >选择视频发布</el-button
-        >
-        <el-button type="primary" @click="openDirectoryPublish"
-          >目录发布</el-button
-        >
-        <el-button type="success" @click="openArticlePublish"
-          >发布文章</el-button
-        >
-        <el-tooltip content="数据刷新" placement="bottom">
-          <el-button
-            icon="el-icon-refresh"
-            circle
-            :loading="recordsLoading"
-            @click="refreshRecords"
-          />
-        </el-tooltip>
-      </div>
-    </header>
+  <div class="page-shell video-manager-page">
+    <div class="page-header">
+      <h1 class="page-title">视频管理</h1>
+      <p class="page-desc">选择视频或目录发布，查看本地发布记录与审核状态</p>
+    </div>
 
-    <section class="summary-grid">
-      <div
-        v-for="card in summaryCards"
-        :key="card.label"
-        class="summary-card"
-        :class="card.className"
-      >
-        <div class="summary-card-label">{{ card.label }}</div>
-        <div class="summary-card-value">{{ card.value }}</div>
-        <div class="summary-card-hint">{{ card.hint }}</div>
+    <div class="toolbar section-card el-card is-never-shadow">
+      <div class="toolbar-inner">
+        <div class="toolbar-left">
+          <span class="toolbar-label">发布操作</span>
+          <el-button type="primary" @click="selectVideoFile"
+            >选择视频发布</el-button
+          >
+          <el-button type="primary" plain @click="openDirectoryPublish"
+            >目录发布</el-button
+          >
+          <el-button type="success" @click="openArticlePublish"
+            >发布文章</el-button
+          >
+        </div>
+        <div class="toolbar-right">
+          <span class="toolbar-label">帮助</span>
+          <el-button type="warning" plain @click="openFeedback"
+            >问题反馈</el-button
+          >
+          <el-button type="warning" plain @click="openQQGroup"
+            >加入作者QQ群</el-button
+          >
+        </div>
       </div>
-    </section>
+    </div>
 
     <LocalVideoPublish ref="localPublishRef" @published="loadRecords" />
     <LocalArticlePublish ref="articlePublishRef" @published="loadRecords" />
 
-    <el-dialog
-      title="填写发布内容"
-      :visible.sync="contentDialogVisible"
-      width="860px"
-      top="8vh"
-      append-to-body
-      custom-class="publish-content-dialog"
-    >
-      <div v-if="contentContext" class="content-detail">
-        <div class="content-summary">
-          <div>
-            <div class="content-title">{{ contentContext.bt || "-" }}</div>
-            <div class="content-subtitle">
-              {{ contentContext.textOtherName || contentContext.bookName || "-" }}
-            </div>
-          </div>
-          <el-tag size="small" type="info">{{ contentContext.selectedFile || "未记录文件名" }}</el-tag>
-        </div>
-        <el-descriptions :column="2" border size="small" class="content-descriptions">
-          <el-descriptions-item label="名称">
-            {{ contentContext.textOtherName || contentContext.bookName || "-" }}
-          </el-descriptions-item>
-          <el-descriptions-item label="视频标题">
-            {{ contentContext.bt || "-" }}
-          </el-descriptions-item>
-          <el-descriptions-item label="概括短标题">
-            {{ contentContext.bt2 || "-" }}
-          </el-descriptions-item>
-          <el-descriptions-item label="视频标签">
-            {{ contentContext.bq || "-" }}
-          </el-descriptions-item>
-          <el-descriptions-item label="创作声明">
-            {{ creativeStatementText(contentContext.creativeStatement) }}
-          </el-descriptions-item>
-          <el-descriptions-item label="发布模式">
-            {{ publishModeText(contentContext) }}
-          </el-descriptions-item>
-          <el-descriptions-item label="定时发布">
-            {{ contentContext.scheduledPublishAtText || "-" }}
-          </el-descriptions-item>
-          <el-descriptions-item label="视频路径">
-            {{ contentContext.filePath || "-" }}
-          </el-descriptions-item>
-        </el-descriptions>
-        <div class="content-section-title">发布平台</div>
-        <el-table
-          :data="contentPlatforms"
-          border
-          size="small"
-          class="content-platform-table"
-        >
-          <el-table-column prop="pt" label="平台" min-width="90" />
-          <el-table-column prop="phone" label="账号" min-width="110" show-overflow-tooltip />
-          <el-table-column prop="bt" label="标题" min-width="150" show-overflow-tooltip />
-          <el-table-column prop="bq" label="标签" min-width="140" show-overflow-tooltip />
-          <el-table-column label="声明" min-width="90" show-overflow-tooltip>
-            <template slot-scope="scope">
-              {{ creativeStatementText(scope.row.creativeStatement) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="状态" width="110">
-            <template slot-scope="scope">
-              <el-tag size="mini" :type="publishStatusType(scope.row.publishStatus)">
-                {{ publishStatusText(scope.row.publishStatus) }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="lastPublishMessage" label="结果说明" min-width="180" show-overflow-tooltip />
-        </el-table>
-      </div>
-    </el-dialog>
-
-    <el-dialog
-      title="发布日志"
-      :visible.sync="logDialogVisible"
-      width="76%"
-      top="6vh"
-      append-to-body
-    >
-      <div v-loading="logLoading" class="publish-log-dialog">
-        <div v-if="logContext" class="log-summary">
-          <div>
-            <div class="log-title">{{ logContext.textOtherName || logContext.bookName || "-" }}</div>
-            <div class="log-subtitle">
-              {{ logContext.selectedFile || logContext.filePath || "-" }}
-            </div>
-          </div>
-          <div class="log-actions">
-            <el-button size="mini" @click="copyVisibleLogs">复制日志</el-button>
-            <el-button size="mini" :loading="logLoading" @click="reloadLogs">刷新</el-button>
-          </div>
-        </div>
-        <el-empty v-if="!logLoading && logRuns.length === 0" description="暂无发布日志" />
-        <template v-else>
-          <div class="log-run-list">
-            <div
-              v-for="run in logRuns"
-              :key="run.id"
-              class="log-run-item"
-              :class="{ active: run.id === selectedLogRunId }"
-              @click="selectedLogRunId = run.id"
-            >
-              <div class="log-run-main">
-                <span>{{ run.platform || "-" }}</span>
-                <span>{{ run.phone || "-" }}</span>
-                <span>{{ run.videoFile || "-" }}</span>
-              </div>
-              <el-tag size="mini" :type="publishRunStatusType(run.status)">
-                {{ publishRunStatusText(run.status) }}
-              </el-tag>
-            </div>
-          </div>
-          <el-tabs v-model="activeLogTab" class="log-tabs">
-            <el-tab-pane label="当前记录" name="current" />
-            <el-tab-pane label="同任务全部" name="all" />
-            <el-tab-pane label="错误" name="errors" />
-            <el-tab-pane
-              v-for="platformName in logPlatforms"
-              :key="platformName"
-              :label="platformName"
-              :name="'platform:' + platformName"
-            />
-          </el-tabs>
-          <div class="log-timeline">
-            <div v-for="log in visibleLogEntries" :key="log.id" class="log-line">
-              <span class="log-time">{{ formatLogTime(log.time) }}</span>
-              <el-tag size="mini" :type="logLevelType(log.level)">{{ log.level || "info" }}</el-tag>
-              <span class="log-stage">{{ log.stage || "-" }}</span>
-              <span class="log-message">{{ log.message || "-" }}</span>
-              <span v-if="log.detail" class="log-detail">{{ log.detail }}</span>
-            </div>
-            <el-empty v-if="visibleLogEntries.length === 0" description="当前筛选下暂无日志" />
-          </div>
-        </template>
-      </div>
-    </el-dialog>
-
     <div class="info-box">
       <template v-for="(item, index) in dataList">
-        <el-card v-if="item && item.length" :key="index" class="record-card mb16">
-          <div class="card-head">
-            <div class="card-head-copy">
-              <span class="date-label">{{ index }}</span>
-              <span class="hint">本地发布记录</span>
-              <span class="head-meta">{{ getGroupSummary(item).taskCount }} 条任务 · {{ getGroupSummary(item).platformCount }} 条平台明细</span>
-            </div>
-            <div class="card-head-stats">
-              <el-tag size="mini" type="success">成功 {{ getGroupSummary(item).successCount }}</el-tag>
-              <el-tag size="mini" type="danger">失败 {{ getGroupSummary(item).failCount }}</el-tag>
-              <el-tag size="mini" type="warning">进行中 {{ getGroupSummary(item).activeCount }}</el-tag>
-            </div>
+        <el-card
+          v-if="item && item.length"
+          :key="index"
+          class="section-card record-card"
+          shadow="never"
+        >
+          <div slot="header" class="card-header">
+            <span class="date-label">{{ index }}</span>
+            <span class="card-sub">本地发布记录</span>
           </div>
-          <el-table :data="item" border style="width: 100%" class="responsive-table">
-            <el-table-column label="任务" min-width="220" show-overflow-tooltip>
+          <el-table :data="item" border style="width: 100%">
+            <el-table-column prop="bt" label="标题" min-width="180" />
+            <el-table-column prop="phone" label="发布分组" min-width="120" />
+            <el-table-column label="发布进度" min-width="320">
               <template slot-scope="scope">
-                <div class="record-name-cell">
-                  <div class="record-name">{{ scope.row.textOtherName || "-" }}</div>
-                  <div class="record-subtitle">
-                    <span>{{ scope.row.bt || "-" }}</span>
-                    <el-tag size="mini" type="info">{{ scope.row.textType === "article" ? "文章" : "视频" }}</el-tag>
-                  </div>
-                  <div class="record-tags">
-                    <el-tag size="mini" type="info">{{ (scope.row.showAlltype || []).length }} 个平台</el-tag>
-                    <el-tag size="mini" type="success">成功 {{ normalizeCount(scope.row.publishSuccessCount) }}</el-tag>
-                    <el-tag size="mini" type="danger">失败 {{ normalizeCount(scope.row.publishFailCount) }}</el-tag>
-                  </div>
-                </div>
-              </template>
-            </el-table-column>
-            <el-table-column label="平台明细" min-width="420">
-              <template slot-scope="scope">
-                <div v-for="(sub, si) in scope.row.showAlltype" :key="si" class="detail-item">
-                  <div class="detail-main">
-                    <div class="detail-title-row">
-                      <span class="pt-name" @click="copy(sub.videoLink)">{{ sub.pt }}</span>
-                      <el-tag size="mini" :type="publishStatusType(sub.publishStatus)">
-                        {{ publishStatusText(sub.publishStatus) }}
-                      </el-tag>
-                      <el-tag size="mini" :type="sub.videoLink ? 'success' : 'danger'">
-                        {{ sub.videoLink ? "链接已回填" : "未回填链接" }}
-                      </el-tag>
-                    </div>
-                    <div class="detail-subline">
-                      <span>{{ sub.phone ? String(sub.phone).split("-")[0] : "-" }}</span>
-                      <span>重发 {{ normalizeCount(sub.republishCount) }} 次</span>
-                      <span>成功 {{ normalizeCount(sub.publishSuccessCount) }}</span>
-                      <span>失败 {{ normalizeCount(sub.publishFailCount) }}</span>
-                    </div>
-                  </div>
-                  <div class="detail-actions">
-                    <el-button
-                      v-if="sub.videoLink"
-                      type="text"
-                      size="mini"
-                      @click="copy(sub.videoLink)"
+                <div
+                  v-for="(sub, si) in scope.row.showAlltype"
+                  :key="si"
+                  class="progress-row"
+                >
+                  <span class="pt-name">{{ sub.pt }}</span>
+                  <div class="progress-detail">
+                    <span class="progress-count"
+                      >重发 {{ normalizeCount(sub.republishCount) }} 次</span
                     >
-                      复制链接
-                    </el-button>
-                    <el-button
-                      type="text"
-                      size="mini"
-                      @click="opPt(sub)"
+                    <span class="progress-count success"
+                      >成功 {{ normalizeCount(sub.publishSuccessCount) }}</span
                     >
-                      打开平台
-                    </el-button>
+                    <span class="progress-count fail"
+                      >失败 {{ normalizeCount(sub.publishFailCount) }}</span
+                    >
+                    <el-tag
+                      size="mini"
+                      :type="publishStatusType(sub.publishStatus)"
+                      >{{ publishStatusText(sub.publishStatus) }}</el-tag
+                    >
                   </div>
                 </div>
               </template>
             </el-table-column>
-            <el-table-column prop="phone" label="发布账号" align="center" header-align="center" min-width="110" />
-            <el-table-column label="来源" width="72">
+            <el-table-column label="操作" width="260">
               <template slot-scope="scope">
-                {{ scope.row.textType === "article" ? "文章" : "本地" }}
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" min-width="220">
-              <template slot-scope="scope">
-                <div class="action-grid">
-                  <el-button
-                    v-if="canViewPublishContent(scope.row)"
-                    type="success"
-                    size="mini"
-                    @click="handleViewPublishContent(scope.row)"
+                <el-button
+                  v-if="canGetStatus(scope.row)"
+                  type="primary"
+                  size="mini"
+                  class="mb8"
+                  :loading="isStatusLoading(scope.row)"
+                  :disabled="isStatusLoading(scope.row)"
+                  @click="handleGetStatus(scope.row)"
+                >
+                  获取状态
+                </el-button>
+                <el-popconfirm
+                  confirm-button-text="删除"
+                  cancel-button-text="取消"
+                  icon="el-icon-info"
+                  icon-color="red"
+                  title="确定删除这条记录吗？"
+                  @confirm="handleDelete(scope.row, index, scope.$index)"
+                >
+                  <el-button slot="reference" type="danger" size="mini"
+                    >删除</el-button
                   >
-                    填写内容
-                  </el-button>
-                  <el-button
-                    type="info"
-                    size="mini"
-                    :loading="logLoading && logContext === scope.row"
-                    @click="handleGetLogs(scope.row)"
-                  >
-                    日志
-                  </el-button>
-                  <el-button
-                    v-if="canGetStatus(scope.row)"
-                    type="primary"
-                    size="mini"
-                    :loading="isStatusLoading(scope.row)"
-                    :disabled="isStatusLoading(scope.row)"
-                    @click="handleGetStatus(scope.row)"
-                  >
-                    获取状态
-                  </el-button>
-                  <el-button
-                    v-if="canRepublish(scope.row)"
-                    type="warning"
-                    size="mini"
-                    @click="handleRepublish(scope.row)"
-                  >
-                    重新发布
-                  </el-button>
-                  <el-popconfirm
-                    confirm-button-text="删除"
-                    cancel-button-text="取消"
-                    icon="el-icon-info"
-                    icon-color="red"
-                    title="确定删除这条记录吗？"
-                    @confirm="handleDelete(scope.row, index, scope.$index)"
-                  >
-                    <el-button slot="reference" type="danger" size="mini">删除</el-button>
-                  </el-popconfirm>
-                </div>
+                </el-popconfirm>
+                <el-button
+                  v-if="canRepublish(scope.row)"
+                  type="warning"
+                  size="mini"
+                  class="mb8"
+                  @click="handleRepublish(scope.row)"
+                >
+                  重新发布
+                </el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -342,93 +144,9 @@ export default {
       dataList: {},
       taskHandlers: new Map(),
       statusLoadingMap: {},
-      recordsLoading: false,
-      logDialogVisible: false,
-      logLoading: false,
-      activeLogTab: "current",
-      selectedLogRunId: "",
-      logRuns: [],
-      logEntries: [],
-      logContext: null,
-      contentDialogVisible: false,
-      contentContext: null,
       loginData: {},
       showLoginDialog: false,
     };
-  },
-  computed: {
-    contentPlatforms() {
-      return (this.contentContext && this.contentContext.showAlltype) || [];
-    },
-    logPlatforms() {
-      return Array.from(
-        new Set((this.logRuns || []).map((run) => run.platform).filter(Boolean))
-      );
-    },
-    visibleLogEntries() {
-      const entries = this.logEntries || [];
-      if (this.activeLogTab === "errors") {
-        return entries.filter((log) => ["error", "warn"].includes(log.level));
-      }
-      if (this.activeLogTab.startsWith("platform:")) {
-        const platform = this.activeLogTab.replace("platform:", "");
-        const runIds = new Set(
-          this.logRuns
-            .filter((run) => run.platform === platform)
-            .map((run) => run.id)
-        );
-        return entries.filter((log) => runIds.has(log.runId));
-      }
-      if (this.activeLogTab === "current" && this.selectedLogRunId) {
-        return entries.filter((log) => log.runId === this.selectedLogRunId);
-      }
-      return entries;
-    },
-    videoManagerSummary() {
-      const summary = {
-        groupCount: 0,
-        taskCount: 0,
-        platformCount: 0,
-        successCount: 0,
-        failCount: 0,
-        activeCount: 0,
-      };
-
-      Object.values(this.dataList || {}).forEach((rows) => {
-        if (!Array.isArray(rows) || rows.length === 0) return;
-        summary.groupCount += 1;
-
-        rows.forEach((row) => {
-          summary.taskCount += 1;
-          const details = Array.isArray(row && row.showAlltype) && row.showAlltype.length ? row.showAlltype : [row];
-          summary.platformCount += details.length;
-
-          details.forEach((sub) => {
-            const status = String((sub && sub.publishStatus) || "").toLowerCase();
-            if (status === "success") {
-              summary.successCount += 1;
-            } else if (["fail", "failed", "expired"].includes(status)) {
-              summary.failCount += 1;
-            } else {
-              summary.activeCount += 1;
-            }
-          });
-        });
-      });
-
-      return summary;
-    },
-    summaryCards() {
-      const summary = this.videoManagerSummary;
-      return [
-        { label: "日期分组", value: summary.groupCount, hint: "按日期归档的记录", className: "is-neutral" },
-        { label: "发布任务", value: summary.taskCount, hint: "去重后的任务条目", className: "is-primary" },
-        { label: "平台明细", value: summary.platformCount, hint: "账号 / 平台维度", className: "is-info" },
-        { label: "成功", value: summary.successCount, hint: "已写入成功状态", className: "is-success" },
-        { label: "失败", value: summary.failCount, hint: "可直接重发", className: "is-danger" },
-        { label: "进行中", value: summary.activeCount, hint: "发布中或待刷新", className: "is-warning" },
-      ];
-    },
   },
   mounted() {
     this._onPuppeteerDone = (event, data) => {
@@ -442,180 +160,15 @@ export default {
       }
     };
     ipcRenderer.on("puppeteerFile-done", this._onPuppeteerDone);
-    this._setupResizeObserver();
   },
   beforeDestroy() {
     ipcRenderer.removeListener("puppeteerFile-done", this._onPuppeteerDone);
-    if (this._resizeObserver) {
-      this._resizeObserver.disconnect();
-      this._resizeObserver = null;
-    }
   },
   activated() {
     this.loadRecords();
   },
   methods: {
     copy: copyToClipboard,
-    _relayoutTables() {
-      if (this._relayoutRaf) cancelAnimationFrame(this._relayoutRaf);
-      this._relayoutRaf = requestAnimationFrame(() => {
-        this._relayoutRaf = null;
-        this.$el && this.$el.querySelectorAll('.el-table').forEach(table => {
-          const vm = table.__vue__;
-          if (vm && vm.doLayout) {
-            vm.doLayout();
-            table.querySelectorAll('colgroup col').forEach(col => {
-              col.style.removeProperty('min-width');
-            });
-          }
-        });
-      });
-    },
-    _setupResizeObserver() {
-      this._resizeObserver = new ResizeObserver(() => this._relayoutTables());
-      this._resizeObserver.observe(this.$el);
-    },
-    canViewPublishContent(row) {
-      return row && row.textType === "local";
-    },
-    handleViewPublishContent(row) {
-      if (!this.canViewPublishContent(row)) {
-        this.$message.warning("当前记录不是视频发布内容");
-        return;
-      }
-      this.contentContext = row;
-      this.contentDialogVisible = true;
-    },
-    creativeStatementText(value) {
-      if (!value) return "-";
-      const map = {
-        auto: "自动判断",
-        original: "原创",
-        reproduced: "转载/非原创",
-        ai: "AI 生成",
-      };
-      return map[value] || value;
-    },
-    publishModeText(row) {
-      if (!row) return "-";
-      if (row.publishMode === "draft" || row.publishToDraft) return "保存草稿";
-      if (row.scheduledTask || row.scheduledPublishAt) return "定时发布";
-      return "立即发布";
-    },
-    flattenDataResponse(data) {
-      const result = [];
-      Object.values(data || {}).forEach((rows) => {
-        result.push(...(rows || []));
-      });
-      return result;
-    },
-    getRunPhone(run) {
-      return String((run && run.phone) || "").split("-")[0];
-    },
-    getRunVideoFile(run) {
-      return this.getFileName(run && (run.videoFile || run.filePath));
-    },
-    isRunMatchRecord(run, record) {
-      if (!run || !record) return false;
-      if (run.pushDataId && record.id && run.pushDataId === record.id) {
-        return true;
-      }
-      const runTaskId = this.recordValue(run.taskId);
-      const recordTaskId = this.recordValue(record.taskId);
-      if (runTaskId && recordTaskId && runTaskId === recordTaskId) {
-        return true;
-      }
-      return (
-        this.recordValue(run.taskName) ===
-          this.recordValue(record.textOtherName || record.bookName) &&
-        this.recordValue(run.platform) === this.recordValue(record.pt) &&
-        this.getRunPhone(run) === this.getRecordPhone(record) &&
-        this.getRunVideoFile(run) === this.getFileName(record.selectedFile)
-      );
-    },
-    async handleGetLogs(row) {
-      this.logDialogVisible = true;
-      this.logContext = row;
-      this.activeLogTab = "current";
-      await this.loadPublishLogs(row);
-    },
-    async reloadLogs() {
-      if (!this.logContext) return;
-      await this.loadPublishLogs(this.logContext);
-    },
-    async loadPublishLogs(row) {
-      this.logLoading = true;
-      try {
-        const [runsResponse, logsResponse] = await Promise.all([
-          dataRequest({
-            type: "get",
-            fileName: "publishRuns",
-            item: { pageSize: 90 },
-          }),
-          dataRequest({
-            type: "get",
-            fileName: "publishRunLogs",
-            item: { pageSize: 90 },
-          }),
-        ]);
-        const details = (row && row.showAlltype) || [row];
-        const runs = this.flattenDataResponse(runsResponse.data)
-          .filter((run) => details.some((record) => this.isRunMatchRecord(run, record)))
-          .sort((a, b) => Number(b.startedAt || 0) - Number(a.startedAt || 0));
-        const runIds = new Set(runs.map((run) => run.id));
-        const logs = this.flattenDataResponse(logsResponse.data)
-          .filter((log) => runIds.has(log.runId))
-          .sort((a, b) => Number(a.time || 0) - Number(b.time || 0));
-        this.logRuns = runs;
-        this.logEntries = logs;
-        this.selectedLogRunId = runs[0] ? runs[0].id : "";
-      } catch (error) {
-        console.error("读取发布日志失败", error);
-        this.$message.error("读取发布日志失败");
-      } finally {
-        this.logLoading = false;
-      }
-    },
-    copyVisibleLogs() {
-      const text = this.visibleLogEntries
-        .map(
-          (log) =>
-            `[${this.formatLogTime(log.time)}] [${log.level || "info"}] [${
-              log.stage || "-"
-            }] ${log.message || ""}${log.detail ? " " + log.detail : ""}`
-        )
-        .join("\n");
-      if (!text) {
-        this.$message.warning("当前没有可复制的日志");
-        return;
-      }
-      this.copy(text);
-      this.$message.success("日志已复制");
-    },
-    formatLogTime(value) {
-      const time = Number(value);
-      if (!Number.isFinite(time)) return "-";
-      return new Date(time).toLocaleString();
-    },
-    logLevelType(level) {
-      if (level === "error") return "danger";
-      if (level === "warn") return "warning";
-      if (level === "success") return "success";
-      return "info";
-    },
-    publishRunStatusType(status) {
-      if (status === "success") return "success";
-      if (["failed", "interrupted"].includes(status)) return "danger";
-      if (status === "skipped") return "info";
-      return "warning";
-    },
-    publishRunStatusText(status) {
-      if (status === "success") return "成功";
-      if (status === "failed") return "失败";
-      if (status === "interrupted") return "已中断";
-      if (status === "skipped") return "已跳过";
-      return "发布中";
-    },
     getStatusRowKey(row) {
       if (!row) return "";
       return [
@@ -734,34 +287,6 @@ export default {
       if (status === "drafting") return "保存草稿中";
       return "发布中";
     },
-    getGroupSummary(rows) {
-      const summary = {
-        taskCount: 0,
-        platformCount: 0,
-        successCount: 0,
-        failCount: 0,
-        activeCount: 0,
-      };
-
-      (rows || []).forEach((row) => {
-        summary.taskCount += 1;
-        const details = Array.isArray(row && row.showAlltype) && row.showAlltype.length ? row.showAlltype : [row];
-        summary.platformCount += details.length;
-
-        details.forEach((sub) => {
-          const status = String((sub && sub.publishStatus) || "").toLowerCase();
-          if (status === "success") {
-            summary.successCount += 1;
-          } else if (["fail", "failed", "expired"].includes(status)) {
-            summary.failCount += 1;
-          } else {
-            summary.activeCount += 1;
-          }
-        });
-      });
-
-      return summary;
-    },
     isPublishFailed(row) {
       if (!row) return false;
       if (
@@ -813,12 +338,65 @@ export default {
         return;
       }
       let filePath = details.map((v) => v && v.filePath).find(Boolean);
-      if (!filePath) {
-        this.$message.info("历史记录缺少视频路径，请先重新选择视频文件。");
+      const remoteFileUrl = details
+        .map((v) => v && v.remoteFileUrl)
+        .find(Boolean);
+      const localFileExists =
+        filePath && (await ipcRenderer.invoke("fs:existsSync", filePath));
+      if (!filePath || (!localFileExists && !remoteFileUrl)) {
+        if (!localFileExists && filePath) {
+          this.$message.info("本地视频文件已不存在，请重新选择视频文件。");
+        } else {
+          this.$message.info("历史记录缺少视频路径，请先重新选择视频文件。");
+        }
         filePath = await ipcRenderer.invoke("dialog:openVideoFile");
         if (!filePath) {
           this.$message.warning("未选择视频文件，已取消重发。");
           return;
+        }
+      } else if (!localFileExists && remoteFileUrl) {
+        // 本地文件已删除但有远程 URL，先下载到本地再重发
+        try {
+          await this.$confirm(
+            "本地视频文件已清理，是否从远程地址重新下载？",
+            "重新发布",
+            {
+              confirmButtonText: "重新下载",
+              cancelButtonText: "手动选择文件",
+              distinguishCancelAndClose: true,
+              type: "warning",
+            }
+          );
+          const loading = this.$loading({
+            lock: true,
+            text: "正在下载远程视频…",
+            background: "rgba(0, 0, 0, 0.7)",
+          });
+          try {
+            filePath = await ipcRenderer.invoke(
+              "publish:downloadRemoteFile",
+              remoteFileUrl
+            );
+            this.$message.success("远程视频下载完成");
+          } catch (dlErr) {
+            this.$message.error(
+              "远程视频下载失败: " + (dlErr.message || dlErr)
+            );
+            return;
+          } finally {
+            loading.close();
+          }
+        } catch (action) {
+          if (action === "close") {
+            this.$message.info("已取消重发。");
+            return;
+          }
+          // 用户选择手动选择文件
+          filePath = await ipcRenderer.invoke("dialog:openVideoFile");
+          if (!filePath) {
+            this.$message.warning("未选择视频文件，已取消重发。");
+            return;
+          }
         }
       } else {
         let shouldChooseNewVideo = false;
@@ -1046,10 +624,7 @@ export default {
       this.loadRecords();
     },
     openFeedback() {
-      window.open(
-        "https://wj.qq.com/s2/26701780/6de3/",
-        "_blank"
-      );
+      window.open("https://wj.qq.com/s2/26701780/6de3/", "_blank");
     },
     openQQGroup() {
       window.open(
@@ -1070,32 +645,13 @@ export default {
       this.$refs.articlePublishRef.open();
     },
 
-    refreshRecords() {
-      this.loadRecords(true);
-    },
-
-    loadRecords(showMessage = false) {
-      const shouldNotify = showMessage === true;
-      this.recordsLoading = true;
-      return dataRequest({
+    loadRecords() {
+      dataRequest({
         type: "get",
         fileName: "pushData",
-      })
-        .then((r) => {
-          this.initDataFiltered(r.data || {});
-          if (shouldNotify) {
-            this.$message.success("数据已刷新");
-          }
-        })
-        .catch((error) => {
-          console.error("刷新视频管理数据失败", error);
-          if (shouldNotify) {
-            this.$message.error("数据刷新失败");
-          }
-        })
-        .finally(() => {
-          this.recordsLoading = false;
-        });
+      }).then((r) => {
+        this.initDataFiltered(r.data || {});
+      });
     },
 
     initDataFiltered(data) {
@@ -1147,7 +703,9 @@ export default {
           this.$message.info("已切换到已打开的登录窗口");
         }
       } catch (e) {
-        this.$message.error("打开登录窗口失败：" + (e && e.message ? e.message : e));
+        this.$message.error(
+          "打开登录窗口失败：" + (e && e.message ? e.message : e)
+        );
       }
     },
 
@@ -1169,14 +727,19 @@ export default {
           if (!item.videoLink) {
             const taskId = Date.now() + Math.random();
             // JSON 兜底序列化，避免 Vue 响应式代理 / 不可克隆对象触发 IPC 错误
-            ipcRenderer.send("puppeteerFile", JSON.parse(JSON.stringify({
-              show: false,
-              taskId,
-              ...item,
-              title: item.title || item.bt || item.textOtherName || "",
-              pt: item.pt + "状态",
-              statusCalss: (this.statusCalss || "").trim(),
-            })));
+            ipcRenderer.send(
+              "puppeteerFile",
+              JSON.parse(
+                JSON.stringify({
+                  show: false,
+                  taskId,
+                  ...item,
+                  title: item.title || item.bt || item.textOtherName || "",
+                  pt: item.pt + "状态",
+                  statusCalss: (this.statusCalss || "").trim(),
+                })
+              )
+            );
             this.taskHandlers.set(taskId, (data) => {
               acLen++;
               const statusUrl =
@@ -1248,469 +811,101 @@ export default {
 </script>
 
 <style lang="scss" scoped>
-.container-box {
-  height: calc(100vh - 100px);
-  overflow-y: auto;
-  overflow-x: auto;
-  padding: 20px 24px;
-  background: #f3f6fb;
-}
-
-.manager-header {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 18px 22px;
-  margin-bottom: 16px;
-  background: #ffffff;
-  border: 1px solid #e5ebf3;
-  border-radius: 14px;
-  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.04);
-}
-
-.manager-header-copy {
-  min-width: 0;
-}
-
-.manager-eyebrow {
-  font-size: 12px;
-  font-weight: 600;
-  color: #0f766e;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.manager-header-copy h1 {
-  margin: 6px 0 0;
-  font-size: 22px;
-  line-height: 1.2;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.manager-header-copy p {
-  margin: 8px 0 0;
-  max-width: 820px;
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.manager-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.summary-card {
-  padding: 14px 16px;
-  background: #fff;
-  border: 1px solid #e5ebf3;
-  border-radius: 14px;
-  box-shadow: 0 2px 12px rgba(15, 23, 42, 0.03);
-}
-
-.summary-card-label {
-  font-size: 12px;
-  color: #64748b;
-}
-
-.summary-card-value {
-  margin-top: 8px;
-  font-size: 24px;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.summary-card-hint {
-  margin-top: 4px;
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.summary-card.is-primary .summary-card-value {
-  color: #2563eb;
-}
-
-.summary-card.is-info .summary-card-value {
-  color: #0f766e;
-}
-
-.summary-card.is-success .summary-card-value {
-  color: #16a34a;
-}
-
-.summary-card.is-danger .summary-card-value {
-  color: #dc2626;
-}
-
-.summary-card.is-warning .summary-card-value {
-  color: #d97706;
-}
+@import "@/styles/variables.scss";
 
 .toolbar {
   margin-bottom: 16px;
+  padding: 16px 20px;
+  background: $cardBg;
+  border: 1px solid $borderColor;
+  border-radius: 4px;
+}
+
+.toolbar-inner {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 20px;
-  background: #fff;
-  border: 1px solid #e8edf5;
-  border-radius: 10px;
-  box-shadow: 0 2px 12px rgba(31, 45, 61, 0.04);
-}
-
-.toolbar-left {
-  display: flex;
-  align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
-.info-box {
-  min-height: 200px;
-  overflow: hidden;
-}
-
-.record-card {
-  overflow: hidden;
-  border: 1px solid #e5ebf3;
-  border-radius: 14px;
-  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.04);
-}
-
-.card-head {
+.toolbar-left,
+.toolbar-right {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 16px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid #eef2f7;
-  margin-bottom: 14px;
-}
-
-.card-head-copy {
-  display: flex;
-  align-items: baseline;
   flex-wrap: wrap;
   gap: 10px;
 }
 
-.head-meta {
-  font-size: 12px;
-  color: #64748b;
-}
-
-.date-label {
-  color: #0f172a;
-  font-weight: 700;
-  font-size: 15px;
-}
-
-.hint {
-  font-size: 12px;
-  color: #0f766e;
-  background: #ecfdf3;
-  padding: 2px 8px;
-  border-radius: 999px;
-}
-
-.card-head-stats {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.record-name-cell {
-  display: grid;
-  gap: 6px;
-}
-
-.record-name {
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.record-subtitle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.record-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.detail-item {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 0;
-}
-
-.detail-item + .detail-item {
-  border-top: 1px dashed #eef2f7;
-}
-
-.detail-main {
-  min-width: 0;
-  display: grid;
-  gap: 6px;
-  flex: 1;
-}
-
-.detail-title-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.detail-subline {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  font-size: 12px;
-  color: #64748b;
-}
-
-.detail-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-
-.pt-name {
-  cursor: pointer;
-  flex: 0 0 auto;
-  min-width: 0;
-  word-break: break-all;
-  font-weight: 600;
-  color: #334155;
-}
-
-.detail-item .pt-name {
+.toolbar-label {
   font-size: 13px;
+  color: #909399;
+  margin-right: 4px;
 }
 
-.fail {
-  color: #dc2626;
-  cursor: pointer;
-  font-weight: 600;
+.info-box {
+  min-height: 120px;
 }
 
-.action-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.mb16 {
-  margin-bottom: 16px;
+.record-card {
+  ::v-deep .el-card__body {
+    padding-top: 0;
+  }
 }
 
 .mb8 {
   margin-bottom: 8px;
 }
 
-.info-box ::v-deep .responsive-table {
-  width: 100% !important;
-}
-
-.info-box ::v-deep .el-card__body {
-  padding: 18px 20px 20px;
-}
-
-.info-box ::v-deep .el-table__header th {
-  background: #f8fafc;
-  color: #344054;
-  font-weight: 600;
-}
-
-.info-box ::v-deep .el-table__body tr:hover > td {
-  background: #f8fbff !important;
-}
-
-.info-box ::v-deep .el-table__row td {
-  padding-top: 14px;
-  padding-bottom: 14px;
-  vertical-align: top;
-}
-
-.info-box ::v-deep .el-button--mini {
-  margin-left: 0;
-  margin-right: 0;
-}
-
-.info-box ::v-deep th,
-.info-box ::v-deep td {
-  min-width: 0 !important;
-}
-
-.content-detail {
+.date-label {
   color: #303133;
-}
-
-.content-summary {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding-bottom: 14px;
-}
-
-.content-title {
-  font-size: 16px;
   font-weight: 600;
-  color: #1f2d3d;
 }
 
-.content-subtitle {
-  margin-top: 4px;
-  font-size: 13px;
-  color: #667085;
-}
-
-.content-descriptions {
-  margin-bottom: 16px;
-}
-
-.content-section-title {
-  margin: 4px 0 10px;
-  font-size: 14px;
-  font-weight: 600;
-  color: #344054;
-}
-
-.content-platform-table {
-  width: 100%;
-}
-
-.publish-log-dialog {
-  min-height: 360px;
-}
-
-.log-summary {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 14px;
-}
-
-.log-title {
-  font-weight: 600;
-  color: #222;
-}
-
-.log-subtitle {
-  margin-top: 4px;
-  font-size: 12px;
-  color: #777;
-  word-break: break-all;
-}
-
-.log-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.log-run-list {
-  display: grid;
-  gap: 8px;
-  margin-bottom: 12px;
-  max-height: 150px;
-  overflow-y: auto;
-}
-
-.log-run-item {
+.status-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
-  border: 1px solid #e8edf5;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: border-color 0.2s, background 0.2s;
+  margin-bottom: 4px;
 }
 
-.log-run-item:hover {
-  border-color: #c0d8ff;
-  background: #f5f8ff;
-}
-
-.log-run-item.active {
-  border-color: #1677ff;
-  background: #ecf5ff;
-}
-
-.log-run-main {
+.progress-row {
   display: flex;
-  gap: 12px;
-  min-width: 0;
-  font-size: 13px;
-  color: #444;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
 }
 
-.log-tabs {
-  margin-top: 8px;
+.progress-detail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 300px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
-.log-timeline {
-  max-height: 420px;
-  overflow-y: auto;
-  border: 1px solid #e8edf5;
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: #fafbfc;
+.progress-count {
+  font-size: 12px;
+  color: #666;
 }
 
-.log-line {
-  display: grid;
-  grid-template-columns: 170px 70px 130px minmax(0, 1fr);
-  align-items: start;
-  gap: 8px;
-  padding: 7px 0;
-  border-bottom: 1px solid #f0f0f0;
-  font-size: 13px;
+.progress-count.success {
+  color: #2e8b57;
 }
 
-.log-line:last-child {
-  border-bottom: none;
+.progress-count.fail {
+  cursor: default;
 }
 
-.log-time,
-.log-stage,
-.log-detail {
-  color: #777;
-}
-
-.log-message,
-.log-detail {
+.pt-name {
+  cursor: pointer;
+  width: 60%;
   word-break: break-all;
 }
 
-.log-detail {
-  grid-column: 4;
-  font-size: 12px;
+.fail {
+  color: #c00;
+  cursor: pointer;
 }
-
 </style>

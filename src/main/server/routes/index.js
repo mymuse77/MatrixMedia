@@ -1,6 +1,5 @@
 var express = require("express");
 const { changeData } = require("../utils");
-const { getClientIdentity } = require("../../services/clientIdentity");
 
 var router = express.Router();
 
@@ -8,19 +7,12 @@ router.get("/", function (req, res) {
   res.send("<h1>MatrixMedia API</h1>");
 });
 
-function sendClientIdentity(req, res) {
-  const identity = getClientIdentity();
+router.get("/test", function (req, res) {
   res.json({
     success: true,
-    clientId: identity.clientId,
-    clientType: "matrix_pc_client",
-    createdAt: identity.createdAt,
-    updatedAt: identity.updatedAt,
+    message: "ok",
   });
-}
-
-router.get("/client-id", sendClientIdentity);
-router.get("/clientId", sendClientIdentity);
+});
 
 router.get("/platforms", async function (req, res) {
   try {
