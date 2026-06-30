@@ -43,6 +43,9 @@ if (!process.env.IS_WEB) {
   ipcRenderer.on("app-quit-toast", () => {
     Vue.prototype.$message.warning("退出会停止正在发布的视频");
   });
+  ipcRenderer.on("goSetting", () => {
+    router.push("/").catch(() => {});
+  });
 }
 
 Vue.config.productionTip = false;

@@ -38,6 +38,7 @@ import {
 } from "./services/puppeteerFile";
 import { destroyAccountLoginWindows } from "./services/accountLoginWindowManager";
 import { registerWebSocketHandlers } from "./services/websocketHandlers";
+import { getAppSettings } from "./services/appSettings";
 import Server from "./server/index";
 
 const websocketConfig = require("./config/websocket.config");
@@ -176,6 +177,7 @@ pie.initialize(app).then(() => {
 });
 
 function onAppReady() {
+  const appSettings = getAppSettings();
   startScheduledPublishScheduler();
   startBuiltInHttpServer();
   startMatrixWebSocketClient();
@@ -202,20 +204,16 @@ function onAppReady() {
       }
     }
     tray = new Tray(icon);
-    const contextMenu = Menu.buildFromTemplate([
-      {
+    const trayItems = [];
+    if (!appSettings.hideMainWindowOnStartup) {
+      trayItems.push({
         label: "显示主界面",
         click: () => {
           win.show();
         },
-      },
-      {
-        label: "设置",
-        click: function () {
-          console.log("setting");
-          win.webContents.send("goSetting");
-        },
-      },
+      });
+    }
+    trayItems.push(
       {
         label: "重启应用",
         click: function () {
@@ -318,18 +316,23 @@ function onAppReady() {
         click: () => {
           app.quit();
         },
-      },
-    ]);
+      }
+    );
+    const contextMenu = Menu.buildFromTemplate(trayItems);
 
     tray.setContextMenu(contextMenu);
     tray.setToolTip("矩媒");
     tray.on("click", () => {
+      if (appSettings.hideMainWindowOnStartup) return;
       win.isVisible() ? win.hide() : win.show();
     });
     app.on("will-quit", () => {
       destroyAccountLoginWindows();
       tray.destroy();
     });
+  }, {
+    showOnReady: !appSettings.hideMainWindowOnStartup,
+    useStartupChart: !appSettings.hideMainWindowOnStartup,
   });
   DisableButton.Disablef12();
   if (process.env.NODE_ENV === "development") {

@@ -352,6 +352,43 @@ async function waitXhs(page, min = 1500, max = 4000) {
   await page.waitForTimeout(getRandomDelayMs(min, max));
 }
 
+function getXhsPublishClickPoint(box, ratioX) {
+  const width = Math.max(1, Number(box?.width) || 1);
+  const height = Math.max(1, Number(box?.height) || 1);
+  const ratioY = 0.5;
+  const jitterX = getRandomInt(-Math.min(10, width * 0.08), Math.min(10, width * 0.08));
+  const jitterY = getRandomInt(-Math.min(6, height * 0.12), Math.min(6, height * 0.12));
+  return {
+    x: box.x + width * ratioX + jitterX,
+    y: box.y + height * ratioY + jitterY,
+  };
+}
+
+async function getXhsPublishClickState(page, modeAttr) {
+  return page.evaluate(
+    "(function(modeAttr){" +
+      "var h=document.querySelector('xhs-publish-btn');" +
+      "var text=function(sel){var el=document.querySelector(sel);return el?(el.textContent||'').replace(/\\s+/g,' ').trim():'';};" +
+      "return {" +
+      "hostExists:!!h," +
+      "disabled:h?h.getAttribute(modeAttr):null," +
+      "submitDisabled:h?h.getAttribute('submit-disabled'):null," +
+      "saveDisabled:h?h.getAttribute('save-disabled'):null," +
+      "url:location.href," +
+      "toast:text('.d-toast,.d-message,.el-message,.reds-toast')" +
+      "};" +
+      "})(" +
+      JSON.stringify(modeAttr) +
+      ")"
+  );
+}
+
+function getXhsPublishClickRatios(isDraftMode) {
+  // xhs-publish-btn is a closed shadow component. Click several points in the
+  // expected button half because its internal layout changes without DOM access.
+  return isDraftMode ? [0.24, 0.32, 0.16, 0.4] : [0.86, 0.76, 0.92, 0.66];
+}
+
 export default async function (page, data, window, event) {
   const isDraftMode =
     data.publishMode === "draft" || data.publishToDraft === true;
@@ -526,50 +563,48 @@ export default async function (page, data, window, event) {
       }
     }
 
-    // 用 page.mouse.click 在宿主对应位置点 —— 坐标会被浏览器路由进 closed shadow 内部 button
-    const box = await hostHandle.boundingBox();
-    if (!box) throw new Error("发布按钮宿主无 boundingBox（未渲染或被遮挡）");
-    console.log(
-      "[xhs] 宿主 box=",
-      JSON.stringify({ x: box.x, y: box.y, w: box.width, h: box.height })
-    );
-    // 基于 .publish-page-publish-btn 左上角的偏移量，加入随机抖动避免被风控识别为固定坐标点击
-    //   暂存离开：left ~300px, top ~40px
-    //   发布：    left ~450px, top ~40px
-    const jitterX = getRandomInt(-12, 12);
-    const jitterY = getRandomInt(-8, 8);
-    const baseX = isDraftMode ? 300 : 450;
-    const baseY = 40;
-    const cx = box.x + baseX + jitterX;
-    const cy = box.y + baseY + jitterY;
-
+    // 用 page.mouse.click 点宿主内的左右按钮区域，坐标会被浏览器路由进 closed shadow。
+    // 旧实现使用固定偏移，组件尺寸变化后容易点到宿主外导致按钮未触发。
     const targetText = isDraftMode ? "暂存离开" : "发布";
+    const modeAttr = isDraftMode ? "save-disabled" : "submit-disabled";
+    const initialClickUrl = page.url();
     let clickedOk = false;
-    for (let attempt = 1; attempt <= 2; attempt++) {
+    const clickRatios = getXhsPublishClickRatios(isDraftMode);
+    for (let attempt = 1; attempt <= clickRatios.length; attempt++) {
+      const box = await hostHandle.boundingBox();
+      if (!box) throw new Error("发布按钮宿主无 boundingBox（未渲染或被遮挡）");
+      const ratioX = clickRatios[attempt - 1];
+      const point = getXhsPublishClickPoint(box, ratioX);
+      console.log(
+        "[xhs] 宿主 box=",
+        JSON.stringify({ x: box.x, y: box.y, w: box.width, h: box.height })
+      );
       // 模拟鼠标移动轨迹：先移到附近位置，再点击，避免从 (0,0) 直接跳变
-      const preX = cx + getRandomInt(-20, 20);
-      const preY = cy + getRandomInt(-15, 15);
+      const preX = point.x + getRandomInt(-20, 20);
+      const preY = point.y + getRandomInt(-15, 15);
       await page.mouse.move(preX, preY, { steps: getRandomInt(3, 8) });
       await page.waitForTimeout(getRandomInt(30, 80));
-      await page.mouse.click(cx, cy, { delay: 80 });
+      await page.mouse.click(point.x, point.y, { delay: 80 });
       console.log(
-        `[xhs] 第 ${attempt} 次点击「${targetText}」at (${Math.round(
-          cx
-        )},${Math.round(cy)})`
+        `[xhs] 第 ${attempt} 次点击「${targetText}」ratio=${ratioX} at (${Math.round(
+          point.x
+        )},${Math.round(point.y)})`
       );
-      if (attempt < 2) {
+      if (attempt < clickRatios.length) {
         const secondClickDelay = getXhsSecondClickDelayMs();
-        console.log(`[xhs] 等待 ${secondClickDelay}ms 后判断是否第二次点击`);
+        console.log(`[xhs] 等待 ${secondClickDelay}ms 后判断是否继续尝试`);
         await page.waitForTimeout(secondClickDelay);
       } else {
         await waitXhs(page, 2500, 4500);
       }
-      // 验证成功：宿主消失/换页/属性变化
-      const stillThere = await page.evaluate(
-        "(function(){return !!document.querySelector('xhs-publish-btn');})()"
-      );
-      if (!stillThere) {
-        console.log(`[xhs] xhs-publish-btn 宿主已消失，发布动作生效`);
+      const state = await getXhsPublishClickState(page, modeAttr);
+      console.log("[xhs] 点击后状态:", JSON.stringify(state));
+      if (
+        !state.hostExists ||
+        state.disabled === "true" ||
+        (state.url && state.url !== initialClickUrl)
+      ) {
+        console.log(`[xhs] 「${targetText}」点击已触发`);
         clickedOk = true;
         break;
       }

@@ -29,7 +29,8 @@ function resolveWindowsWindowIcon() {
   return undefined;
 }
 
-function createMainWindow(fn) {
+function createMainWindow(fn, options = {}) {
+  const showOnReady = options.showOnReady !== false;
   const menuconfig = Array.isArray(baseMenu) ? [...baseMenu] : [];
   /**
    * Initial window options
@@ -100,12 +101,12 @@ function createMainWindow(fn) {
   mainWindow.loadURL(winURL);
 
   mainWindow.webContents.once("dom-ready", () => {
-    mainWindow.show();
+    if (showOnReady) mainWindow.show();
 
     mainWindow.webContents.send("version", version);
     if (process.env.NODE_ENV === "development" || openDevTools)
       mainWindow.webContents.openDevTools(true);
-    if (UseStartupChart) loadWindow.destroy();
+    if (loadWindow && !loadWindow.isDestroyed()) loadWindow.destroy();
   });
   mainWindow.on("maximize", () => {
     mainWindow.webContents.send("w-max", true);
@@ -118,7 +119,7 @@ function createMainWindow(fn) {
   });
 }
 
-function loadingWindow(fn) {
+function loadingWindow(fn, options = {}) {
   loadWindow = new BrowserWindow({
     width: 400,
     height: 400,
@@ -134,7 +135,7 @@ function loadingWindow(fn) {
   loadWindow.show();
 
   setTimeout(() => {
-    createMainWindow(fn);
+    createMainWindow(fn, options);
   }, 2000);
 
   loadWindow.on("closed", () => {
@@ -142,11 +143,12 @@ function loadingWindow(fn) {
   });
 }
 
-function initWindow(fn) {
-  if (UseStartupChart) {
-    return loadingWindow(fn);
+function initWindow(fn, options = {}) {
+  const useStartupChart = options.useStartupChart !== false && UseStartupChart;
+  if (useStartupChart) {
+    return loadingWindow(fn, options);
   } else {
-    return createMainWindow(fn);
+    return createMainWindow(fn, options);
   }
 }
 export default initWindow;

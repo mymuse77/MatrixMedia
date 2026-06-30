@@ -78,6 +78,7 @@
 <script>
 import { ipcRenderer } from "electron";
 import { shouldRunDailyUpdateCheck } from "./updateCheckPolicy";
+import { DEFAULT_APP_SETTINGS } from "../../../shared/appSettings.js";
 export default {
   data: () => ({
     mix: false,
@@ -88,6 +89,7 @@ export default {
     activeUpdateTab: "releaseNotes",
     releaseNoteTitle: "",
     releaseNoteBody: "",
+    appSettings: { ...DEFAULT_APP_SETTINGS },
     progressStaus: null,
     filePath: "",
     srcList:
@@ -106,10 +108,13 @@ export default {
 
   components: {},
   created() {
-    // 本地开发：关闭自动更新
-    // this.checkForUpdates();
     ipcRenderer.invoke("IsUseSysTitle").then((res) => {
       this.IsUseSysTitle = res;
+    });
+    this.loadAppSettings().then(() => {
+      if (!this.appSettings.skipStartupUpdateCheck) {
+        this.checkForUpdates();
+      }
     });
     // 下载进度
     ipcRenderer.on("download-progress", this._onDownloadProgress);
@@ -128,12 +133,29 @@ export default {
   },
 
   methods: {
+    loadAppSettings() {
+      return ipcRenderer
+        .invoke("get-app-settings")
+        .then((settings) => {
+          if (settings) this.appSettings = settings;
+          return this.appSettings;
+        })
+        .catch(() => this.appSettings);
+    },
     fetchReleaseNotes() {
-      fetch("https://gitee.com/api/v5/repos/gzlingyi_0/pubtw/releases/latest")
+      const url = this.appSettings.autoUpdateUrl;
+      if (!url) return Promise.resolve();
+      return fetch(url)
         .then((res) => res.json())
         .then((res) => {
-          this.releaseNoteTitle = res.name || res.tag_name || "";
-          this.releaseNoteBody = res.body || "";
+          const latest = Array.isArray(res) ? res[0] : res;
+          if (!latest) {
+            this.releaseNoteTitle = "";
+            this.releaseNoteBody = "";
+            return;
+          }
+          this.releaseNoteTitle = latest.name || latest.tag_name || "";
+          this.releaseNoteBody = latest.body || "";
         })
         .catch(() => {
           this.releaseNoteTitle = "";
@@ -144,13 +166,14 @@ export default {
       if (!options.force && !shouldRunDailyUpdateCheck()) {
         return Promise.resolve({ skipped: true });
       }
-      this.fetchReleaseNotes();
-      return ipcRenderer.invoke("check-for-updates").then((res) => {
-        if (res && res.hasUpdate) {
-          this.activeUpdateTab = "releaseNotes";
-        }
-        return res;
-      });
+      return this.fetchReleaseNotes()
+        .then(() => ipcRenderer.invoke("check-for-updates"))
+        .then((res) => {
+          if (res && res.hasUpdate) {
+            this.activeUpdateTab = "releaseNotes";
+          }
+          return res;
+        });
     },
     _defaultProgressColors() {
       return [

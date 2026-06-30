@@ -27,6 +27,39 @@
 
     <el-card class="section-card" shadow="never">
       <div slot="header" class="card-header">
+        <span>客户端设置</span>
+        <span class="card-sub">启动和更新行为</span>
+      </div>
+      <el-form label-width="160px" class="settings-form">
+        <el-form-item label="自动更新目标地址">
+          <el-input
+            v-model="appSettings.autoUpdateUrl"
+            placeholder="请输入 Release JSON 地址"
+          />
+        </el-form-item>
+        <el-form-item label="启动时不检测更新">
+          <el-switch v-model="appSettings.skipStartupUpdateCheck" />
+        </el-form-item>
+        <el-form-item label="启动时隐藏主界面">
+          <el-switch v-model="appSettings.hideMainWindowOnStartup" />
+          <p class="section-tip setting-tip">
+            开启后下次启动不显示主窗口，也不在托盘菜单显示“显示主界面”。
+          </p>
+        </el-form-item>
+        <el-form-item>
+          <el-button
+            type="primary"
+            :loading="savingSettings"
+            @click="saveAppSettings"
+          >
+            保存设置
+          </el-button>
+        </el-form-item>
+      </el-form>
+    </el-card>
+
+    <el-card class="section-card" shadow="never">
+      <div slot="header" class="card-header">
         <span>HTTP API</span>
         <span class="card-sub">基础地址：http://127.0.0.1:{{ httpPort }}</span>
       </div>
@@ -137,8 +170,10 @@ electron . cli &lt;子命令&gt; [选项]   # 开发环境</pre
 </template>
 
 <script>
+import { ipcRenderer } from "electron";
 import packageInfo from "../../../../package.json";
 import { VIDEO_PUBLISH_PLATFORM_DOCS } from "../../../shared/publishPlatforms.js";
+import { DEFAULT_APP_SETTINGS } from "../../../shared/appSettings.js";
 
 export default {
   name: "ProjectDetail",
@@ -152,6 +187,8 @@ export default {
     return {
       appVersion: packageInfo.version,
       httpPort: 30088,
+      savingSettings: false,
+      appSettings: { ...DEFAULT_APP_SETTINGS },
       videoPlatforms,
       httpRoutes: [
         { method: "GET", path: "/", desc: "返回 MatrixMedia API 欢迎页" },
@@ -307,6 +344,56 @@ matrixmedia cli accounts --json
 matrixmedia cli history --json --days 7`,
     };
   },
+  created() {
+    this.loadAppSettings();
+  },
+  methods: {
+    loadAppSettings() {
+      ipcRenderer
+        .invoke("get-app-settings")
+        .then((settings) => {
+          this.appSettings = {
+            ...DEFAULT_APP_SETTINGS,
+            ...(settings || {}),
+          };
+        })
+        .catch((error) => {
+          this.$message.error(
+            "读取客户端设置失败：" +
+              (error && error.message ? error.message : error)
+          );
+        });
+    },
+    saveAppSettings() {
+      const updateUrl = String(this.appSettings.autoUpdateUrl || "").trim();
+      if (!/^https?:\/\//i.test(updateUrl)) {
+        this.$message.warning("自动更新目标地址必须以 http:// 或 https:// 开头");
+        return;
+      }
+      this.savingSettings = true;
+      ipcRenderer
+        .invoke("update-app-settings", {
+          ...this.appSettings,
+          autoUpdateUrl: updateUrl,
+        })
+        .then((settings) => {
+          this.appSettings = {
+            ...DEFAULT_APP_SETTINGS,
+            ...(settings || {}),
+          };
+          this.$message.success("客户端设置已保存，启动相关设置将在下次启动生效");
+        })
+        .catch((error) => {
+          this.$message.error(
+            "保存客户端设置失败：" +
+              (error && error.message ? error.message : error)
+          );
+        })
+        .finally(() => {
+          this.savingSettings = false;
+        });
+    },
+  },
 };
 </script>
 
@@ -319,6 +406,14 @@ matrixmedia cli history --json --days 7`,
   color: #606266;
   line-height: 1.8;
   font-size: 14px;
+}
+
+.settings-form {
+  max-width: 820px;
+}
+
+.setting-tip {
+  margin: 8px 0 0;
 }
 
 .section-tip {

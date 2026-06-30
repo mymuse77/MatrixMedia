@@ -14,6 +14,7 @@ import { registerPuppeteerIpc } from "./puppeteerFile";
 import { registerScheduledPublishIpc } from "./scheduledPublish";
 import { createLaunchInstallerHandler } from "./launchInstaller";
 import { applyAccountProxyForTask } from "./proxyConfig";
+import { getAppSettings, updateAppSettings } from "./appSettings";
 import {
   closeOtherAccountLoginWindows,
   getAccountLoginWindowByPartition,
@@ -26,13 +27,21 @@ console.log(version, "-------");
 import fs from "fs";
 import path from "path";
 import xlsx from "xlsx";
-// 获取托管在 Gitee 的 pubtw 仓库 Release 信息。
-// 公开仓库可匿名调用 API，无需 access_token，避免把可写 token 打进开源客户端。
-function requestGiteeJson(path, fallback) {
+function requestJsonUrl(url, fallback) {
   return new Promise((resolve) => {
+    let parsed;
+    try {
+      parsed = new URL(String(url || ""));
+    } catch (error) {
+      console.warn("更新地址无效，跳过:", url);
+      resolve(fallback);
+      return;
+    }
+    const requestImpl = parsed.protocol === "http:" ? require("http") : https;
     const options = {
-      hostname: "gitee.com",
-      path,
+      hostname: parsed.hostname,
+      port: parsed.port || undefined,
+      path: `${parsed.pathname}${parsed.search}`,
       method: "GET",
       headers: {
         "Content-Type": "application/json",
@@ -40,7 +49,7 @@ function requestGiteeJson(path, fallback) {
       },
     };
 
-    const req = https.request(options, (res) => {
+    const req = requestImpl.request(options, (res) => {
       let data = "";
 
       res.on("data", (chunk) => {
@@ -49,21 +58,21 @@ function requestGiteeJson(path, fallback) {
 
       res.on("end", () => {
         if (res.statusCode !== 200) {
-          console.warn(`Gitee API ${path} 返回 ${res.statusCode}，跳过解析`);
+          console.warn(`更新地址 ${url} 返回 ${res.statusCode}，跳过解析`);
           resolve(fallback);
           return;
         }
         try {
           resolve(JSON.parse(data));
         } catch (error) {
-          console.warn("Gitee 响应非 JSON，跳过:", data.slice(0, 80));
+          console.warn("更新地址响应非 JSON，跳过:", data.slice(0, 80));
           resolve(fallback);
         }
       });
     });
 
     req.on("error", (error) => {
-      console.error("Error fetching releases:", error);
+      console.error("Error fetching update metadata:", error);
       resolve(fallback);
     });
 
@@ -74,35 +83,41 @@ function requestGiteeJson(path, fallback) {
 // Cache Gitee release result for 1 hour to avoid rate-limit (403) on repeated calls
 let _releaseCache = null;
 let _releaseCacheAt = 0;
+let _releaseCacheUrl = "";
 const RELEASE_CACHE_TTL_MS = 60 * 60 * 1000;
 
-async function getLatestRelease() {
+function looksLikeReleasePayload(value) {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      (value.tag_name || value.name || Array.isArray(value.assets))
+  );
+}
+
+async function getLatestRelease(updateUrl) {
   if (
     _releaseCache !== null &&
+    _releaseCacheUrl === updateUrl &&
     Date.now() - _releaseCacheAt < RELEASE_CACHE_TTL_MS
   ) {
     return _releaseCache;
   }
-  const latest = await requestGiteeJson(
-    "/api/v5/repos/gzlingyi_0/pubtw/releases/latest",
-    null
-  );
-  if (latest && latest.id) {
+  const latest = await requestJsonUrl(updateUrl, null);
+  if (looksLikeReleasePayload(latest)) {
     _releaseCache = latest;
     _releaseCacheAt = Date.now();
+    _releaseCacheUrl = updateUrl;
     return latest;
   }
-
-  const list = await requestGiteeJson(
-    "/api/v5/repos/gzlingyi_0/pubtw/releases?page=1&per_page=20&direction=desc",
-    []
-  );
-  const result = Array.isArray(list) && list.length > 0 ? list[0] : null;
-  if (result) {
-    _releaseCache = result;
+  if (Array.isArray(latest) && latest.length > 0) {
+    _releaseCache = latest[0];
     _releaseCacheAt = Date.now();
+    _releaseCacheUrl = updateUrl;
+    return latest[0];
   }
-  return result;
+
+  return null;
 }
 
 /** 解析 v0.9.7 / 0.9.7 为可比较的数字（按段比较，避免 0.9.10 与 parseInt 拼接错误） */
@@ -167,7 +182,8 @@ export default {
   async Mainfunc(IsUseSysTitle) {
     // Always register the check-for-updates handler first
     ipcMain.handle("check-for-updates", async (event) => {
-      const lastData = await getLatestRelease();
+      const settings = getAppSettings();
+      const lastData = await getLatestRelease(settings.autoUpdateUrl);
       if (!lastData) {
         return { hasUpdate: false };
       }
@@ -192,6 +208,11 @@ export default {
         hasUpdate: Boolean(downloadURL && cmp > 0),
       };
     });
+
+    ipcMain.handle("get-app-settings", async () => getAppSettings());
+    ipcMain.handle("update-app-settings", async (_event, patch) =>
+      updateAppSettings(patch || {})
+    );
 
     // 先启动安装包再退出应用，避免安装器处理正在运行的主程序时失败。
     ipcMain.handle(
