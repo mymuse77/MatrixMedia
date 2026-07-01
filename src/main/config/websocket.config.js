@@ -2,9 +2,11 @@
  * WebSocket 客户端配置
  */
 
+const { DEFAULT_APP_SETTINGS } = require("../../shared/appSettings");
+
 module.exports = {
-  // WebSocket 服务器地址
-  serverUrl: process.env.WS_SERVER_URL || 'http://localhost:3000',
+  // WebSocket 服务器地址，环境变量优先；默认值统一维护在 src/shared/appSettings.js。
+  serverUrl: process.env.WS_SERVER_URL || DEFAULT_APP_SETTINGS.webSocketServerUrl,
 
   // Socket.IO 路径（如果服务器使用自定义路径）
   path: process.env.WS_SERVER_PATH || '/api/socket',

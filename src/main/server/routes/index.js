@@ -1,7 +1,27 @@
 var express = require("express");
 const { changeData } = require("../utils");
+const { getClientIdentity } = require("../../services/clientIdentity");
 
 var router = express.Router();
+
+function sendClientIdentity(req, res) {
+  try {
+    const identity = getClientIdentity();
+    res.json({
+      success: true,
+      clientId: identity.clientId,
+      clientType: "matrix_pc_client",
+      createdAt: identity.createdAt || "",
+      updatedAt: identity.updatedAt || "",
+    });
+  } catch (error) {
+    console.error("[HTTP /client-id]", error);
+    res.status(500).json({
+      success: false,
+      message: error && error.message ? error.message : String(error),
+    });
+  }
+}
 
 router.get("/", function (req, res) {
   res.send("<h1>MatrixMedia API</h1>");
@@ -13,6 +33,9 @@ router.get("/test", function (req, res) {
     message: "ok",
   });
 });
+
+router.get("/client-id", sendClientIdentity);
+router.get("/clientId", sendClientIdentity);
 
 router.get("/platforms", async function (req, res) {
   try {
