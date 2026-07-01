@@ -38,15 +38,18 @@ function getAllowedOrigins() {
 // 设置跨域访问，生产站 HTTPS 访问本机 loopback 时需要通过 PNA 预检。
 app.all('*',function(req,res,next) {
   const requestOrigin = req.headers.origin;
+  const requestHeaders = req.headers['access-control-request-headers'];
   if (requestOrigin && getAllowedOrigins().has(requestOrigin)) {
     res.header("Access-Control-Allow-Origin", requestOrigin);
     res.header("Vary","Origin");
+    res.header("Access-Control-Allow-Credentials","true");
   } else if (!requestOrigin) {
     res.header("Access-Control-Allow-Origin","*");
   }
   res.header('Access-Control-Allow-Methods','PUT,GET,POST,DELETE,OPTIONS');
-  res.header("Access-Control-Allow-Headers","Content-Type, X-Requested-With, Authorization");
+  res.header("Access-Control-Allow-Headers", requestHeaders || "Content-Type, X-Requested-With, Authorization");
   res.header("Access-Control-Allow-Private-Network","true");
+  res.header("Access-Control-Max-Age","600");
   if (req.method === 'OPTIONS') {
     res.sendStatus(204);
     return;
