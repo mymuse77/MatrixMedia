@@ -145,7 +145,11 @@ export default async function (page, data, window, event) {
 
     const input2 = await page.$(".zone-container.editor-kit-container");
     await input2.click(); // 三击全选
-    await page.keyboard.type(data.data.bt2 + " " + data.data.bq, { delay: 50 });
+    const descriptionAndTags = [data.data.bt2, data.data.bq]
+      .map(value => String(value || "").trim())
+      .filter(Boolean)
+      .join(" ");
+    await page.keyboard.type(descriptionAndTags, { delay: 50 });
     // 抖音话题只有遇到空格/回车才会把当前 #xxx 转成话题胶囊；
     // bq 末尾没有分隔符会导致最后一个标签没被识别，这里补一次空格触发。
     await page.keyboard.press("Space");

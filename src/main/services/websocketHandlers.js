@@ -12,6 +12,7 @@ import { app, BrowserWindow } from 'electron';
 import { getAccountLoginStatus, getAccountPartition } from './accountLoginStatus';
 import { openAccountLoginWindow } from './accountLoginWindow';
 import { resolvePublishFile } from './resolvePublishFile';
+import { getAppSettings } from './appSettings';
 
 /**
  * 获取账号数据目录
@@ -654,6 +655,47 @@ function getVideoUrlValue(video) {
   return cleanText(video?.videoUrl) || cleanText(video?.url) || cleanText(video?.downloadUrl) || cleanText(video?.download?.url);
 }
 
+function getConfiguredServerOrigin() {
+  try {
+    const serverUrl = String(getAppSettings()?.webSocketServerUrl || '').trim();
+    return serverUrl ? new URL(serverUrl).origin : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function isLoopbackHostname(hostname) {
+  const normalized = String(hostname || '').trim().toLowerCase();
+  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1' || normalized === '[::1]';
+}
+
+function normalizeRemoteDownloadUrl(rawUrl) {
+  const value = cleanText(rawUrl);
+  if (!value) {
+    return '';
+  }
+
+  const serverOrigin = getConfiguredServerOrigin();
+  if (!serverOrigin) {
+    return value;
+  }
+
+  try {
+    if (/^https?:\/\//i.test(value)) {
+      const parsed = new URL(value);
+      const serviceOrigin = new URL(serverOrigin);
+      if (isLoopbackHostname(parsed.hostname) && !isLoopbackHostname(serviceOrigin.hostname)) {
+        return new URL(parsed.pathname + parsed.search + parsed.hash, serviceOrigin).toString();
+      }
+      return parsed.toString();
+    }
+
+    return new URL(value, serverOrigin).toString();
+  } catch (_) {
+    return value;
+  }
+}
+
 function normalizeRequestHeaders(headers) {
   if (!headers || typeof headers !== 'object' || Array.isArray(headers)) {
     return null;
@@ -678,7 +720,7 @@ function normalizeRequestHeaders(headers) {
 
 function createDownloadRequest(videoUrl, download, downloadHeaders, downloadExpiresAt) {
   const normalizedDownload = isPlainObject(download) ? download : null;
-  const url = cleanText(normalizedDownload?.url || videoUrl);
+  const url = normalizeRemoteDownloadUrl(normalizedDownload?.url || videoUrl);
   if (!url) {
     return null;
   }
@@ -802,6 +844,7 @@ function createLocalPublishData({
   location,
 }) {
   const localRecordName = cleanText(taskName) || title || path.basename(videoPath);
+  const shortTitle = description || (platform === '视频号' ? title : '');
 
   return {
     id: createLocalPublishRecordId(),
@@ -811,7 +854,7 @@ function createLocalPublishData({
     data: {
       textOtherName: localRecordName,
       bt1: title || '',
-      bt2: description || title || '',
+      ...(shortTitle ? { bt2: shortTitle } : {}),
       bq: tags || '',
       bdText: '',
       address: location || '',
@@ -819,7 +862,7 @@ function createLocalPublishData({
     textOtherName: localRecordName,
     selectedFile: path.basename(videoPath),
     bt: title || '',
-    bt2: description || title || '',
+    ...(shortTitle ? { bt2: shortTitle } : {}),
     bq: tags || '',
     filePath: videoPath,
     url: ptConfig[platform]?.upload,
@@ -936,10 +979,11 @@ function getFallbackVideoTitle(video, videoPath, taskName) {
 
 function buildPublishText({ caption, video, videoPath, taskName, taskTags, platform }) {
   const captionText = getCaptionText(caption);
-  const firstCaptionLine = captionText
+  const captionLines = captionText
     .split(/\r?\n/)
     .map(line => line.trim())
-    .find(Boolean);
+    .filter(Boolean);
+  const firstCaptionLine = captionLines[0] || '';
   const fallbackTitle = getFallbackVideoTitle(video, videoPath, taskName);
   const title = firstCaptionLine || fallbackTitle || 'video';
   const tags = [
@@ -949,7 +993,8 @@ function buildPublishText({ caption, video, videoPath, taskName, taskTags, platf
 
   return {
     title,
-    description: captionText || title,
+    // bt1 已填写首行标题，bt2 只保留后续正文，避免抖音等平台重复显示首行。
+    description: captionLines.slice(1).join('\n'),
     tags: formatPublishTags(tags, platform),
   };
 }
@@ -1035,22 +1080,27 @@ export async function handlePublishVideo(taskData, wsClient) {
 
     sendScopedProgress(wsClient, taskId, 20, '正在准备发布数据', progressRange);
 
+    const existingBt2 = cleanText(localPublishRecord?.bt2);
+    const normalizedBt2 = description ||
+      (platform === '视频号' ? title : existingBt2 && existingBt2 !== title ? existingBt2 : '') ||
+      '';
+    const publishOverrides = {
+      taskId,
+      itemId,
+      phone,
+      pt: platform,
+      partition,
+      filePath: localVideoPath,
+      sourceVideoPath: videoPath,
+      sourceVideoUrl: persistedSourceVideoUrl,
+      url: ptConfig[platform]?.upload,
+      bt: title || localPublishRecord?.bt || '',
+      bq: tags || localPublishRecord?.bq || '',
+      coverPath: coverPath || localPublishRecord?.coverPath || '',
+      ...(normalizedBt2 ? { bt2: normalizedBt2 } : {}),
+    };
     const publishData = isPlainObject(localPublishRecord)
-      ? normalizeLocalPublishData(localPublishRecord, {
-        taskId,
-        itemId,
-        phone,
-        pt: platform,
-        partition,
-        filePath: localVideoPath,
-        sourceVideoPath: videoPath,
-        sourceVideoUrl: persistedSourceVideoUrl,
-        url: ptConfig[platform]?.upload,
-        bt: title || localPublishRecord.bt || '',
-        bt2: description || title || localPublishRecord.bt2 || '',
-        bq: tags || localPublishRecord.bq || '',
-        coverPath: coverPath || localPublishRecord.coverPath || '',
-      })
+      ? normalizeLocalPublishData(localPublishRecord, publishOverrides)
       : createLocalPublishData({
         taskId,
         itemId,
@@ -1084,7 +1134,7 @@ export async function handlePublishVideo(taskData, wsClient) {
           matrixSourceVideoPath: publishData.matrixSourceVideoPath || videoPath || '',
           matrixSourceVideoUrl: publishData.matrixSourceVideoUrl || persistedSourceVideoUrl || '',
           bt: publishData.bt || title || '',
-          bt2: publishData.bt2 || description || title || '',
+          ...(publishData.bt2 ? { bt2: publishData.bt2 } : {}),
           bq: publishData.bq || tags || '',
           lastPublishMessage: '等待发布结果',
           lastPublishAt: Date.now(),

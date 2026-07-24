@@ -10,6 +10,7 @@ const { sendAccountSnapshot } = require('./websocketHandlers');
 const packageJson = require('../../../package.json');
 
 const protocolVersion = 'matrix-ws-v1';
+const QUIET_TASK_TYPES = new Set(['get_accounts', 'get_publish_task_status']);
 const clientCapabilities = [
   'accounts.read',
   'accounts.write',
@@ -20,6 +21,52 @@ const clientCapabilities = [
   'publish.history',
   'client.status',
 ];
+
+function isAxiosError(error) {
+  return !!(error && (error.isAxiosError || error.name === 'AxiosError'));
+}
+
+function truncateText(value, maxLength = 200) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function formatTaskError(error) {
+  if (!error) {
+    return { message: '未知错误' };
+  }
+
+  if (isAxiosError(error)) {
+    const summary = {
+      name: error.name || 'AxiosError',
+      message: error.message || '请求失败',
+    };
+
+    if (error.code) summary.code = error.code;
+    if (error.config?.method) summary.method = String(error.config.method).toUpperCase();
+    if (error.config?.url) summary.url = error.config.url;
+    if (typeof error.response?.status === 'number') summary.status = error.response.status;
+
+    const redirectedUrl = error.response?.request?.res?.responseUrl;
+    if (redirectedUrl && redirectedUrl !== error.config?.url) {
+      summary.redirectedUrl = redirectedUrl;
+    }
+
+    const responseData = error.response?.data;
+    if (typeof responseData === 'string') {
+      const snippet = truncateText(responseData);
+      if (snippet) summary.response = snippet;
+    }
+
+    return summary;
+  }
+
+  return {
+    name: error.name || 'Error',
+    message: error.message || String(error),
+  };
+}
 
 class WebSocketClient {
   constructor() {
@@ -32,6 +79,7 @@ class WebSocketClient {
     this.taskHandlers = new Map(); // 任务处理器映射
     this.heartbeatTimer = null; // 心跳定时器
     this.manualReconnectTimer = null; // 达到上限后的低频自恢复重连
+    this.taskTypeById = new Map();
   }
 
   /**
@@ -118,18 +166,23 @@ class WebSocketClient {
     });
 
     // 接收服务器的 pong 响应
-    this.socket.on('pong', (data) => {
-      console.log('[WebSocket] 收到 pong:', data);
-    });
+    this.socket.on('pong', () => {});
 
     // 接收发布任务
     this.socket.on('task', (taskData) => {
-      console.log('[WebSocket] 收到发布任务:', taskData);
+      const taskType = String(taskData?.type || '');
+      const taskId = String(taskData?.taskId || '');
+      if (!QUIET_TASK_TYPES.has(taskType)) {
+        console.log('[WebSocket] 收到发布任务:', { taskId, type: taskType });
+      }
       this.handleTask(taskData);
     });
 
     // 接收服务器消息
     this.socket.on('message', (data) => {
+      if (data?.type === 'heartbeat_ack' || data?.type === 'pong') {
+        return;
+      }
       console.log('[WebSocket] 收到服务器消息:', data);
     });
   }
@@ -173,6 +226,7 @@ class WebSocketClient {
    */
   handleTask(taskData) {
     const { taskId, type } = taskData;
+    this.taskTypeById.set(taskId, type);
 
     // 立即发送 ACK 确认收到任务
     this.sendAck(taskId);
@@ -199,7 +253,7 @@ class WebSocketClient {
           this.sendTaskResult(taskId, 'success', result);
         })
         .catch((error) => {
-          console.error(`[WebSocket] 任务执行失败 (${taskId}):`, error);
+          console.error(`[WebSocket] 任务执行失败 (${taskId}):`, formatTaskError(error));
           if (type === 'publish_video') {
             const taskPayload = taskData && typeof taskData.data === 'object' && taskData.data !== null ? taskData.data : {};
             this.sendTaskResult(taskId, 'failed', {
@@ -222,6 +276,11 @@ class WebSocketClient {
     }
   }
 
+  shouldLogTask(taskId) {
+    const taskType = this.taskTypeById.get(taskId);
+    return !QUIET_TASK_TYPES.has(taskType);
+  }
+
   /**
    * 发送任务确认
    */
@@ -233,7 +292,9 @@ class WebSocketClient {
       taskId,
       timestamp: Date.now()
     });
-    console.log(`[WebSocket] 已发送任务确认: ${taskId}`);
+    if (this.shouldLogTask(taskId)) {
+      console.log(`[WebSocket] 已发送任务确认: ${taskId}`);
+    }
   }
 
   /**
@@ -251,7 +312,10 @@ class WebSocketClient {
     };
 
     this.socket.emit('result', result);
-    console.log(`[WebSocket] 已发送任务结果: ${taskId}, 状态: ${status}`);
+    if (this.shouldLogTask(taskId)) {
+      console.log(`[WebSocket] 已发送任务结果: ${taskId}, 状态: ${status}`);
+    }
+    this.taskTypeById.delete(taskId);
   }
 
   /**
@@ -269,7 +333,9 @@ class WebSocketClient {
     };
 
     this.socket.emit('progress', progressData);
-    console.log(`[WebSocket] 已发送进度更新: ${taskId}, ${progress}%`);
+    if (this.shouldLogTask(taskId)) {
+      console.log(`[WebSocket] 已发送进度更新: ${taskId}, ${progress}%`);
+    }
   }
 
   /**

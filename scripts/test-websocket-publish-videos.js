@@ -227,17 +227,17 @@ async function main() {
   assert.strictEqual(capturedPublishPayloads[0].mmCliSuppressWindow, true);
   assert.strictEqual(capturedPublishPayloads[0].closeWindowAfterPublish, true);
   assert.strictEqual(capturedPublishPayloads[0].bt, "Caption one");
-  assert.strictEqual(capturedPublishPayloads[0].bt2, "Caption one\n#tag1");
+  assert.strictEqual(capturedPublishPayloads[0].bt2, "#tag1");
   assert.strictEqual(capturedPublishPayloads[0].bq, "#web-tag #shared #caption-one");
   assert.strictEqual(capturedPublishPayloads[0].data.textOtherName, "Web publish test");
   assert.strictEqual(capturedPublishPayloads[0].data.bt1, "Caption one");
-  assert.strictEqual(capturedPublishPayloads[0].data.bt2, "Caption one\n#tag1");
+  assert.strictEqual(capturedPublishPayloads[0].data.bt2, "#tag1");
   assert.strictEqual(capturedPublishPayloads[0].data.bq, "#web-tag #shared #caption-one");
 
   assert.strictEqual(capturedPublishPayloads[1].textOtherName, "Web publish test");
   assert.strictEqual(capturedPublishPayloads[1].filePath, secondVideoPath);
   assert.strictEqual(capturedPublishPayloads[1].data.bt1, "Caption two");
-  assert.strictEqual(capturedPublishPayloads[1].data.bt2, "Caption two\n#tag2");
+  assert.strictEqual(capturedPublishPayloads[1].data.bt2, "#tag2");
   assert.strictEqual(capturedPublishPayloads[1].data.bq, "#web-tag #shared #caption-two");
 
   assert.strictEqual(capturedPublishPayloads[2].pt, toutiaoPlatform);
@@ -355,6 +355,8 @@ async function main() {
     "X-Matrix-Task-Id": "task-1",
   });
   assert.notStrictEqual(capturedPublishPayloads.at(-1).filePath, remoteUrl);
+  assert.strictEqual(capturedPublishPayloads.at(-1).bt2, undefined);
+  assert.strictEqual(capturedPublishPayloads.at(-1).data.bt2, undefined);
 
   const remoteChangeCalls = changeDataCalls.slice(remoteChangeCallCountBefore);
   const remoteRecordUpdate = remoteChangeCalls.find(

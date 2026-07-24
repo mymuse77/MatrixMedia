@@ -104,6 +104,24 @@ function isUsableLocalFile(filePath) {
   }
 }
 
+function getHostnameFromUrl(value) {
+  try {
+    return new URL(String(value || "").trim()).host.toLowerCase();
+  } catch (_) {
+    return "";
+  }
+}
+
+function removeRedirectOnlyHeaders(headers) {
+  if (!headers || typeof headers !== "object") return;
+  delete headers.Authorization;
+  delete headers.authorization;
+  delete headers["X-Matrix-Client-Id"];
+  delete headers["x-matrix-client-id"];
+  delete headers["X-Matrix-Task-Id"];
+  delete headers["x-matrix-task-id"];
+}
+
 function normalizeRequestHeaders(headers) {
   if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
     return undefined;
@@ -185,6 +203,7 @@ export async function resolvePublishFile(file, options = {}) {
   }
 
   const headers = normalizeRequestHeaders(options?.headers);
+  const originalHost = getHostnameFromUrl(raw);
   console.log(
     "[resolvePublishFile] 开始下载远程视频:",
     JSON.stringify({ remoteUrl: raw, localPath })
@@ -200,6 +219,12 @@ export async function resolvePublishFile(file, options = {}) {
       responseType: "stream",
       timeout: DEFAULT_DOWNLOAD_TIMEOUT_MS,
       maxRedirects: 5,
+      beforeRedirect: (options) => {
+        const nextHost = String(options?.host || options?.hostname || "").toLowerCase();
+        if (originalHost && nextHost && nextHost !== originalHost) {
+          removeRedirectOnlyHeaders(options.headers);
+        }
+      },
       validateStatus: (status) => status >= 200 && status < 300,
     });
 
