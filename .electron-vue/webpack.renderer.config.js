@@ -175,6 +175,7 @@ if (process.env.NODE_ENV === 'production') {
     minimize: true,
     minimizer: [
       new TerserPlugin({
+        minify: TerserPlugin.terserMinify,
         terserOptions: {
           compress: {
             drop_console: true,

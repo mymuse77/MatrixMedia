@@ -29,6 +29,7 @@ let mainConfig = {
     rules: [
       {
         test: /\.js$/,
+        exclude: /node_modules/,
         loader: 'esbuild-loader'
       },
       {
@@ -80,6 +81,7 @@ if (process.env.NODE_ENV === 'production' && config.build.cleanConsole) {
     minimize: true,
     minimizer: [
       new TerserPlugin({
+        minify: TerserPlugin.terserMinify,
         terserOptions: {
           compress: {
             drop_console: true,

@@ -105,8 +105,8 @@
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "puppeteer-in-electron": "^3.0.5",
     "qrcode-terminal": "^0.12.0",
-    "xlsx": "^0.18.5",
-    "socket.io-client": "^4.7.2"
+    "socket.io-client": "^4.7.2",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@babel/core": "^7.22.5",
@@ -131,6 +131,7 @@
     "@babel/preset-env": "^7.22.5",
     "@babel/register": "^7.22.5",
     "@babel/runtime": "^7.22.5",
+    "@swc/core": "^1.15.46",
     "@types/fs-extra": "^11.0.1",
     "@types/node": "^18.14.5",
     "@vue/babel-helper-vue-jsx-merge-props": "^1.4.0",
