@@ -23,6 +23,7 @@ const toutiaoUploadUrl = "https://mp.toutiao.com/profile_v4/xigua/upload-video";
 const xhsUploadUrl = "https://creator.xiaohongshu.com/publish/publish?from=menu&target=video";
 const capturedPublishPayloads = [];
 const progressEvents = [];
+const taskResultEvents = [];
 const changeDataCalls = [];
 const resolvePublishCalls = [];
 let remoteDownloadIndex = 0;
@@ -141,12 +142,17 @@ async function main() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "matrixmedia-publish-"));
   const firstVideoPath = path.join(tempDir, "video-a.mp4");
   const secondVideoPath = path.join(tempDir, "video-b.mp4");
+  const thirdVideoPath = path.join(tempDir, "video-c.mp4");
   fs.writeFileSync(firstVideoPath, "fake video a");
   fs.writeFileSync(secondVideoPath, "fake video b");
+  fs.writeFileSync(thirdVideoPath, "fake video c");
 
   const wsClient = {
     sendProgress(taskId, progress, message) {
       progressEvents.push({ taskId, progress, message });
+    },
+    sendTaskResult(taskId, status, data) {
+      taskResultEvents.push({ taskId, status, data });
     },
   };
 
@@ -288,6 +294,49 @@ async function main() {
   assert.strictEqual(successUpdates[0].item.date, capturedPublishPayloads[0].date);
   assert.strictEqual(successUpdates[0].item.publishStatus, "success");
   assert.strictEqual(successUpdates[0].item.publishSuccessCount, 1);
+
+  const assignedPublishCountBefore = capturedPublishPayloads.length;
+  const assignedTaskEventCountBefore = taskResultEvents.length;
+  const assignedResult = await handlePublishVideos(
+    {
+      taskId: "matrix-task-assignment-test",
+      type: "publish_videos",
+      data: {
+        taskName: "Assigned publish test",
+        captionMode: "batch",
+        platforms: [platform, toutiaoPlatform, xhsPlatform],
+        publishItemIds: ["publish-item-1", "publish-item-2", "publish-item-3"],
+        accounts: [
+          { id: "account-1", phone: "13800138000", platform },
+          { id: "account-2", phone: "13900139000", platform: toutiaoPlatform },
+          { id: "account-3", phone: "13700137000", platform: xhsPlatform },
+        ],
+        videos: [
+          { id: "video-1", filePath: firstVideoPath },
+          { id: "video-2", filePath: secondVideoPath },
+          { id: "video-3", filePath: thirdVideoPath },
+        ],
+        captions: [{ id: "caption-1", textContent: "Assigned caption" }],
+      },
+    },
+    wsClient,
+  );
+
+  assert.strictEqual(assignedResult.total, 3);
+  assert.strictEqual(assignedResult.successCount, 3);
+  assert.deepStrictEqual(assignedResult.results.map((item) => item.itemId), [
+    "publish-item-1",
+    "publish-item-2",
+    "publish-item-3",
+  ]);
+  assert.deepStrictEqual(
+    capturedPublishPayloads.slice(assignedPublishCountBefore).map((item) => item.filePath),
+    [firstVideoPath, secondVideoPath, thirdVideoPath],
+  );
+  assert.deepStrictEqual(
+    taskResultEvents.slice(assignedTaskEventCountBefore).map((event) => event.data.results[0].itemId),
+    ["publish-item-1", "publish-item-2", "publish-item-3"],
+  );
 
   const failedResult = await handlePublishVideos(
     {

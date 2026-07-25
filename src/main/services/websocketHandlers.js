@@ -1247,7 +1247,12 @@ export async function handlePublishVideos(taskData, wsClient) {
     const platform = getAccountPlatformValue(account);
     return platform && (!platforms.size || platforms.has(platform));
   });
-  const total = publishAccounts.length * videos.length;
+  const publishItemIds = asList(data.publishItemIds).map(item => cleanText(item));
+  const hasOneToOneAssignments = publishItemIds.length === publishAccounts.length && videos.length >= publishAccounts.length;
+  const publishPairs = hasOneToOneAssignments
+    ? publishAccounts.map((account, index) => ({ account, video: videos[index] }))
+    : publishAccounts.flatMap(account => videos.map(video => ({ account, video })));
+  const total = publishPairs.length;
 
   if (!publishAccounts.length) {
     throw new Error('没有可发布的账号');
@@ -1264,57 +1269,54 @@ export async function handlePublishVideos(taskData, wsClient) {
   let failCount = 0;
   let detailIndex = 0;
   const publishQueue = [];
-  const publishItemIds = asList(data.publishItemIds).map(item => cleanText(item));
 
-  for (const account of publishAccounts) {
+  for (const { account, video } of publishPairs) {
     const phone = cleanText(account.phone);
     const platform = getAccountPlatformValue(account);
     const partition = cleanText(account.partition) || getAccountPartition(phone, platform);
 
-    for (const video of videos) {
-      const videoPath = getVideoPathValue(video);
-      const videoUrl = getVideoUrlValue(video);
-      const download = createDownloadRequest(videoUrl, video?.download, video?.downloadHeaders, video?.downloadExpiresAt);
-      const caption = pickCaption(captions, detailIndex, captionMode);
-      const publishText = buildPublishText({ caption, video, videoPath, taskName, taskTags, platform });
-      const currentIndex = detailIndex + 1;
-      const progressStart = (detailIndex / total) * 100;
-      const progressEnd = (currentIndex / total) * 100;
-      const publishData = createLocalPublishData({
-        taskId,
-        itemId: publishItemIds[detailIndex] || '',
-        phone,
-        platform,
-        partition,
-        videoPath,
-        title: publishText.title,
-        taskName,
-        description: publishText.description,
-        tags: publishText.tags,
-      });
+    const videoPath = getVideoPathValue(video);
+    const videoUrl = getVideoUrlValue(video);
+    const download = createDownloadRequest(videoUrl, video?.download, video?.downloadHeaders, video?.downloadExpiresAt);
+    const caption = pickCaption(captions, detailIndex, captionMode);
+    const publishText = buildPublishText({ caption, video, videoPath, taskName, taskTags, platform });
+    const currentIndex = detailIndex + 1;
+    const progressStart = (detailIndex / total) * 100;
+    const progressEnd = (currentIndex / total) * 100;
+    const publishData = createLocalPublishData({
+      taskId,
+      itemId: publishItemIds[detailIndex] || '',
+      phone,
+      platform,
+      partition,
+      videoPath,
+      title: publishText.title,
+      taskName,
+      description: publishText.description,
+      tags: publishText.tags,
+    });
 
-      publishQueue.push({
+    publishQueue.push({
+      itemId: publishItemIds[detailIndex] || '',
+      serverId: getRemoteVideoCacheKey({
         itemId: publishItemIds[detailIndex] || '',
-        serverId: getRemoteVideoCacheKey({
-          itemId: publishItemIds[detailIndex] || '',
-          video,
-          downloadRequest: download,
-        }),
-        phone,
-        platform,
-        partition,
-        videoPath,
-        videoUrl,
-        download,
-        publishText,
-        publishData,
-        currentIndex,
-        progressStart,
-        progressEnd,
-      });
+        video,
+        downloadRequest: download,
+      }),
+      phone,
+      platform,
+      partition,
+      videoPath,
+      videoUrl,
+      download,
+      publishText,
+      publishData,
+      currentIndex,
+      progressStart,
+      progressEnd,
+    });
 
-      detailIndex += 1;
-    }
+    detailIndex += 1;
   }
 
   for (const queued of publishQueue) {
