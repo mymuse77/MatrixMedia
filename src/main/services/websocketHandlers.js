@@ -14,6 +14,10 @@ import { openAccountLoginWindow } from './accountLoginWindow';
 import { resolvePublishFile } from './resolvePublishFile';
 import { getAppSettings } from './appSettings';
 
+const LOGIN_STATUS_WATCH_INTERVAL_MS = 3_000;
+const LOGIN_STATUS_WATCH_TIMEOUT_MS = 10 * 60 * 1_000;
+const activeLoginStatusWatches = new Map();
+
 /**
  * 获取账号数据目录
  */
@@ -263,6 +267,53 @@ export async function sendAccountSnapshot(wsClient, reason = 'snapshot') {
       error: error && error.message ? error.message : String(error),
     });
   }
+}
+
+function watchAccountLoginStatus({ wsClient, accountId, phone, platform, partition, url }) {
+  const key = `${partition}|${phone}|${platform}`;
+  activeLoginStatusWatches.get(key)?.stop();
+
+  let stopped = false;
+  let checking = false;
+  let interval = null;
+  let timeout = null;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    if (interval) clearInterval(interval);
+    if (timeout) clearTimeout(timeout);
+    activeLoginStatusWatches.delete(key);
+  };
+  const check = async () => {
+    if (stopped || checking) return;
+    checking = true;
+    try {
+      const status = await getAccountLoginStatus({ phone, platform, partition, url });
+      if (!status.isLoggedIn) return;
+      stop();
+      wsClient.sendStatus({
+        action: 'account_login_status',
+        account: {
+          id: accountId,
+          phone,
+          platform,
+          pt: platform,
+          partition,
+          url,
+          ...status,
+        },
+      });
+    } catch (error) {
+      console.warn('[WebSocket] 检查账号登录状态失败:', error && error.message ? error.message : error);
+    } finally {
+      checking = false;
+    }
+  };
+
+  interval = setInterval(() => void check(), LOGIN_STATUS_WATCH_INTERVAL_MS);
+  timeout = setTimeout(stop, LOGIN_STATUS_WATCH_TIMEOUT_MS);
+  activeLoginStatusWatches.set(key, { stop });
+  void check();
 }
 
 function readAccountFile(filePath) {
@@ -595,6 +646,17 @@ export async function handleOpenAccountLogin(taskData, wsClient) {
       throw new Error(result?.message || '打开账号窗口失败');
     }
 
+    const partition = data.partition || getAccountPartition(targetPhone, targetPlatform);
+    const url = data.url || account?.url || ptConfig[targetPlatform].index;
+    watchAccountLoginStatus({
+      wsClient,
+      accountId: account?.id || id,
+      phone: targetPhone,
+      platform: targetPlatform,
+      partition,
+      url,
+    });
+
     wsClient.sendProgress(taskId, 100, '账号窗口已打开');
 
     return {
@@ -606,8 +668,8 @@ export async function handleOpenAccountLogin(taskData, wsClient) {
         id: account?.id || id,
         phone: targetPhone,
         platform: targetPlatform,
-        partition: data.partition || getAccountPartition(targetPhone, targetPlatform),
-        url: data.url || account?.url || ptConfig[targetPlatform].index,
+        partition,
+        url,
       },
       message: result.reused ? '已切换到账号窗口' : '账号窗口已打开',
     };

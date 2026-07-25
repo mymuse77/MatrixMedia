@@ -365,6 +365,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
           "--no-sandbox",
           "--disable-setuid-sandbox",
           "--disable-blink-features=AutomationControlled",
+          "--mute-audio",
         ],
         defaultViewport: { width: 1300, height: 800 },
       });
@@ -473,6 +474,8 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       });
       activeWin = win;
       openPublishWindows.add(win);
+      // 发布页可能在上传完成后自动播放预览；静音仅影响本地播放，不会改动上传视频音轨。
+      win.webContents.setAudioMuted(true);
       page = await pie.getPage(browser, win);
       logStage("发布窗口已创建", { attempt: currentAttempt });
 
