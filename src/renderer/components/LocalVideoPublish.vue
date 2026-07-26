@@ -32,6 +32,8 @@
             placeholder="输入标签，回车/空格添加；支持批量粘贴 #标签1 #标签2"
             style="width: 100%"
             @paste.native.capture="onBqPaste"
+            @compositionstart.native.capture="onBqCompositionStart"
+            @compositionend.native.capture="onBqCompositionEnd"
             @keydown.native.capture="onBqKeydown"
           ></el-select>
         </el-form-item>
@@ -219,17 +221,126 @@
       />
 
       <div slot="footer" class="dialog-footer">
-        <el-button @click="goBackToMeta">上一步</el-button>
-        <el-button @click="platformVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleBatchPublish">发布</el-button>
-        <el-button type="primary" @click="handleBatchPublishToDraft"
-          >发布到草稿</el-button
+        <el-button :disabled="publishing" @click="goBackToMeta"
+          >上一步</el-button
+        >
+        <el-button :disabled="publishing" @click="platformVisible = false"
+          >取消</el-button
+        >
+        <el-button type="primary" :disabled="publishing" @click="onPlatformNext"
+          >下一步</el-button
         >
       </div>
 
       <!-- 旧的 <webview> 登录弹窗已迁移到主进程的独立 BrowserWindow，
            避免被小红书等站点的 GuestView 指纹识别后反复跳登录。
            现在点击"重新登录"会通过 openLoginWindow 调用 IPC 弹独立窗口。 -->
+    </el-dialog>
+
+    <el-dialog
+      :title="attrsDialogTitle"
+      :close-on-click-modal="false"
+      :visible.sync="attrsVisible"
+      :close-on-press-escape="false"
+      width="920px"
+      @close="handleAttrsClose"
+    >
+      <p v-if="!attrsHasSph" class="bt2-tip">
+        当前未勾选视频号，无需配置第三方属性，确认后可直接发布。
+      </p>
+      <el-table
+        :data="checkedPlatformNodes"
+        border
+        size="small"
+        style="width: 100%"
+      >
+        <el-table-column prop="pt" label="平台" width="100" />
+        <el-table-column prop="phone" label="账号" min-width="140" />
+        <el-table-column label="第三方属性" min-width="420">
+          <template slot-scope="{ row }">
+            <div
+              v-if="platformSupportsVideoLink(row.pt)"
+              class="attrs-link-cell"
+            >
+              <el-select
+                :value="getPlatformVideoLinkType(row.id, row.pt)"
+                size="mini"
+                class="attrs-link-type"
+                @input="onAttrsLinkTypeChange(row, $event)"
+              >
+                <el-option
+                  v-for="opt in getPlatformVideoLinkOptions(row.pt)"
+                  :key="opt.type"
+                  :label="opt.label"
+                  :value="opt.type"
+                  :disabled="!opt.automationSupported"
+                />
+              </el-select>
+              <template v-if="platformVideoLinkNeedsValue(row)">
+                <el-select
+                  :value="getPlatformVideoLinkValue(row.id)"
+                  size="mini"
+                  filterable
+                  clearable
+                  class="attrs-product-select"
+                  placeholder="从橱窗选择商品"
+                  :loading="!!platformProductLoading[row.id]"
+                  @visible-change="
+                    (open) => open && loadPlatformWindowProducts(row)
+                  "
+                  @input="setPlatformVideoLinkValue(row.id, row.pt, $event)"
+                >
+                  <el-option
+                    v-for="item in getPlatformProductOptions(row.id)"
+                    :key="item.productId"
+                    :label="item.title + ' (' + item.productId + ')'"
+                    :value="item.productId"
+                  />
+                </el-select>
+                <el-button
+                  type="text"
+                  size="mini"
+                  :loading="!!platformProductLoading[row.id]"
+                  @click="loadPlatformWindowProducts(row, true)"
+                  >刷新橱窗</el-button
+                >
+                <el-input
+                  :value="getPlatformVideoLinkValue(row.id)"
+                  size="mini"
+                  clearable
+                  class="attrs-product-id"
+                  placeholder="或手动输入商品编号"
+                  @input="setPlatformVideoLinkValue(row.id, row.pt, $event)"
+                />
+              </template>
+            </div>
+            <span v-else class="attrs-unsupported">暂不支持第三方属性</span>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <div slot="footer" class="dialog-footer">
+        <el-button :disabled="publishing" @click="goBackToPlatform"
+          >上一步</el-button
+        >
+        <el-button :disabled="publishing" @click="attrsVisible = false"
+          >取消</el-button
+        >
+        <el-button
+          type="primary"
+          :loading="publishing"
+          :disabled="publishing"
+          @click="handleBatchPublish"
+          >发布</el-button
+        >
+        <el-button
+          type="primary"
+          :loading="publishing"
+          :disabled="publishing"
+          @click="handleBatchPublishToDraft"
+          >发布到草稿</el-button
+        >
+      </div>
     </el-dialog>
 
     <!-- Directory batch publish dialog -->
@@ -385,6 +496,14 @@ import {
 } from "../../shared/xhsPublishPolicy.js";
 import { resolveEffectivePublishMode } from "../../shared/accountPublishSettings.js";
 import {
+  buildVideoLinkOption,
+  getDisplayableVideoLinkTypes,
+  getVideoLinkTypeCapability,
+  platformSupportsVideoLink,
+  resolveVideoLinkOption,
+  validateVideoLinkValue,
+} from "../../shared/videoLink.js";
+import {
   isBt2SelectAllShortcut,
   isVideohaoBt2AllowedChar,
   sanitizeVideohaoBt2Input,
@@ -431,9 +550,14 @@ export default {
       ptConfig,
       metaVisible: false,
       platformVisible: false,
+      attrsVisible: false,
       localFilePath: "",
       bqTags: [],
+      bqComposing: false,
       platformStatements: {},
+      platformVideoLinks: {},
+      platformProductOptions: {},
+      platformProductLoading: {},
       checkedPlatformIds: [],
       checkAllPlatforms: false,
       checkAllIndeterminate: false,
@@ -463,6 +587,7 @@ export default {
       dirXlsxRows: [], // [{fileName, title, tags}]
       dirXlsxError: "",
       dirBatchFiles: [],
+      publishing: false,
     };
   },
   computed: {
@@ -486,6 +611,14 @@ export default {
       });
       return result;
     },
+    attrsHasSph() {
+      return this.checkedPlatformNodes.some((node) =>
+        platformSupportsVideoLink(node.pt)
+      );
+    },
+    attrsDialogTitle() {
+      return this.attrsHasSph ? "设置第三方属性" : "确认发布账号";
+    },
   },
   mounted() {
     this._onGetCookieDone = (event, data) => {
@@ -505,6 +638,7 @@ export default {
   },
   methods: {
     platformSupportsCreativeStatement,
+    platformSupportsVideoLink,
     /** 把字符串按 # / 空格 / 逗号 / 分号 / 顿号 切成多个标签 */
     _splitBqTokens(raw) {
       if (!raw) return [];
@@ -566,7 +700,15 @@ export default {
         /* ignore，回落到默认行为 */
       }
     },
+    onBqCompositionStart() {
+      this.bqComposing = true;
+    },
+    onBqCompositionEnd() {
+      this.bqComposing = false;
+    },
     onBqKeydown(e) {
+      // 中文等 IME 组合输入中，空格用于选词，不能当作添加标签
+      if (this.bqComposing || e.isComposing || e.keyCode === 229) return;
       // 只拦截空格键
       if (e.key !== " " && e.code !== "Space" && e.keyCode !== 32) return;
       const target = e.target;
@@ -588,7 +730,9 @@ export default {
       this.localFilePath = filePath;
       const defaultTitle = fileStem(filePath);
       this.bqTags = [];
+      this.bqComposing = false;
       this.resetPlatformStatementState();
+      this.resetPlatformVideoLinks();
       this.form = { title: defaultTitle, bt1: "", bt2: "" };
       this.thisShow = false;
       this.closeWindow = true;
@@ -614,6 +758,7 @@ export default {
       };
       this.bqTags = parseBqToTags(form.bq);
       this.resetPlatformStatementState();
+      this.resetPlatformVideoLinks();
       this.thisShow = false;
       this.closeWindow = true;
       this.scheduledPublish = false;
@@ -636,6 +781,7 @@ export default {
           this.$refs.tree.setCheckedKeys(checkedKeys);
         }
         this.applyRepublishPlatformStatements(form.creativeStatement);
+        this.applyRepublishPlatformVideoLinks();
         this.onTreeCheck();
       });
       return true;
@@ -686,7 +832,8 @@ export default {
       const bookName =
         (this.form.title && this.form.title.trim()) || this.defaultBookName();
       const bt1 = this.form.bt1.trim();
-      const bt2 = (this.form.bt2 && this.form.bt2.trim()) || bt1;
+      const bt2Raw = (this.form.bt2 && this.form.bt2.trim()) || "";
+      const bt2 = bt2Raw || bt1; // 保留 bt1 回退，供小红书等平台使用
       return {
         bookName,
         textType: "local",
@@ -695,14 +842,25 @@ export default {
             this.republishTextOtherName || fileStem(this.localFilePath),
           bt1,
           bt2,
+          bt2Filled: bt2Raw, // 仅用户实际填写时才有值，sph.js 据此决定是否填写短标题
           bq: formatBqFromTags(this.bqTags),
           bdText: "",
         },
       };
     },
     buildPlatformVideoPayload(platformNode, baseVideo) {
+      const link = buildVideoLinkOption(
+        platformNode.pt,
+        this.getPlatformVideoLinkType(platformNode.id, platformNode.pt),
+        this.getPlatformVideoLinkValue(platformNode.id)
+      );
       return {
         ...baseVideo,
+        publishOptions: {
+          link: link.ok
+            ? link.value
+            : buildVideoLinkOption(platformNode.pt, "", "").value,
+        },
         data: {
           ...baseVideo.data,
           creativeStatement: this.getPlatformStatement(platformNode.id),
@@ -715,6 +873,105 @@ export default {
       this.checkAllPlatforms = false;
       this.checkAllIndeterminate = false;
       this.batchCreativeStatement = CREATIVE_STATEMENT_DEFAULT;
+    },
+    resetPlatformVideoLinks() {
+      this.platformVideoLinks = {};
+      this.platformProductOptions = {};
+      this.platformProductLoading = {};
+    },
+    getPlatformVideoLinkOptions(platform) {
+      return getDisplayableVideoLinkTypes(platform);
+    },
+    getPlatformVideoLinkType(nodeId, platform) {
+      const state = this.platformVideoLinks[nodeId];
+      if (state && state.type) return state.type;
+      const first = this.getPlatformVideoLinkOptions(platform)[0];
+      return first ? first.type : "";
+    },
+    getPlatformVideoLinkValue(nodeId) {
+      const state = this.platformVideoLinks[nodeId];
+      return String((state && state.value) || "");
+    },
+    setPlatformVideoLinkType(nodeId, platform, type) {
+      const old = this.platformVideoLinks[nodeId] || {};
+      this.$set(this.platformVideoLinks, nodeId, {
+        type: String(type || ""),
+        value: old.type === type ? String(old.value || "") : "",
+      });
+    },
+    setPlatformVideoLinkValue(nodeId, platform, value) {
+      this.$set(this.platformVideoLinks, nodeId, {
+        type: this.getPlatformVideoLinkType(nodeId, platform),
+        value: String(value || "").trim(),
+      });
+    },
+    onAttrsLinkTypeChange(row, type) {
+      this.setPlatformVideoLinkType(row.id, row.pt, type);
+      if (String(type) === "product") {
+        this.loadPlatformWindowProducts(row);
+      }
+    },
+    getPlatformVideoLinkTypeInfo(data) {
+      return getVideoLinkTypeCapability(
+        data.pt,
+        this.getPlatformVideoLinkType(data.id, data.pt)
+      );
+    },
+    platformVideoLinkNeedsValue(data) {
+      const info = this.getPlatformVideoLinkTypeInfo(data);
+      return Boolean(info && info.inputKind !== "none");
+    },
+    getPlatformProductOptions(nodeId) {
+      return this.platformProductOptions[nodeId] || [];
+    },
+    async loadPlatformWindowProducts(row, force = false) {
+      if (!row || !platformSupportsVideoLink(row.pt)) return;
+      if (
+        !force &&
+        Array.isArray(this.platformProductOptions[row.id]) &&
+        this.platformProductOptions[row.id].length
+      ) {
+        return;
+      }
+      if (this.platformProductLoading[row.id]) return;
+      const partition = "persist:" + row.phone.split("-")[0] + row.pt;
+      this.$set(this.platformProductLoading, row.id, true);
+      try {
+        const result = await ipcRenderer.invoke("sph:list-window-products", {
+          partition,
+        });
+        if (!result || result.ok !== true) {
+          this.$message.warning((result && result.error) || "拉取橱窗商品失败");
+          this.$set(this.platformProductOptions, row.id, []);
+          return;
+        }
+        this.$set(this.platformProductOptions, row.id, result.products || []);
+        if (!(result.products || []).length) {
+          this.$message.info("橱窗暂无商品，可手动输入商品编号");
+        }
+      } catch (e) {
+        this.$message.error(
+          "拉取橱窗商品失败：" + (e && e.message ? e.message : e)
+        );
+      } finally {
+        this.$set(this.platformProductLoading, row.id, false);
+      }
+    },
+    validatePlatformVideoLinks(platforms) {
+      for (const platform of platforms || []) {
+        if (!platformSupportsVideoLink(platform.pt)) continue;
+        const type = this.getPlatformVideoLinkType(platform.id, platform.pt);
+        if (!type || type === "none") continue;
+        const checked = validateVideoLinkValue(
+          platform.pt,
+          type,
+          this.getPlatformVideoLinkValue(platform.id)
+        );
+        if (!checked.ok) {
+          return `${platform.phone} ${platform.pt}：${checked.error}`;
+        }
+      }
+      return "";
     },
     getAllPlatformLeafNodes() {
       const leaves = [];
@@ -746,6 +1003,17 @@ export default {
         }
       });
       this.platformStatements = next;
+    },
+    applyRepublishPlatformVideoLinks() {
+      const next = { ...this.platformVideoLinks };
+      this.getAllPlatformLeafNodes().forEach((node) => {
+        const rec = this.findRepublishRecord(node.pt, node.phone);
+        const link = resolveVideoLinkOption(node.pt, rec && rec.publishOptions);
+        if (link && link.enabled && link.value) {
+          next[node.id] = { type: link.type, value: String(link.value) };
+        }
+      });
+      this.platformVideoLinks = next;
     },
     handleCheckAllPlatforms(checked) {
       if (!this.$refs.tree) return;
@@ -918,17 +1186,46 @@ export default {
     },
     goBackToMeta() {
       this.platformVisible = false;
+      this.attrsVisible = false;
       this.metaVisible = true;
+    },
+    onPlatformNext() {
+      const platforms = this.checkedPlatformNodes;
+      if (!platforms.length) {
+        this.$message.warning("请至少选择一个平台");
+        return;
+      }
+      // 先打开第 3 步，再关第 2 步，避免 platform close 误触发 resetState
+      this.attrsVisible = true;
+      this.platformVisible = false;
+      this.$nextTick(() => {
+        platforms
+          .filter((node) => platformSupportsVideoLink(node.pt))
+          .forEach((node) => {
+            if (this.getPlatformVideoLinkType(node.id, node.pt) === "product") {
+              this.loadPlatformWindowProducts(node);
+            }
+          });
+      });
+    },
+    goBackToPlatform() {
+      this.platformVisible = true;
+      this.attrsVisible = false;
     },
 
     handleMetaClose() {
-      if (!this.platformVisible) {
+      if (!this.platformVisible && !this.attrsVisible) {
         this.resetState();
       }
     },
 
     handlePlatformClose() {
-      if (!this.metaVisible) {
+      if (!this.metaVisible && !this.attrsVisible) {
+        this.resetState();
+      }
+    },
+    handleAttrsClose() {
+      if (!this.metaVisible && !this.platformVisible) {
         this.resetState();
       }
     },
@@ -936,7 +1233,9 @@ export default {
     resetState() {
       this.localFilePath = "";
       this.bqTags = [];
+      this.bqComposing = false;
       this.resetPlatformStatementState();
+      this.resetPlatformVideoLinks();
       this.form = { title: "", bt1: "", bt2: "" };
       this.thisShow = false;
       this.closeWindow = true;
@@ -945,6 +1244,7 @@ export default {
       this.republishContext = null;
       this.republishTextOtherName = "";
       this.dirBatchFiles = [];
+      this.attrsVisible = false;
     },
 
     loadAccounts() {
@@ -1073,6 +1373,16 @@ export default {
     },
 
     async submitBatchPublish(mode = "publish") {
+      if (this.publishing) return;
+      this.publishing = true;
+      try {
+        return await this.doSubmitBatchPublish(mode);
+      } finally {
+        this.publishing = false;
+      }
+    },
+
+    async doSubmitBatchPublish(mode = "publish") {
       const isDraftMode = mode === "draft";
       // Directory batch mode
       if (this.dirBatchFiles && this.dirBatchFiles.length > 0) {
@@ -1088,6 +1398,11 @@ export default {
         this.$message.warning("请至少选择一个平台");
         return;
       }
+      const linkError = this.validatePlatformVideoLinks(platforms);
+      if (linkError) {
+        this.$message.warning(linkError);
+        return;
+      }
       if (
         isDraftMode &&
         platforms.some((p) => String(p.pt || "").includes("头条"))
@@ -1100,7 +1415,8 @@ export default {
         return;
       }
       const hasVideohao = platforms.some(this.isVideohaoPlatform);
-      if (hasVideohao) {
+      if (hasVideohao && this.form.bt2 && this.form.bt2.trim()) {
+        // 仅当用户填写了短标题时才校验规则（6～16 字、无特殊标点）
         const bt2Error = this.validateVideohaoBt2(this.form.bt2);
         if (bt2Error) {
           this.$message.warning(bt2Error);
@@ -1154,8 +1470,10 @@ export default {
                 selectedFile,
                 bt: video.data.bt1,
                 bt2: video.data.bt2,
+                bt2Filled: video.data.bt2Filled,
                 bq: video.data.bq,
                 creativeStatement: video.data.creativeStatement,
+                publishOptions: video.publishOptions,
                 filePath: this.localFilePath,
                 useragent: this.ptConfig[p.pt].useragent,
                 phone: p.phone,
@@ -1224,8 +1542,10 @@ export default {
               selectedFile,
               bt: video.data.bt1,
               bt2: video.data.bt2,
+              bt2Filled: video.data.bt2Filled,
               bq: video.data.bq,
               creativeStatement: video.data.creativeStatement,
+              publishOptions: video.publishOptions,
               filePath: this.localFilePath,
               publishAttemptCount: oldAttempt + 1,
               republishCount: oldRepublish + 1,
@@ -1252,8 +1572,10 @@ export default {
               selectedFile,
               bt: video.data.bt1,
               bt2: video.data.bt2,
+              bt2Filled: video.data.bt2Filled,
               bq: video.data.bq,
               creativeStatement: video.data.creativeStatement,
+              publishOptions: video.publishOptions,
               filePath: this.localFilePath,
               useragent: this.ptConfig[p.pt].useragent,
               phone: p.phone,
@@ -1302,6 +1624,7 @@ export default {
         successMessage = `已创建 ${submitted} 个平台定时发布任务`;
       }
       this.$message.success(successMessage);
+      this.attrsVisible = false;
       this.platformVisible = false;
       this.resetState();
       this.$emit("published");
@@ -1311,6 +1634,7 @@ export default {
       this.dirPath = "";
       this.dirXlsxRows = [];
       this.dirXlsxError = "";
+      this.resetPlatformVideoLinks();
       this.scheduledPublish = false;
       this.publishAt = "";
       this.dirPublishVisible = true;
@@ -1489,13 +1813,18 @@ export default {
         const selectedFile = fileRow.fileName;
         const textOtherName = stem;
 
-        if (hasVideohao) {
+        // 视频号短标题非必填：bt2(=bt1) 符合规则才填，不符合则跳过不阻断
+        const bt2FilledForVideohao = (() => {
+          if (!hasVideohao) return "";
           const bt2Error = this.validateVideohaoBt2(bt2);
           if (bt2Error) {
-            this.$message.warning(`文件 ${fileRow.fileName}: ${bt2Error}`);
-            return;
+            console.warn(
+              `文件 ${fileRow.fileName}: ${bt2Error}，将跳过视频号短标题`
+            );
+            return "";
           }
-        }
+          return bt2;
+        })();
 
         platforms.sort((a, b) => {
           if (a.pt.includes("视频号")) return -1;
@@ -1537,6 +1866,7 @@ export default {
                   selectedFile,
                   bt: bt1,
                   bt2,
+                  bt2Filled: bt2FilledForVideohao,
                   bq,
                   creativeStatement,
                   filePath,
@@ -1576,6 +1906,7 @@ export default {
               textOtherName,
               bt1,
               bt2,
+              bt2Filled: bt2FilledForVideohao,
               bq,
               bdText: "",
               creativeStatement,
@@ -1608,6 +1939,7 @@ export default {
               selectedFile,
               bt: bt1,
               bt2,
+              bt2Filled: bt2FilledForVideohao,
               bq,
               creativeStatement,
               filePath,
@@ -1660,6 +1992,7 @@ export default {
         successMessage = `已创建 ${submitted} 个目录批量定时发布任务`;
       }
       this.$message.success(successMessage);
+      this.attrsVisible = false;
       this.platformVisible = false;
       this.dirBatchFiles = [];
       this.dirPath = "";
@@ -1716,8 +2049,8 @@ export default {
 .custom-tree-node.platform-leaf-node {
   flex-direction: column;
   align-items: stretch;
-  width: 120px;
-  min-width: 120px;
+  width: 180px;
+  min-width: 180px;
   box-sizing: border-box;
 }
 .platform-leaf-main {
@@ -1741,6 +2074,25 @@ export default {
 }
 .platform-statement-select {
   width: 100%;
+}
+.attrs-link-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.attrs-link-type {
+  width: 110px;
+}
+.attrs-product-select {
+  width: 220px;
+}
+.attrs-product-id {
+  width: 160px;
+}
+.attrs-unsupported {
+  color: #909399;
+  font-size: 12px;
 }
 :deep(.platform-statement-select .el-input) {
   width: 100%;
