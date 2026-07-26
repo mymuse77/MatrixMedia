@@ -116,6 +116,57 @@ async function clickDyPublish(page, isDraftMode) {
   );
 }
 
+async function selectDyLocation(page, data) {
+  const location = String(data?.data?.address || data?.location || "").trim();
+  if (!location) return;
+  const normalize = (value) => String(value || "").replace(/\s+/g, "").trim();
+
+  await page.waitForFunction(
+    () => [...document.querySelectorAll("input")].some((input) => {
+      const hint = `${input.getAttribute("placeholder") || ""} ${input.getAttribute("aria-label") || ""}`;
+      return /输入地理位置|地理位置/.test(hint);
+    }),
+    { timeout: WAIT_SELECTOR_APPEAR_MS },
+  );
+  let searchInput = null;
+  for (const input of await page.$$("input")) {
+    const hint = await input.evaluate((node) => `${node.getAttribute("placeholder") || ""} ${node.getAttribute("aria-label") || ""}`);
+    if (/输入地理位置|地理位置/.test(hint)) {
+      searchInput = input;
+      break;
+    }
+  }
+  if (!searchInput) throw new Error("未找到抖音地理位置输入框");
+
+  await searchInput.click({ clickCount: 3 });
+  await page.keyboard.press("Backspace");
+  await searchInput.type(location, { delay: 60 });
+
+  const selected = await page.waitForFunction(
+    (keyword) => {
+      const normalizeText = (value) => String(value || "").replace(/\s+/g, "").trim();
+      const target = normalizeText(keyword);
+      const candidates = [...document.querySelectorAll("li, [role='option'], [class*='option'], [class*='suggest'], [class*='location'], div")];
+      const match = candidates
+        .filter((node) => {
+          const rect = node.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        })
+        .sort((left, right) => normalizeText(left.textContent).length - normalizeText(right.textContent).length)
+        .find((node) => {
+        const text = normalizeText(node.textContent);
+        return text && text.includes(target) && text.length <= target.length + 80;
+      });
+      if (!match) return false;
+      (match.closest("li, [role='option'], [class*='option'], [class*='suggest'], [class*='location']") || match).click();
+      return true;
+    },
+    { timeout: WAIT_SELECTOR_APPEAR_MS },
+    location,
+  );
+  if (!selected) throw new Error(`未找到抖音地点：${normalize(location)}`);
+}
+
 export default async function (page, data, window, event) {
   const isDraftMode =
     data.publishMode === "draft" || data.publishToDraft === true;
@@ -226,6 +277,7 @@ export default async function (page, data, window, event) {
 
     // 自主声明入口在视频转码完成后才出现，必须在点击发布前完成
     await selectDyCreativeStatementWithRetry(page, data);
+    await selectDyLocation(page, data);
 
     await clickDyPublish(page, isDraftMode);
     console.log(isDraftMode ? "✅ 抖音视频已保存草稿" : "✅ 抖音视频上传成功");

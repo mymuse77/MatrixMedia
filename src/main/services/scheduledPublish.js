@@ -14,6 +14,23 @@ const REFRESH_INTERVAL_MS = 60 * 1000;
 const scheduledTimers = new Map();
 let schedulerStarted = false;
 let refreshInterval = null;
+const scheduledPublishListeners = new Set();
+
+export function subscribeScheduledPublishEvents(listener) {
+  scheduledPublishListeners.add(listener);
+  return () => scheduledPublishListeners.delete(listener);
+}
+
+function emitScheduledPublishEvent(record, patch) {
+  const nextRecord = { ...record, ...patch };
+  for (const listener of scheduledPublishListeners) {
+    try {
+      listener(nextRecord);
+    } catch (error) {
+      console.warn("[scheduledPublish] 状态通知失败:", error?.message || error);
+    }
+  }
+}
 
 function pad(n) {
   return String(n).padStart(2, "0");
@@ -131,6 +148,7 @@ export function buildTaskPayloadFromRecord(record) {
       bt2: record.bt2 || record.bt || "",
       bq: record.bq || "",
       bdText: "",
+      address: record.data?.address || record.location || "",
       creativeStatement: normalizeCreativeStatement(record.creativeStatement),
     },
     textOtherName: record.textOtherName || "",
@@ -161,6 +179,7 @@ function updateRecord(record, patch) {
       ...patch,
     },
   });
+  emitScheduledPublishEvent(record, patch);
 }
 
 function listScheduledRecords() {

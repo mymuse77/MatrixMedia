@@ -13,6 +13,7 @@ import { getAccountLoginStatus, getAccountPartition } from './accountLoginStatus
 import { openAccountLoginWindow } from './accountLoginWindow';
 import { resolvePublishFile } from './resolvePublishFile';
 import { getAppSettings } from './appSettings';
+import { createScheduledRecord, schedulePublishRecord, subscribeScheduledPublishEvents } from './scheduledPublish';
 
 const LOGIN_STATUS_WATCH_INTERVAL_MS = 3_000;
 const LOGIN_STATUS_WATCH_TIMEOUT_MS = 10 * 60 * 1_000;
@@ -1061,6 +1062,13 @@ function buildPublishText({ caption, video, videoPath, taskName, taskTags, platf
   };
 }
 
+function formatScheduledPublishAt(value) {
+  const date = new Date(Number(value));
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (part) => String(part).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
 export async function handlePublishVideo(taskData, wsClient) {
   const { taskId, data } = taskData;
   const {
@@ -1310,8 +1318,27 @@ export async function handlePublishVideos(taskData, wsClient) {
     return platform && (!platforms.size || platforms.has(platform));
   });
   const publishItemIds = asList(data.publishItemIds).map(item => cleanText(item));
+  const plannedPublishItems = asList(data.publishItems);
   const hasOneToOneAssignments = publishItemIds.length === publishAccounts.length && videos.length >= publishAccounts.length;
-  const publishPairs = hasOneToOneAssignments
+  const publishPairs = plannedPublishItems.length
+    ? plannedPublishItems.map((item) => ({
+      account: {
+        id: item.accountId,
+        phone: item.phone,
+        platform: item.platform,
+      },
+      video: {
+        id: item.videoId,
+        videoPath: item.videoPath,
+        videoUrl: item.videoUrl,
+        download: item.download,
+        downloadHeaders: item.downloadHeaders,
+        downloadExpiresAt: item.downloadExpiresAt,
+        projectName: item.videoTitle,
+      },
+      plannedItem: item,
+    }))
+    : hasOneToOneAssignments
     ? publishAccounts.map((account, index) => ({ account, video: videos[index] }))
     : publishAccounts.flatMap(account => videos.map(video => ({ account, video })));
   const total = publishPairs.length;
@@ -1332,7 +1359,7 @@ export async function handlePublishVideos(taskData, wsClient) {
   let detailIndex = 0;
   const publishQueue = [];
 
-  for (const { account, video } of publishPairs) {
+  for (const { account, video, plannedItem } of publishPairs) {
     const phone = cleanText(account.phone);
     const platform = getAccountPlatformValue(account);
     const partition = cleanText(account.partition) || getAccountPartition(phone, platform);
@@ -1340,14 +1367,14 @@ export async function handlePublishVideos(taskData, wsClient) {
     const videoPath = getVideoPathValue(video);
     const videoUrl = getVideoUrlValue(video);
     const download = createDownloadRequest(videoUrl, video?.download, video?.downloadHeaders, video?.downloadExpiresAt);
-    const caption = pickCaption(captions, detailIndex, captionMode);
+    const caption = plannedItem?.captionText ? { textContent: plannedItem.captionText } : pickCaption(captions, detailIndex, captionMode);
     const publishText = buildPublishText({ caption, video, videoPath, taskName, taskTags, platform });
     const currentIndex = detailIndex + 1;
     const progressStart = (detailIndex / total) * 100;
     const progressEnd = (currentIndex / total) * 100;
     const publishData = createLocalPublishData({
       taskId,
-      itemId: publishItemIds[detailIndex] || '',
+      itemId: cleanText(plannedItem?.itemId) || publishItemIds[detailIndex] || '',
       phone,
       platform,
       partition,
@@ -1356,10 +1383,11 @@ export async function handlePublishVideos(taskData, wsClient) {
       taskName,
       description: publishText.description,
       tags: publishText.tags,
+      location: cleanText(plannedItem?.location),
     });
 
     publishQueue.push({
-      itemId: publishItemIds[detailIndex] || '',
+      itemId: cleanText(plannedItem?.itemId) || publishItemIds[detailIndex] || '',
       serverId: getRemoteVideoCacheKey({
         itemId: publishItemIds[detailIndex] || '',
         video,
@@ -1376,9 +1404,57 @@ export async function handlePublishVideos(taskData, wsClient) {
       currentIndex,
       progressStart,
       progressEnd,
+      scheduledPublishAt: Number(plannedItem?.scheduledPublishAt) || 0,
     });
 
     detailIndex += 1;
+  }
+
+  if (cleanText(data.scheduleMode) === 'scheduled') {
+    const scheduledResults = [];
+    for (const queued of publishQueue) {
+      const publishAt = formatScheduledPublishAt(queued.scheduledPublishAt);
+      if (!publishAt) {
+        throw new Error('定时发布任务缺少有效发布时间');
+      }
+      let scheduledFilePath = queued.videoPath;
+      if (queued.videoUrl) {
+        const cachedVideo = await resolvePublishFile(queued.videoUrl, {
+          headers: queued.download?.headers || queued.downloadHeaders,
+          cacheKey: queued.itemId || queued.serverId,
+        });
+        scheduledFilePath = cachedVideo.localPath;
+      }
+      const scheduledRecord = createScheduledRecord({
+        ...queued.publishData,
+        matrixTaskId: taskId,
+        matrixItemId: queued.itemId,
+        filePath: scheduledFilePath,
+        sourceVideoUrl: queued.videoUrl || '',
+      }, publishAt);
+      await changeData({ type: 'add', fileName: 'pushData', item: scheduledRecord });
+      schedulePublishRecord(scheduledRecord);
+      scheduledResults.push({
+        itemId: queued.itemId,
+        phone: queued.phone,
+        platform: queued.platform,
+        videoPath: queued.videoPath,
+        videoUrl: queued.videoUrl,
+        status: 'scheduled',
+        scheduledPublishAt: queued.scheduledPublishAt,
+      });
+    }
+    wsClient.sendProgress(taskId, 100, `已写入 ${scheduledResults.length} 条定时发布计划`);
+    return {
+      success: true,
+      action: 'publish_videos',
+      status: 'scheduled',
+      total,
+      successCount: 0,
+      failCount: 0,
+      results: scheduledResults,
+      message: `已写入 ${scheduledResults.length} 条定时发布计划`,
+    };
   }
 
   for (const queued of publishQueue) {
@@ -1653,6 +1729,34 @@ export async function handleGetClientStatus(taskData, wsClient) {
  * 注册所有任务处理器
  */
 export function registerWebSocketHandlers(wsClient) {
+  subscribeScheduledPublishEvents((record) => {
+    const matrixTaskId = cleanText(record?.matrixTaskId);
+    const itemId = cleanText(record?.matrixItemId);
+    if (!matrixTaskId || !itemId) return;
+
+    if (record.publishStatus === 'publishing') {
+      wsClient.sendProgress(matrixTaskId, 0, `定时发布开始：${record.phone || ''} ${record.pt || ''}`.trim());
+      return;
+    }
+
+    if (record.publishStatus === 'success' || record.publishStatus === 'failed' || record.publishStatus === 'skipped') {
+      const success = record.publishStatus === 'success';
+      wsClient.sendTaskResult(matrixTaskId, 'success', {
+        action: 'publish_videos',
+        status: 'running',
+        results: [{
+          itemId,
+          phone: record.phone,
+          platform: record.pt,
+          videoPath: record.filePath,
+          success,
+          status: success ? 'success' : record.publishStatus,
+          error: success ? '' : record.lastPublishMessage || '发布失败',
+        }],
+      });
+    }
+  });
+
   wsClient.registerTaskHandler('sync_accounts_snapshot', (taskData) =>
     handleSyncAccountsSnapshot(taskData, wsClient)
   );
