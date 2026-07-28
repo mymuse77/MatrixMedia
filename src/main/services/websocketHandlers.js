@@ -920,7 +920,9 @@ function createLocalPublishData({
       ...(shortTitle ? { bt2: shortTitle } : {}),
       bq: tags || '',
       bdText: '',
+      // dy.js 读 data.address；保留 location 别名便于排查
       address: location || '',
+      location: location || '',
     },
     textOtherName: localRecordName,
     selectedFile: path.basename(videoPath),
@@ -1187,6 +1189,25 @@ export async function handlePublishVideo(taskData, wsClient) {
         coverPath,
         location,
       });
+
+    // 请求里的 location 必须落到 dy.js 读取的 data.address（含带 localPublishRecord 的重发）
+    const resolvedLocation = cleanText(location) || cleanText(publishData?.data?.address) || cleanText(publishData?.data?.location);
+    if (resolvedLocation) {
+      publishData.data = {
+        ...(isPlainObject(publishData.data) ? publishData.data : {}),
+        address: resolvedLocation,
+        location: resolvedLocation,
+      };
+    }
+
+    // 调试时可 show:true 显示发布窗（默认仍隐藏）
+    if (data && data.show === true) {
+      publishData.show = true;
+      publishData.mmCliSuppressWindow = false;
+    }
+    if (data && data.closeWindowAfterPublish === false) {
+      publishData.closeWindowAfterPublish = false;
+    }
 
     if (isPlainObject(localPublishRecord) && publishData.id && publishData.date) {
       await changeData({

@@ -24,6 +24,7 @@ import { changeData } from "../server/utils";
 import { createScheduledRecord } from "../services/scheduledPublish";
 import { CLI_PUBLISH_TIMEOUT_MS } from "../services/upLoad/uploadTimeouts.js";
 import { resolveAccountPublishMode } from "../services/accountPublishSettingsResolver.js";
+import { runDyLocationWsPublishCli } from "./runDyLocationWsPublishCli.js";
 
 export {
   isCliMode,
@@ -483,6 +484,15 @@ export async function runCliMain(argv = process.argv) {
   }
 
   const cmd = sub[0];
+  if (cmd === "test-dy-location") {
+    try {
+      return await runDyLocationWsPublishCli(sub.slice(1));
+    } catch (e) {
+      console.error(e);
+      return 1;
+    }
+  }
+
   if (cmd === "login") {
     const parsed = parseLoginArgs(sub.slice(1));
     if (!parsed.ok) {
@@ -856,13 +866,13 @@ export async function runCliMain(argv = process.argv) {
 
   if (cmd === "--help" || cmd === "-h") {
     console.log(
-      "可用子命令: publish | publish-article | login | accounts | history"
+      "可用子命令: publish | publish-article | login | accounts | history | test-dy-location"
     );
     console.log("各自 --help 查看详细参数。");
     return 0;
   }
 
   console.error("未知子命令:", cmd);
-  console.error("支持: publish | publish-article | login | accounts | history");
+  console.error("支持: publish | publish-article | login | accounts | history | test-dy-location");
   return 2;
 }
