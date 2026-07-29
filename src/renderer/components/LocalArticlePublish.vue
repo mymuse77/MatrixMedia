@@ -167,7 +167,7 @@ import dataRequest from "@/utils/dataRequest";
 import ptConfig from "@/utils/configUrl";
 import openLoginWindow from "@/utils/openLoginWindow";
 import { buildArticleRepublishState } from "@/utils/articleRepublish";
-import { DEFAULT_APP_SETTINGS } from "../../../shared/appSettings.js";
+import { DEFAULT_APP_SETTINGS } from "../../shared/appSettings.js";
 import {
   setAccountLoginFlag,
   clearAccountLoginFlag,

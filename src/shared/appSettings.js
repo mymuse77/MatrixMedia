@@ -6,12 +6,12 @@ export const DEFAULT_APP_SETTINGS = {
   // 是否跳过应用启动时的自动更新检查。
   skipStartupUpdateCheck: true,
   // 是否在应用启动时隐藏主界面。
-  hideMainWindowOnStartup: false,
+  hideMainWindowOnStartup: true,
   // 发布时是否默认显示自动化过程。
-  showAutomationProcess: true,
+  showAutomationProcess: false,
   // 矩阵服务根地址：同时用于 WebSocket 连接、远程下载地址归一化等所有服务端访问场景。
-  // webSocketServerUrl: "https://v.ljcsfw.com",
-  webSocketServerUrl: "http://127.0.0.1:3000",
+  webSocketServerUrl: "https://v.ljcsfw.com",
+  // webSocketServerUrl: "http://127.0.0.1:3000",
 };
 
 function normalizeBoolean(value, fallback) {
