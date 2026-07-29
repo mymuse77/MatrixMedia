@@ -2,6 +2,7 @@
 
 import path from "path";
 import { normalizeCreativeStatement } from "../../shared/creativeStatement.js";
+import { getAppSettings } from "./appSettings";
 import ptConfig from "../config/ptConfig";
 import { runPuppeteerTask } from "./puppeteerFile";
 import { changeData } from "../server/utils";
@@ -13,7 +14,6 @@ import {
   guessFileNameFromUrl,
 } from "./resolvePublishFile";
 import { resolveAccountPublishMode } from "./accountPublishSettingsResolver.js";
-import { resolvePublishCompletion } from "../../shared/publishResult.js";
 
 function fileStemFromSource(source) {
   const raw = String(source || "").trim();
@@ -129,6 +129,10 @@ async function runSingleFilePublishInner(
     pt: v.platform,
     requestDraftMode: Boolean(v.draft),
   });
+  const showAutomationProcess =
+    typeof v.show === "boolean"
+      ? v.show
+      : Boolean(getAppSettings()?.showAutomationProcess);
 
   const taskPayload = {
     taskId: Date.now() + Math.random(),
@@ -143,12 +147,11 @@ async function runSingleFilePublishInner(
       creativeStatement: normalizeCreativeStatement(v.creativeStatement || ""),
     },
     url: cfg.upload,
-    show: v.show,
-    mmCliSuppressWindow: false,
+    show: showAutomationProcess,
+    mmCliSuppressWindow: !showAutomationProcess,
     publishMode: effectivePublishMode.publishMode,
     publishToDraft: effectivePublishMode.publishToDraft,
-    publishOptions: v.publishOptions || {},
-    closeWindowAfterPublish: v.show ? v.closeWindowAfterPublish : true,
+    closeWindowAfterPublish: showAutomationProcess ? v.closeWindowAfterPublish : true,
     useragent: cfg.useragent,
     partition: v.partition,
     phone: derivePhoneForRecord(v),
@@ -189,7 +192,6 @@ async function runSingleFilePublishInner(
     publishFailCount: 0,
     publishMode: effectivePublishMode.publishMode,
     publishToDraft: effectivePublishMode.publishToDraft,
-    publishOptions: v.publishOptions || {},
     publishStatus: effectivePublishMode.publishToDraft ? "drafting" : "publishing",
     lastPublishMessage: effectivePublishMode.publishToDraft
       ? "等待保存草稿结果"
@@ -279,7 +281,7 @@ async function runSingleFilePublishInner(
           id: recordId,
           date: recordDate,
           publishStatus: status,
-          publishSuccessCount: status === "success" || status === "draft" ? 1 : 0,
+          publishSuccessCount: status === "success" ? 1 : 0,
           publishFailCount: status === "failed" ? 1 : 0,
           lastPublishMessage: message || "",
           lastPublishAt: Date.now(),
@@ -332,23 +334,21 @@ async function runSingleFilePublishInner(
             });
             return;
           }
-          const completion = resolvePublishCompletion(payload);
-          updateRecord(completion.recordStatus, completion.message);
+          const ok = payload && payload.status === true;
+          const message =
+            (payload && payload.message) || (ok ? "上传成功" : "上传失败");
+          updateRecord(ok ? "success" : "failed", message);
           finish({
-            exitCode: completion.exitCode,
-            status: completion.status,
-            message: completion.message,
+            exitCode: ok ? 0 : 3,
+            status: ok ? "success" : "failed",
+            message,
             id: recordId,
-            publishMode: completion.savedAsDraft ? "draft" : "publish",
-            outcome: payload && payload.outcome,
-            needsAttention: completion.fallbackDraft,
           });
         } else if (channel === "puppeteer-noLogin") {
           if (payload && payload.taskId != null && payload.taskId !== taskId) {
             return;
           }
-          const message =
-            (payload && payload.message) || "登录态异常或未登录";
+          const message = "登录态异常或未登录";
           console.error("登录态异常或未登录:", JSON.stringify(payload));
           updateRecord("failed", message);
           finish({ exitCode: 3, status: "failed", message, id: recordId });

@@ -25,7 +25,9 @@
     "test:publish-article-args": "node scripts/test-publish-article-args.js",
     "test:article-republish": "node scripts/test-article-republish.js",
     "test:puppeteer-cancel": "node scripts/test-puppeteer-cancel.js",
-    "test:account-login-window-manager": "node scripts/test-account-login-window-manager.js"
+    "test:account-login-window-manager": "node scripts/test-account-login-window-manager.js",
+    "test:ws-dy-location": "node scripts/test-ws-dy-location-publish.js",
+    "test:ws-dy-location:live": "node scripts/test-ws-dy-location-publish.js --live --show"
   },
   "build": {
     "forceCodeSigning": false,
@@ -93,6 +95,7 @@
   "dependencies": {
     "axios": "^1.6.0",
     "electron-updater": "^5.3.0",
+    "depd": "^2.0.0",
     "express": "4.19.2",
     "fs-extra": "^11.1.0",
     "jsqr": "^1.4.0",

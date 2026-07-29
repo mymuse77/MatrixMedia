@@ -905,9 +905,14 @@ function createLocalPublishData({
   tags,
   coverPath,
   location,
+  show,
 }) {
   const localRecordName = cleanText(taskName) || title || path.basename(videoPath);
   const shortTitle = description || (platform === '视频号' ? title : '');
+  const showAutomationProcess =
+    typeof show === 'boolean'
+      ? show
+      : Boolean(getAppSettings()?.showAutomationProcess);
 
   return {
     id: createLocalPublishRecordId(),
@@ -920,7 +925,9 @@ function createLocalPublishData({
       ...(shortTitle ? { bt2: shortTitle } : {}),
       bq: tags || '',
       bdText: '',
+      // dy.js 读 data.address；保留 location 别名便于排查
       address: location || '',
+      location: location || '',
     },
     textOtherName: localRecordName,
     selectedFile: path.basename(videoPath),
@@ -929,8 +936,8 @@ function createLocalPublishData({
     bq: tags || '',
     filePath: videoPath,
     url: ptConfig[platform]?.upload,
-    show: false,
-    mmCliSuppressWindow: true,
+    show: showAutomationProcess,
+    mmCliSuppressWindow: !showAutomationProcess,
     closeWindowAfterPublish: true,
     useragent: ptConfig[platform]?.useragent,
     partition: partition || getAccountPartition(phone, platform),
@@ -1186,7 +1193,34 @@ export async function handlePublishVideo(taskData, wsClient) {
         tags,
         coverPath,
         location,
+        show: data.show,
       });
+
+    // 请求里的 location 必须落到 dy.js 读取的 data.address（含带 localPublishRecord 的重发）
+    const resolvedLocation = cleanText(location) || cleanText(publishData?.data?.address) || cleanText(publishData?.data?.location);
+    if (resolvedLocation) {
+      publishData.data = {
+        ...(isPlainObject(publishData.data) ? publishData.data : {}),
+        address: resolvedLocation,
+        location: resolvedLocation,
+      };
+    }
+
+    // 显式 show 优先；未显式传入时沿用 appSettings 里的默认值。
+    if (typeof data?.show === 'boolean') {
+      publishData.show = data.show;
+      publishData.mmCliSuppressWindow = !data.show;
+      publishData.closeWindowAfterPublish = data.show
+        ? data.closeWindowAfterPublish === false
+          ? false
+          : publishData.closeWindowAfterPublish === false
+            ? false
+            : true
+        : true;
+    }
+    if (data && data.closeWindowAfterPublish === false) {
+      publishData.closeWindowAfterPublish = false;
+    }
 
     if (isPlainObject(localPublishRecord) && publishData.id && publishData.date) {
       await changeData({
