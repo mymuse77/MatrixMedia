@@ -577,6 +577,12 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
           nodeIntegration: false,
           contextIsolation: true,
           devTools: true,
+          // 发布窗口默认 show:false（隐藏）运行；Electron 默认会对不可见窗口
+          // 限流 JS 定时器/渲染（backgroundThrottling），导致部分平台的重
+          // SPA 页面渲染变慢甚至迟迟渲染不出上传输入框。批量多账号发布时
+          // 隐藏窗口数量多、机器负载高，更容易撞上该限流，表现为偶发的
+          // "未找到xxx输入框"类超时。关闭节流让隐藏窗口也按正常速度渲染。
+          backgroundThrottling: false,
         },
       });
       activeWin = win;

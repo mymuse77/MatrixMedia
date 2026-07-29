@@ -1093,6 +1093,21 @@ export default async function (page, data, window, event) {
   const isDraftMode =
     data.publishMode === "draft" || data.publishToDraft === true;
 
+  // 统一失败上报：event.reply("puppeteerFile-done", {status:false,...}) 在
+  // puppeteerFile.js 的 createAttemptTransport 里会 throw，从而正确触发上层
+  // 队列的重试/最终失败逻辑。此前这里只 console.error 不上报，会导致上传
+  // 输入框/标题输入框找不到时静默放过，流程继续往下走，最终在几十分钟到
+  // 3 小时后才因为一个不相关的超时消息失败，掩盖了真实原因。
+  const reportFailure = (stage, e) => {
+    const detail = (e && e.message) || String(e);
+    console.error(`❌ ${stage}`, e);
+    event.reply("puppeteerFile-done", {
+      ...data,
+      status: false,
+      message: detail.length > 200 ? `${detail.slice(0, 200)}…` : detail,
+    });
+  };
+
   try {
     // 等待 name=upload-btn 的 input 出现
     await pollPageUntil(
@@ -1107,7 +1122,8 @@ export default async function (page, data, window, event) {
     const uploadFileHandle = uploadInputs[uploadInputs.length - 1];
     await uploadFileHandle.uploadFile(path.resolve(data.filePath));
   } catch (e) {
-    console.error("❌ 输入文件失败", e);
+    reportFailure("输入文件失败", e);
+    return;
   }
   try {
     await pollPageUntil(
@@ -1135,7 +1151,8 @@ export default async function (page, data, window, event) {
     // bq 末尾没有分隔符会导致最后一个标签没被识别，这里补一次空格触发。
     await page.keyboard.press("Space");
   } catch (e) {
-    console.error("❌ 输入标题失败", e);
+    reportFailure("输入标题失败", e);
+    return;
   }
 
   try {
@@ -1223,12 +1240,6 @@ export default async function (page, data, window, event) {
       maybeClosePublishWindow(data, window);
     }, 5000);
   } catch (e) {
-    const detail = (e && e.message) || String(e);
-    event.reply("puppeteerFile-done", {
-      ...data,
-      status: false,
-      message: detail.length > 200 ? `${detail.slice(0, 200)}…` : detail,
-    });
-    console.error("❌ 上传失败", e);
+    reportFailure("上传失败", e);
   }
 }
