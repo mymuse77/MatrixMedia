@@ -167,6 +167,7 @@ import dataRequest from "@/utils/dataRequest";
 import ptConfig from "@/utils/configUrl";
 import openLoginWindow from "@/utils/openLoginWindow";
 import { buildArticleRepublishState } from "@/utils/articleRepublish";
+import { DEFAULT_APP_SETTINGS } from "../../../shared/appSettings.js";
 import {
   setAccountLoginFlag,
   clearAccountLoginFlag,
@@ -198,6 +199,7 @@ export default {
   data() {
     return {
       ptConfig,
+      appSettings: { ...DEFAULT_APP_SETTINGS },
       metaVisible: false,
       platformVisible: false,
       articleFilePath: "",
@@ -242,6 +244,7 @@ export default {
       }
     };
     ipcRenderer.on("getCookie-done", this._onGetCookieDone);
+    this.loadAppSettings();
   },
   beforeDestroy() {
     if (this._onGetCookieDone) {
@@ -249,20 +252,40 @@ export default {
     }
   },
   methods: {
-    open() {
+    async loadAppSettings() {
+      try {
+        const settings = await ipcRenderer.invoke("get-app-settings");
+        this.appSettings = {
+          ...DEFAULT_APP_SETTINGS,
+          ...(settings || {}),
+        };
+      } catch (_) {
+        this.appSettings = {
+          ...DEFAULT_APP_SETTINGS,
+          ...(this.appSettings || {}),
+        };
+      }
+      return this.appSettings;
+    },
+    applyAutomationProcessDefaults() {
+      this.thisShow = Boolean(this.appSettings.showAutomationProcess);
+      this.closeWindow = true;
+    },
+    async open() {
+      await this.loadAppSettings();
       this.resetState();
       this.metaVisible = true;
     },
 
-    openRepublish(payload = {}) {
+    async openRepublish(payload = {}) {
       const sample = payload.sample || {};
       const state = buildArticleRepublishState(sample);
+      await this.loadAppSettings();
       this.articleFilePath = state.articleFilePath;
       this.coverPath = state.coverPath;
       this.form = state.form;
       this.tags = state.tags;
-      this.thisShow = false;
-      this.closeWindow = true;
+      this.applyAutomationProcessDefaults();
       this.scheduledPublish = false;
       this.publishAt = "";
       this.republishContext = {
@@ -343,14 +366,16 @@ export default {
       return "";
     },
 
-    onMetaNext() {
+    async onMetaNext() {
       const error = this.validateArticleMeta();
       if (error) {
         this.$message.warning(error);
         return;
       }
+      await this.loadAppSettings();
       this.loadAccounts();
       this.metaVisible = false;
+      this.applyAutomationProcessDefaults();
       this.platformVisible = true;
       this.$nextTick(() => {
         if (this.$refs.tree) {
@@ -381,8 +406,7 @@ export default {
         summary: "",
       };
       this.tags = ["前端", "Electron"];
-      this.thisShow = false;
-      this.closeWindow = true;
+      this.applyAutomationProcessDefaults();
       this.scheduledPublish = false;
       this.publishAt = "";
       this.showLoginDialog = false;

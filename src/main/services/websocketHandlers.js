@@ -905,9 +905,14 @@ function createLocalPublishData({
   tags,
   coverPath,
   location,
+  show,
 }) {
   const localRecordName = cleanText(taskName) || title || path.basename(videoPath);
   const shortTitle = description || (platform === '视频号' ? title : '');
+  const showAutomationProcess =
+    typeof show === 'boolean'
+      ? show
+      : Boolean(getAppSettings()?.showAutomationProcess);
 
   return {
     id: createLocalPublishRecordId(),
@@ -931,8 +936,8 @@ function createLocalPublishData({
     bq: tags || '',
     filePath: videoPath,
     url: ptConfig[platform]?.upload,
-    show: false,
-    mmCliSuppressWindow: true,
+    show: showAutomationProcess,
+    mmCliSuppressWindow: !showAutomationProcess,
     closeWindowAfterPublish: true,
     useragent: ptConfig[platform]?.useragent,
     partition: partition || getAccountPartition(phone, platform),
@@ -1188,6 +1193,7 @@ export async function handlePublishVideo(taskData, wsClient) {
         tags,
         coverPath,
         location,
+        show: data.show,
       });
 
     // 请求里的 location 必须落到 dy.js 读取的 data.address（含带 localPublishRecord 的重发）
@@ -1200,10 +1206,17 @@ export async function handlePublishVideo(taskData, wsClient) {
       };
     }
 
-    // 调试时可 show:true 显示发布窗（默认仍隐藏）
-    if (data && data.show === true) {
-      publishData.show = true;
-      publishData.mmCliSuppressWindow = false;
+    // 显式 show 优先；未显式传入时沿用 appSettings 里的默认值。
+    if (typeof data?.show === 'boolean') {
+      publishData.show = data.show;
+      publishData.mmCliSuppressWindow = !data.show;
+      publishData.closeWindowAfterPublish = data.show
+        ? data.closeWindowAfterPublish === false
+          ? false
+          : publishData.closeWindowAfterPublish === false
+            ? false
+            : true
+        : true;
     }
     if (data && data.closeWindowAfterPublish === false) {
       publishData.closeWindowAfterPublish = false;

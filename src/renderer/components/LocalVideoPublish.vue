@@ -360,6 +360,7 @@ import moment from "moment";
 import dataRequest from "@/utils/dataRequest";
 import ptConfig from "@/utils/configUrl";
 import openLoginWindow from "@/utils/openLoginWindow";
+import { DEFAULT_APP_SETTINGS } from "../../../shared/appSettings.js";
 import {
   setAccountLoginFlag,
   clearAccountLoginFlag,
@@ -429,6 +430,7 @@ export default {
   data() {
     return {
       ptConfig,
+      appSettings: { ...DEFAULT_APP_SETTINGS },
       metaVisible: false,
       platformVisible: false,
       localFilePath: "",
@@ -497,6 +499,7 @@ export default {
       }
     };
     ipcRenderer.on("getCookie-done", this._onGetCookieDone);
+    this.loadAppSettings();
   },
   beforeDestroy() {
     if (this._onGetCookieDone) {
@@ -505,6 +508,25 @@ export default {
   },
   methods: {
     platformSupportsCreativeStatement,
+    async loadAppSettings() {
+      try {
+        const settings = await ipcRenderer.invoke("get-app-settings");
+        this.appSettings = {
+          ...DEFAULT_APP_SETTINGS,
+          ...(settings || {}),
+        };
+      } catch (_) {
+        this.appSettings = {
+          ...DEFAULT_APP_SETTINGS,
+          ...(this.appSettings || {}),
+        };
+      }
+      return this.appSettings;
+    },
+    applyAutomationProcessDefaults() {
+      this.thisShow = Boolean(this.appSettings.showAutomationProcess);
+      this.closeWindow = true;
+    },
     /** 把字符串按 # / 空格 / 逗号 / 分号 / 顿号 切成多个标签 */
     _splitBqTokens(raw) {
       if (!raw) return [];
@@ -583,27 +605,28 @@ export default {
       this._pushBqTags(tokens);
       this._clearBqInput();
     },
-    open(filePath) {
+    async open(filePath) {
       if (!filePath) return;
+      await this.loadAppSettings();
       this.localFilePath = filePath;
       const defaultTitle = fileStem(filePath);
       this.bqTags = [];
       this.resetPlatformStatementState();
       this.form = { title: defaultTitle, bt1: "", bt2: "" };
-      this.thisShow = false;
-      this.closeWindow = true;
+      this.applyAutomationProcessDefaults();
       this.scheduledPublish = false;
       this.publishAt = "";
       this.republishContext = null;
       this.republishTextOtherName = "";
       this.metaVisible = true;
     },
-    openRepublish(payload = {}) {
+    async openRepublish(payload = {}) {
       const filePath = payload.filePath || "";
       if (!filePath) {
         this.$message.warning("缺少历史视频路径，无法重发");
         return false;
       }
+      await this.loadAppSettings();
       this.localFilePath = filePath;
       const defaultTitle = fileStem(filePath);
       const form = payload.form || {};
@@ -614,8 +637,7 @@ export default {
       };
       this.bqTags = parseBqToTags(form.bq);
       this.resetPlatformStatementState();
-      this.thisShow = false;
-      this.closeWindow = true;
+      this.applyAutomationProcessDefaults();
       this.scheduledPublish = false;
       this.publishAt = "";
       this.republishTextOtherName = payload.textOtherName || fileStem(filePath);
@@ -888,7 +910,7 @@ export default {
       this.warnBt2SpecialPunctuation();
     },
 
-    onMetaNext() {
+    async onMetaNext() {
       if (!this.form.bt1 || !this.form.bt1.trim()) {
         this.$message.warning("请填写标题");
         return;
@@ -904,8 +926,10 @@ export default {
         this.$message.warning(publishAtError);
         return;
       }
+      await this.loadAppSettings();
       this.loadAccounts();
       this.metaVisible = false;
+      this.applyAutomationProcessDefaults();
       this.platformVisible = true;
       this.$nextTick(() => {
         this.resetPlatformStatementState();
@@ -938,8 +962,7 @@ export default {
       this.bqTags = [];
       this.resetPlatformStatementState();
       this.form = { title: "", bt1: "", bt2: "" };
-      this.thisShow = false;
-      this.closeWindow = true;
+      this.applyAutomationProcessDefaults();
       this.scheduledPublish = false;
       this.publishAt = "";
       this.republishContext = null;

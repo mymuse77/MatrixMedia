@@ -579,6 +579,7 @@ async function selectDyLocation(page, data) {
 
   // 右侧输入区会随左侧类型下拉复用。某些动态页面未直接显示“位置”文字时，
   // 先按「添加标签」行的几何关系打开左侧类型下拉，再选择下拉中的“位置”。
+  console.log("[dy] 准备切换添加标签类型: 位置");
   const locationTypePicker = await page
     .evaluate(() => {
       const editor = document.querySelector("[data-mm-dy-location='1']");
@@ -594,41 +595,123 @@ async function selectDyLocation(page, data) {
           r.height > 0
         );
       };
+      const textOf = (el) => {
+        if (!el) return "";
+        if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+          return String(
+            el.value ||
+              el.getAttribute("value") ||
+              el.getAttribute("placeholder") ||
+              el.getAttribute("aria-label") ||
+              "",
+          )
+            .replace(/\s+/g, "")
+            .trim();
+        }
+        return String(el.textContent || "").replace(/\s+/g, "").trim();
+      };
       const tags = [...document.querySelectorAll("div, span, label")].filter(
-        (el) =>
-          visible(el) &&
-          String(el.textContent || "").replace(/\s+/g, "").trim() === "添加标签",
+        (el) => visible(el) && textOf(el) === "添加标签",
       );
       const tag = tags
         .map((el) => ({ el, r: el.getBoundingClientRect() }))
         .filter((item) => item.r.bottom > er.top - 32 && item.r.top < er.bottom + 32)
         .sort((a, b) => Math.abs(a.r.top - er.top) - Math.abs(b.r.top - er.top))[0];
       if (!tag) return null;
-      const picker = [...document.querySelectorAll("button, [role='button'], [role='combobox'], div")]
-        .filter((el) => {
-          if (el === tag.el || !visible(el) || el.contains(editor)) return false;
+      let row = tag.el.parentElement;
+      for (let depth = 0; depth < 8 && row; depth++) {
+        const rowRect = row.getBoundingClientRect();
+        if (rowRect.width < 260 || rowRect.height > 180) {
+          row = row.parentElement;
+          continue;
+        }
+        const controls = [
+          ...row.querySelectorAll(
+            "button, [role='button'], [role='combobox'], [aria-haspopup='listbox'], input, div, span",
+          ),
+        ]
+          .filter((el) => {
+            if (el === tag.el || !visible(el) || el.contains(editor)) return false;
+            const r = el.getBoundingClientRect();
+            const text = textOf(el);
+            const cls = String(el.className || "");
+            const isTypeTrigger =
+              cls.includes("semi-select") ||
+              cls.includes("select-") ||
+              el.getAttribute("role") === "combobox" ||
+              el.getAttribute("aria-haspopup") === "listbox" ||
+              el.tagName === "BUTTON";
+            return (
+              isTypeTrigger &&
+              text !== "添加标签" &&
+              r.left >= tag.r.right - 24 &&
+              r.right <= rowRect.right + 24 &&
+              r.bottom > tag.r.top - 32 &&
+              r.top < tag.r.bottom + 32 &&
+              r.width >= 40 &&
+              r.width <= 260 &&
+              r.height <= 120
+            );
+          })
+          .map((el) => ({ el, r: el.getBoundingClientRect(), text: textOf(el) }))
+          .sort((a, b) => b.r.left - a.r.left || a.r.width - b.r.width);
+        const picker = controls[0];
+        if (picker) {
+          const rect = picker.r;
+          return {
+            text: picker.text,
+            x: Math.round(rect.left + rect.width / 2),
+            y: Math.round(rect.top + rect.height / 2),
+            bottom: Math.round(rect.bottom),
+          };
+        }
+        row = row.parentElement;
+      }
+      const samples = [];
+      let debugRow = tag.el.parentElement;
+      for (let depth = 0; depth < 8 && debugRow; depth++) {
+        const dr = debugRow.getBoundingClientRect();
+        if (dr.width < 260 || dr.height > 180) {
+          debugRow = debugRow.parentElement;
+          continue;
+        }
+        for (const el of debugRow.querySelectorAll(
+          "button, [role='button'], [role='combobox'], [aria-haspopup='listbox'], input, div, span",
+        )) {
+          if (!visible(el) || el === tag.el || el.contains(editor)) continue;
           const r = el.getBoundingClientRect();
-          return (
-            r.left >= tag.r.right - 16 &&
-            r.right <= er.left + 16 &&
-            r.bottom > tag.r.top - 28 &&
-            r.top < tag.r.bottom + 28 &&
-            r.width >= 60 &&
-            r.width <= 240 &&
-            r.height <= 100
-          );
-        })
-        .map((el) => ({ el, r: el.getBoundingClientRect() }))
-        .sort((a, b) => b.r.left - a.r.left || a.r.width - b.r.width)[0];
-      if (!picker) return null;
-      picker.el.click();
-      return {
-        text: String(picker.el.textContent || "").replace(/\s+/g, "").trim(),
-        bottom: picker.r.bottom,
-      };
+          if (r.width < 24 || r.height < 10 || r.left > er.left + 40) continue;
+          samples.push({
+            tag: el.tagName,
+            text: textOf(el).slice(0, 40),
+            value:
+              el.tagName === "INPUT" || el.tagName === "TEXTAREA"
+                ? String(el.value || "").slice(0, 40)
+                : "",
+            cls: String(el.className || "").slice(0, 40),
+            left: Math.round(r.left),
+            top: Math.round(r.top),
+            width: Math.round(r.width),
+            height: Math.round(r.height),
+          });
+        }
+        if (samples.length) break;
+        debugRow = debugRow.parentElement;
+      }
+      return { debug: true, samples };
     })
     .catch(() => null);
   if (locationTypePicker) {
+    if (locationTypePicker.debug) {
+      console.log(
+        "[dy] 地点类型候选调试:",
+        JSON.stringify(locationTypePicker.samples || []),
+      );
+    }
+  }
+  if (locationTypePicker && !locationTypePicker.debug) {
+    await page.mouse.click(locationTypePicker.x, locationTypePicker.y);
+    console.log("[dy] 已点击添加标签类型下拉");
     await page.waitForTimeout(250);
     const selectedLocationType = await page
       .evaluate((pickerBottom) => {
@@ -642,13 +725,14 @@ async function selectDyLocation(page, data) {
             r.height > 0
           );
         };
-        const option = [...document.querySelectorAll("li, [role='option'], div, span")]
+        const option = [...document.querySelectorAll("li, [role='option']")]
           .filter((el) => {
             if (!visible(el)) return false;
             const r = el.getBoundingClientRect();
             return (
               String(el.textContent || "").replace(/\s+/g, "").trim() === "位置" &&
               r.top >= pickerBottom - 12 &&
+              r.top <= pickerBottom + 420 &&
               r.height <= 90
             );
           })
@@ -656,12 +740,17 @@ async function selectDyLocation(page, data) {
             (a, b) =>
               a.getBoundingClientRect().top - b.getBoundingClientRect().top,
           )[0];
-        if (!option) return false;
-        (option.closest("li, [role='option']") || option).click();
-        return true;
+        if (!option) return null;
+        const r = option.getBoundingClientRect();
+        return {
+          x: Math.round(r.left + r.width / 2),
+          y: Math.round(r.top + r.height / 2),
+          text: String(option.textContent || "").replace(/\s+/g, "").trim(),
+        };
       }, locationTypePicker.bottom)
-      .catch(() => false);
+      .catch(() => null);
     if (selectedLocationType) {
+      await page.mouse.click(selectedLocationType.x, selectedLocationType.y);
       console.log("[dy] 已切换添加标签类型为位置");
       await page.waitForTimeout(250);
     }
@@ -753,6 +842,29 @@ async function selectDyLocation(page, data) {
       return true;
     }, location)
     .catch(() => false);
+  const postTypeMeta = await page.evaluate(() => {
+    const marked = document.querySelector("[data-mm-dy-location='1']");
+    const active = document.activeElement;
+    const isTextEditor = (el) =>
+      !!el &&
+      (el.tagName === "INPUT" ||
+        el.tagName === "TEXTAREA" ||
+        el.isContentEditable ||
+        el.getAttribute("role") === "textbox");
+    const input = isTextEditor(active) ? active : marked;
+    if (input && input !== marked && marked) {
+      marked.removeAttribute("data-mm-dy-location");
+      input.setAttribute("data-mm-dy-location", "1");
+    }
+    return {
+      markedTag: marked && marked.tagName,
+      markedValue: marked && (marked.value || ""),
+      activeTag: active && active.tagName,
+      activeValue: active && (active.value || ""),
+      usedActive: input === active,
+    };
+  }).catch(() => null);
+  console.log("[dy] 地理位置输入后焦点:", JSON.stringify(postTypeMeta));
   console.log("[dy] 已输入地理位置，等待候选项:", location);
   await page.waitForTimeout(700);
 

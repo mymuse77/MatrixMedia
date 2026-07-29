@@ -2,6 +2,7 @@
 
 import path from "path";
 import { normalizeCreativeStatement } from "../../shared/creativeStatement.js";
+import { getAppSettings } from "./appSettings";
 import ptConfig from "../config/ptConfig";
 import { runPuppeteerTask } from "./puppeteerFile";
 import { changeData } from "../server/utils";
@@ -128,6 +129,10 @@ async function runSingleFilePublishInner(
     pt: v.platform,
     requestDraftMode: Boolean(v.draft),
   });
+  const showAutomationProcess =
+    typeof v.show === "boolean"
+      ? v.show
+      : Boolean(getAppSettings()?.showAutomationProcess);
 
   const taskPayload = {
     taskId: Date.now() + Math.random(),
@@ -142,11 +147,11 @@ async function runSingleFilePublishInner(
       creativeStatement: normalizeCreativeStatement(v.creativeStatement || ""),
     },
     url: cfg.upload,
-    show: v.show,
-    mmCliSuppressWindow: false,
+    show: showAutomationProcess,
+    mmCliSuppressWindow: !showAutomationProcess,
     publishMode: effectivePublishMode.publishMode,
     publishToDraft: effectivePublishMode.publishToDraft,
-    closeWindowAfterPublish: v.show ? v.closeWindowAfterPublish : true,
+    closeWindowAfterPublish: showAutomationProcess ? v.closeWindowAfterPublish : true,
     useragent: cfg.useragent,
     partition: v.partition,
     phone: derivePhoneForRecord(v),

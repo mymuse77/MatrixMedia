@@ -46,6 +46,12 @@
             开启后下次启动不显示主窗口，也不在托盘菜单显示“显示主界面”。
           </p>
         </el-form-item>
+        <el-form-item label="是否显示自动化过程">
+          <el-switch v-model="appSettings.showAutomationProcess" />
+          <p class="section-tip setting-tip">
+            开启后发布弹窗默认显示自动化过程；关闭后默认隐藏。
+          </p>
+        </el-form-item>
         <el-form-item>
           <el-button
             type="primary"
