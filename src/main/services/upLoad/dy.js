@@ -6,6 +6,14 @@ import {
   WAIT_UPLOAD_PROCESSING_MS,
   pollPageUntil,
 } from "./uploadTimeouts.js";
+import {
+  findDyUploadInput,
+  inspectDyPublishPage,
+  waitForDyUploadPageReady,
+} from "./dyPageState.js";
+import { capturePublishFailureDiagnostics } from "./publishDiagnostics.js";
+
+const DY_PREFLIGHT_TIMEOUT_MS = 60 * 1000;
 
 async function selectDyCreativeStatement(page, data) {
   const value = data.data && data.data.creativeStatement;
@@ -1098,31 +1106,63 @@ export default async function (page, data, window, event) {
   // 队列的重试/最终失败逻辑。此前这里只 console.error 不上报，会导致上传
   // 输入框/标题输入框找不到时静默放过，流程继续往下走，最终在几十分钟到
   // 3 小时后才因为一个不相关的超时消息失败，掩盖了真实原因。
-  const reportFailure = (stage, e) => {
+  const reportFailure = async (stage, e) => {
     const detail = (e && e.message) || String(e);
     console.error(`❌ ${stage}`, e);
+    const pageSnapshot =
+      e?.dyPageSnapshot ||
+      (await inspectDyPublishPage(page).catch(() => null));
+    const diagnostic = await capturePublishFailureDiagnostics({
+      page,
+      data,
+      stage,
+      error: e,
+      pageSnapshot,
+    });
     event.reply("puppeteerFile-done", {
       ...data,
       status: false,
       message: detail.length > 200 ? `${detail.slice(0, 200)}…` : detail,
+      diagnostic,
     });
   };
 
+  if (data.mmPreflightOnly) {
+    try {
+      const snapshot = await waitForDyUploadPageReady(page, {
+        timeoutMs: DY_PREFLIGHT_TIMEOUT_MS,
+        intervalMs: 500,
+        timeoutMessage: "抖音发布页预检未找到视频上传输入框",
+      });
+      console.log(
+        `[dy] 发布页预检通过: ${data.phone || data.partition} locator=${snapshot.matchedLocatorId}`,
+      );
+      event.reply("puppeteerFile-done", {
+        ...data,
+        status: true,
+        preflight: true,
+        message: "抖音发布页预检通过",
+      });
+    } catch (e) {
+      await reportFailure("发布页预检失败", e);
+    }
+    return;
+  }
+
   try {
-    // 等待 name=upload-btn 的 input 出现
-    await pollPageUntil(
-      page,
-      () => !!document.querySelector('input[name="upload-btn"]'),
-      WAIT_SELECTOR_APPEAR_MS,
-      500,
-      "未找到抖音视频上传输入框",
-    );
-    const uploadInputs = await page.$$('input[name="upload-btn"]');
-    // 取最后一个 input 元素
-    const uploadFileHandle = uploadInputs[uploadInputs.length - 1];
-    await uploadFileHandle.uploadFile(path.resolve(data.filePath));
+    await waitForDyUploadPageReady(page, {
+      timeoutMs: WAIT_SELECTOR_APPEAR_MS,
+      intervalMs: 500,
+      timeoutMessage: "未找到抖音视频上传输入框",
+    });
+    const uploadInput = await findDyUploadInput(page);
+    if (!uploadInput) {
+      throw new Error("抖音视频上传输入框在文件选择前消失");
+    }
+    console.log(`[dy] 使用上传控件定位器: ${uploadInput.locator.id}`);
+    await uploadInput.handle.uploadFile(path.resolve(data.filePath));
   } catch (e) {
-    reportFailure("输入文件失败", e);
+    await reportFailure("输入文件失败", e);
     return;
   }
   try {
@@ -1151,7 +1191,7 @@ export default async function (page, data, window, event) {
     // bq 末尾没有分隔符会导致最后一个标签没被识别，这里补一次空格触发。
     await page.keyboard.press("Space");
   } catch (e) {
-    reportFailure("输入标题失败", e);
+    await reportFailure("输入标题失败", e);
     return;
   }
 
@@ -1240,6 +1280,6 @@ export default async function (page, data, window, event) {
       maybeClosePublishWindow(data, window);
     }, 5000);
   } catch (e) {
-    reportFailure("上传失败", e);
+    await reportFailure("上传失败", e);
   }
 }

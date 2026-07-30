@@ -267,11 +267,52 @@ export function runPuppeteerTask(data, transport, onFinish) {
   enqueueTask(data, transport, onFinish);
 }
 
+export function runPuppeteerPreflight(data) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const resolveOnce = (payload) => {
+      if (settled) return;
+      settled = true;
+      resolve(payload);
+    };
+    const rejectOnce = (payload, fallbackMessage) => {
+      if (settled) return;
+      settled = true;
+      const error = new Error(payload?.message || fallbackMessage);
+      error.preflightPayload = payload || null;
+      reject(error);
+    };
+    const preflightData = {
+      ...data,
+      mmPreflightOnly: true,
+      mmCliSuppressWindow: true,
+      show: false,
+      closeWindowAfterPublish: true,
+    };
+
+    enqueueTask(preflightData, {
+      reply(channel, payload) {
+        if (channel === "puppeteerFile-done") {
+          if (payload?.status === true) {
+            resolveOnce(payload);
+          } else {
+            rejectOnce(payload, "发布页预检失败");
+          }
+        } else if (channel === "puppeteer-noLogin") {
+          rejectOnce(payload, "登录状态异常或未登录");
+        }
+      },
+    });
+  });
+}
+
 async function doUpload(data, transport, queueDone, runtimeTask) {
   data = applyXhsConservativePublishOptions(data);
   data.partition = data.partition.split("-")[0];
   const isXhsTask = isXhsPlatform(data.pt);
-  const maxRetries = getPublishAttemptLimit(data, 5);
+  const maxRetries = data.mmPreflightOnly
+    ? 1
+    : getPublishAttemptLimit(data, 5);
   const logStage = createPublishStageLogger(data);
   logStage("任务开始", getPublishFileInfo(data.filePath));
   let currentAttempt = 0;
@@ -538,6 +579,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     }
 
     currentAttempt++;
+    data.mmCurrentAttempt = currentAttempt;
     if (currentAttempt > maxRetries) {
       console.log("已达到最大重试次数，操作失败", data);
       safeReply("puppeteer-noLogin", data);
@@ -918,6 +960,13 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
             logStage("进入平台脚本", { attempt: currentAttempt });
             await action(page, data, win, createAttemptTransport(), finishOnce);
             logStage("平台脚本已返回", { attempt: currentAttempt });
+            if (
+              data.mmPreflightOnly &&
+              win &&
+              !win.isDestroyed()
+            ) {
+              closePublishWinProgrammatically(win);
+            }
           } else {
             console.log(
               `尝试${currentAttempt} URL不匹配: ${currentUrl}，关闭窗口并重新尝试`
@@ -965,6 +1014,25 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
               closePublishWinProgrammatically(win);
             finishOnce();
             return;
+          }
+          if (
+            data.pt === "抖音" &&
+            win &&
+            !win.isDestroyed() &&
+            win.webContents &&
+            !win.webContents.isDestroyed()
+          ) {
+            try {
+              await win.webContents.session.clearCache();
+              console.log(
+                `[dy] 尝试${currentAttempt}失败，已清理页面缓存后重新加载`,
+              );
+            } catch (cacheError) {
+              console.warn(
+                "[dy] 清理页面缓存失败:",
+                cacheError?.message || cacheError,
+              );
+            }
           }
           if (win && !win.isDestroyed()) {
             win._mmRetryAfterClose = true;
