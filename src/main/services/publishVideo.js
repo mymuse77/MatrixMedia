@@ -14,6 +14,7 @@ import {
   guessFileNameFromUrl,
 } from "./resolvePublishFile";
 import { resolveAccountPublishMode } from "./accountPublishSettingsResolver.js";
+import { getAccountLoginStatus } from "./accountLoginStatus.js";
 
 function fileStemFromSource(source) {
   const raw = String(source || "").trim();
@@ -47,6 +48,25 @@ function getRemoteCacheKey(v) {
       v.id ||
       ""
   ).trim();
+}
+
+/**
+ * 写入一条 pushData 记录并回读其自增 id（changeData 只在返回的全量列表里带 id，
+ * 需要按业务字段反查最新一条）。三处调用（定时记录 / 正常发布记录 / 登录失效
+ * 短路记录）共用同一套查找逻辑，只是匹配条件略有差异，故用 predicate 抽象。
+ */
+function addPushDataRecord(item, matchPredicate) {
+  let recordId = null;
+  try {
+    const addRes = changeData({ fileName: "pushData", type: "add", item });
+    if (addRes && addRes.success && Array.isArray(addRes.data)) {
+      const found = [...addRes.data].reverse().find(matchPredicate);
+      if (found) recordId = found.id;
+    }
+  } catch (e) {
+    console.error("MatrixMedia: 写入 pushData 记录失败:", e && e.message);
+  }
+  return recordId;
 }
 
 /**
@@ -248,28 +268,57 @@ async function runSingleFilePublishInner(
     }
   }
 
-  let recordId = null;
+  const matchesRecordItem = (it) =>
+    it.textOtherName === recordItem.textOtherName &&
+    it.pt === recordItem.pt &&
+    it.selectedFile === recordItem.selectedFile &&
+    it.textType === recordItem.textType;
+
+  // 发布前登录态检测：复用账号管理 / cli accounts 同款 Cookie 判定
+  // （getAccountLoginStatus），命中"确定失效"就直接写一条失败记录并短路
+  // 返回，不再打开发布窗口、不进 puppeteer 队列，让 HTTP/CLI/MCP 调用方
+  // 第一时间拿到准确的失败原因，而不是等一轮重试超时后收到无关的提示。
+  // 该检测目前仅覆盖有明确 cookie 规则的平台（抖音/快手/百家号/哔哩哔哩/
+  // 头条/视频号/小红书）；未覆盖的平台（如番茄视频）会返回 loginStatus
+  // "unknown"，此时不短路，按原流程继续尝试发布。
   try {
-    const addRes = changeData({
-      fileName: "pushData",
-      type: "add",
-      item: recordItem,
+    // partition 有时带用于内部去重的 "-xxx" 后缀（参考 puppeteerFile.js /
+    // proxyConfig.js 同样的归一化），必须先剥掉，否则会查到一个不存在的
+    // session 分区，永远拿不到登录 cookie，把正常账号误判为"登录失效"。
+    const normalizedPartition = v.partition
+      ? String(v.partition).split("-")[0]
+      : v.partition;
+    const loginStatus = await getAccountLoginStatus({
+      phone: derivePhoneForRecord(v),
+      platform: v.platform,
+      url: cfg.index,
+      partition: normalizedPartition,
     });
-    if (addRes && addRes.success && Array.isArray(addRes.data)) {
-      const found = [...addRes.data]
-        .reverse()
-        .find(
-          (it) =>
-            it.textOtherName === recordItem.textOtherName &&
-            it.pt === recordItem.pt &&
-            it.selectedFile === recordItem.selectedFile &&
-            it.textType === recordItem.textType
-        );
-      if (found) recordId = found.id;
+    if (loginStatus.loginStatus === "expired") {
+      const message = `${v.platform}（${
+        derivePhoneForRecord(v) || "未知账号"
+      }）登录状态已失效，请重新登录后再试`;
+      console.warn(`MatrixMedia: ${message}`);
+      const failedRecordId = addPushDataRecord(
+        {
+          ...recordItem,
+          publishStatus: "failed",
+          publishSuccessCount: 0,
+          publishFailCount: 1,
+          lastPublishMessage: message,
+        },
+        matchesRecordItem
+      );
+      return { exitCode: 3, status: "failed", message, id: failedRecordId };
     }
   } catch (e) {
-    console.error("MatrixMedia: 写入 pushData 初始记录失败:", e && e.message);
+    console.warn(
+      "MatrixMedia: 发布前登录态预检测异常，跳过预检查，按原流程继续:",
+      e && e.message
+    );
   }
+
+  const recordId = addPushDataRecord(recordItem, matchesRecordItem);
 
   const updateRecord = (status, message) => {
     if (!recordId) return;
