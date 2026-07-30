@@ -15,6 +15,7 @@ import { registerScheduledPublishIpc } from "./scheduledPublish";
 import { registerSphWindowProductsIpc } from "./sphWindowProducts";
 import { createLaunchInstallerHandler } from "./launchInstaller";
 import { applyAccountProxyForTask } from "./proxyConfig";
+import { guardExternalNavigation } from "./navigationGuard";
 import { getAppSettings, updateAppSettings } from "./appSettings";
 import {
   closeOtherAccountLoginWindows,
@@ -329,6 +330,7 @@ export default {
       } catch (_) {
         /* ignore */
       }
+      guardExternalNavigation(win.webContents);
 
       try {
         await win.loadURL(url);
@@ -363,6 +365,7 @@ export default {
       } catch (_) {
         /* ignore */
       }
+      guardExternalNavigation(win.webContents);
       try {
         await win.loadURL(url);
       } catch (e) {

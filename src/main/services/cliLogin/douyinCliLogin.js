@@ -6,6 +6,7 @@ import puppeteerCore from "puppeteer-core";
 import { addExtra } from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import ptConfig from "../../config/ptConfig";
+import { guardExternalNavigation } from "../navigationGuard.js";
 import {
   clearTerminalScreen,
   paintLoginQrToTerminalFromPuppeteerPage,
@@ -170,6 +171,8 @@ export async function runDouyinCliLogin({
           finish(3, {});
         }
       });
+
+      guardExternalNavigation(win.webContents);
 
       if (cfg.useragent) {
         win.webContents.setUserAgent(cfg.useragent);

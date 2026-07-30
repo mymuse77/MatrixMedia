@@ -7,6 +7,7 @@ import { addExtra } from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { nativeImage } from "electron";
 import ptConfig from "../../config/ptConfig";
+import { guardExternalNavigation } from "../navigationGuard.js";
 import {
   clearTerminalScreen,
   nativeImageToTerminalQrLines,
@@ -462,6 +463,7 @@ export async function runSphCliLogin({
       try {
         win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       } catch (_) {}
+      guardExternalNavigation(win.webContents);
 
       // 先获取 piePage，通过 CDP Network.setUserAgentOverride 设置 UA
       // 这是唯一能覆盖所有请求（含 iframe）的方式

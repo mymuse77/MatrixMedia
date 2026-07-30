@@ -18,6 +18,7 @@ import {
 import { resolveChromePath } from "./chromeConfig.js";
 import xhsChromeHandler from "./upLoad/xhsChrome.js";
 import { isPlatformLoginUrl } from "../../shared/platformPageState.js";
+import { guardExternalNavigation } from "./navigationGuard.js";
 
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 
@@ -758,6 +759,8 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
 
       // Block any window.open() calls from the publish page (e.g. Juejin OAuth popups)
       win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+      // 拦截页面内自定义协议深链的同窗口跳转，避免弹出 Windows 原生「选取应用」对话框
+      guardExternalNavigation(win.webContents);
 
       // 站点在上传中常注册 beforeunload；用户主动关窗时二次确认，程序自动关窗见 skipCloseConfirmation。
       win.webContents.on("will-prevent-unload", (event) => {

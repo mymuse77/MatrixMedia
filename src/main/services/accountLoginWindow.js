@@ -4,6 +4,7 @@ import {
   getAccountLoginWindowByPartition,
   registerAccountLoginWindow,
 } from './accountLoginWindowManager';
+import { guardExternalNavigation } from './navigationGuard';
 
 const openingWindows = new Map();
 
@@ -108,6 +109,7 @@ async function openAccountLoginWindowOnce({ partition, url, useragent, title }) 
   } catch (_) {
     /* ignore */
   }
+  guardExternalNavigation(win.webContents);
 
   win.loadURL(url).catch((error) => {
     console.warn('[open-account-login-window] loadURL failed:', error && error.message);
