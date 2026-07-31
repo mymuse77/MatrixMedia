@@ -18,6 +18,7 @@ import { openAccountLoginWindow } from './accountLoginWindow';
 import { resolvePublishFile } from './resolvePublishFile';
 import { getAppSettings } from './appSettings';
 import { createScheduledRecord, schedulePublishRecord, subscribeScheduledPublishEvents } from './scheduledPublish';
+import { resolveTaskTransportStatus } from './taskResultStatus';
 
 const LOGIN_STATUS_WATCH_INTERVAL_MS = 3_000;
 const LOGIN_STATUS_WATCH_TIMEOUT_MS = 10 * 60 * 1_000;
@@ -1004,7 +1005,7 @@ function sendBatchPublishItemResult(wsClient, taskId, payload) {
         : 'failed'
     : 'running';
 
-  wsClient.sendTaskResult(taskId, 'success', {
+  const result = {
     success: isDone ? payload.successCount > 0 : true,
     action: 'publish_videos',
     status,
@@ -1016,7 +1017,12 @@ function sendBatchPublishItemResult(wsClient, taskId, payload) {
     message: isDone
       ? `批量发布完成：成功 ${payload.successCount}，失败 ${payload.failCount}`
       : `批量发布中：已完成 ${doneCount}/${payload.total}`,
-  });
+  };
+  wsClient.sendTaskResult(
+    taskId,
+    resolveTaskTransportStatus('publish_videos', result),
+    result,
+  );
 }
 
 async function updateLocalPublishRecord(publishData, status, message) {
@@ -1114,6 +1120,29 @@ export async function handlePublishVideo(taskData, wsClient) {
 
     if (!ptConfig[platform]) {
       throw new Error(`不支持的平台: ${platform}`);
+    }
+
+    if (platform === '抖音' && data.skipPublishPreflight !== true) {
+      sendScopedProgress(wsClient, taskId, 8, '正在检查抖音发布页', progressRange);
+      try {
+        await runPuppeteerPreflight({
+          taskId: `${taskId}:dy-preflight`,
+          phone,
+          pt: platform,
+          partition: partition || getAccountPartition(phone, platform),
+          url: ptConfig[platform]?.upload,
+          useragent: ptConfig[platform]?.useragent,
+        });
+      } catch (error) {
+        const diagnostic =
+          error?.preflightPayload?.diagnostic?.screenshotPath ||
+          error?.preflightPayload?.diagnostic?.metadataPath ||
+          '';
+        const diagnosticHint = diagnostic ? `，诊断文件：${diagnostic}` : '';
+        throw new Error(
+          `抖音账号 ${phone} 发布页预检失败：${error?.message || '页面未就绪'}${diagnosticHint}`,
+        );
+      }
     }
 
     const downloadRequest = createDownloadRequest(videoUrl, download, downloadHeaders, downloadExpiresAt);
@@ -1355,7 +1384,7 @@ async function preflightDouyinBatchAccounts({
   }
 
   const targets = [...uniqueAccounts.values()];
-  if (targets.length < 2) return;
+  if (targets.length < 2) return false;
 
   console.log(`[WebSocket] 开始抖音批量发布页预检，共 ${targets.length} 个账号`);
   for (let index = 0; index < targets.length; index += 1) {
@@ -1387,6 +1416,7 @@ async function preflightDouyinBatchAccounts({
     }
   }
   console.log('[WebSocket] 抖音批量发布页预检全部通过');
+  return true;
 }
 
 /**
@@ -1545,7 +1575,7 @@ export async function handlePublishVideos(taskData, wsClient) {
     };
   }
 
-  await preflightDouyinBatchAccounts({
+  const douyinBatchPreflightCompleted = await preflightDouyinBatchAccounts({
     publishQueue,
     taskId,
     wsClient,
@@ -1600,6 +1630,8 @@ export async function handlePublishVideos(taskData, wsClient) {
             start: progressStart,
             end: progressEnd,
           },
+          skipPublishPreflight:
+            douyinBatchPreflightCompleted && platform === '抖音',
         },
       }, wsClient);
 
@@ -1650,7 +1682,7 @@ export async function handlePublishVideos(taskData, wsClient) {
   wsClient.sendProgress(taskId, 100, `批量发布完成：成功 ${successCount}，失败 ${failCount}`);
 
   return {
-    success: successCount > 0,
+    success: successCount === total,
     action: 'publish_videos',
     status: successCount === total ? 'completed' : successCount > 0 ? 'partial' : 'failed',
     taskName,

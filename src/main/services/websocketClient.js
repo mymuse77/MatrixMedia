@@ -7,6 +7,7 @@ const { io } = require('socket.io-client');
 const config = require('../config/websocket.config');
 const { getClientId } = require('./clientIdentity');
 const { sendAccountSnapshot } = require('./websocketHandlers');
+const { resolveTaskTransportStatus } = require('./taskResultStatus');
 const packageJson = require('../../../package.json');
 
 const protocolVersion = 'matrix-ws-v1';
@@ -250,7 +251,11 @@ class WebSocketClient {
             return;
           }
 
-          this.sendTaskResult(taskId, 'success', result);
+          this.sendTaskResult(
+            taskId,
+            resolveTaskTransportStatus(type, result),
+            result,
+          );
         })
         .catch((error) => {
           console.error(`[WebSocket] 任务执行失败 (${taskId}):`, formatTaskError(error));

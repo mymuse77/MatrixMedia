@@ -12,8 +12,12 @@ import {
   waitForDyUploadPageReady,
 } from "./dyPageState.js";
 import { capturePublishFailureDiagnostics } from "./publishDiagnostics.js";
+import { waitForDyPublishConfirmation } from "./dyPublishConfirmation.js";
 
 const DY_PREFLIGHT_TIMEOUT_MS = 60 * 1000;
+const DY_UPLOAD_INPUT_TIMEOUT_MS = 60 * 1000;
+const DY_LOCATION_ATTEMPTS = 3;
+const DY_LOCATION_PICK_TIMEOUT_MS = 15 * 1000;
 
 async function selectDyCreativeStatement(page, data) {
   const value = data.data && data.data.creativeStatement;
@@ -156,7 +160,11 @@ async function clickDyPublish(page, isDraftMode) {
  * 流程：滚到扩展区 → 定位该 input → 输入 → 点选下拉 POI
  * 注意：不要乱点扩展区其它控件，避免跳转到内容管理「搜索作品」。
  */
-async function selectDyLocation(page, data) {
+async function selectDyLocation(
+  page,
+  data,
+  { pickTimeoutMs = DY_LOCATION_PICK_TIMEOUT_MS } = {},
+) {
   const location = String(
     data?.data?.address ||
       data?.data?.location ||
@@ -877,7 +885,10 @@ async function selectDyLocation(page, data) {
   await page.waitForTimeout(700);
 
   // 点选下拉短 POI（优先输入框附近）
-  const pickDeadline = Date.now() + Math.min(WAIT_SELECTOR_APPEAR_MS, 60_000);
+  const pickDeadline =
+    Date.now() + Math.min(WAIT_SELECTOR_APPEAR_MS, pickTimeoutMs);
+  const arrowFallbackAt =
+    Date.now() + Math.min(5_000, Math.max(1_500, pickTimeoutMs / 3));
   let lastDebug = "";
   let triedArrow = false;
 
@@ -1054,7 +1065,7 @@ async function selectDyLocation(page, data) {
       lastDebug = result.debug;
       console.log("[dy] 地点候选未就绪:", lastDebug);
     }
-    if (!triedArrow && Date.now() > pickDeadline - 55_000) {
+    if (!triedArrow && Date.now() >= arrowFallbackAt) {
       triedArrow = true;
       console.log("[dy] 尝试 ArrowDown+Enter 选第一条建议");
       try {
@@ -1097,6 +1108,94 @@ async function selectDyLocation(page, data) {
   );
 }
 
+function isDyLocationRequired(data) {
+  return (
+    data?.locationRequired === true ||
+    data?.requireLocation === true ||
+    data?.data?.locationRequired === true ||
+    data?.data?.requireLocation === true
+  );
+}
+
+async function resetDyLocationAttempt(page, { clearValue = false } = {}) {
+  await page.keyboard.press("Escape").catch(() => {});
+  await page
+    .evaluate((shouldClearValue) => {
+      const marked = document.querySelector("[data-mm-dy-location='1']");
+      if (marked && shouldClearValue) {
+        if (marked.tagName === "INPUT" || marked.tagName === "TEXTAREA") {
+          const prototype =
+            marked.tagName === "INPUT"
+              ? window.HTMLInputElement.prototype
+              : window.HTMLTextAreaElement.prototype;
+          const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
+          if (descriptor?.set) descriptor.set.call(marked, "");
+          else marked.value = "";
+          marked.dispatchEvent(
+            new InputEvent("input", {
+              bubbles: true,
+              cancelable: true,
+              inputType: "deleteContentBackward",
+            }),
+          );
+          marked.dispatchEvent(new Event("change", { bubbles: true }));
+        } else if (
+          marked.isContentEditable ||
+          marked.getAttribute("role") === "textbox"
+        ) {
+          marked.textContent = "";
+          marked.dispatchEvent(
+            new InputEvent("input", {
+              bubbles: true,
+              cancelable: true,
+              inputType: "deleteContentBackward",
+            }),
+          );
+        }
+      }
+      if (marked) marked.removeAttribute("data-mm-dy-location");
+      const active = document.activeElement;
+      if (active && typeof active.blur === "function") active.blur();
+    }, clearValue)
+    .catch(() => {});
+  await page.waitForTimeout(750);
+}
+
+async function selectDyLocationWithRetry(page, data) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= DY_LOCATION_ATTEMPTS; attempt += 1) {
+    try {
+      await selectDyLocation(page, data, {
+        pickTimeoutMs: DY_LOCATION_PICK_TIMEOUT_MS,
+      });
+      return { selected: true, skipped: false };
+    } catch (error) {
+      lastError = error;
+      console.warn(
+        `[dy] 地理位置选择失败 (${attempt}/${DY_LOCATION_ATTEMPTS}):`,
+        error?.message || error,
+      );
+      if (attempt < DY_LOCATION_ATTEMPTS) {
+        await resetDyLocationAttempt(page);
+      }
+    }
+  }
+
+  if (isDyLocationRequired(data)) {
+    throw lastError || new Error("抖音地理位置选择失败");
+  }
+
+  await resetDyLocationAttempt(page, { clearValue: true });
+  console.warn(
+    `[dy] 地理位置为可选项，连续 ${DY_LOCATION_ATTEMPTS} 次未获取到候选，跳过地点继续发布`,
+  );
+  return {
+    selected: false,
+    skipped: true,
+    reason: lastError?.message || "未获取到地点候选",
+  };
+}
+
 export default async function (page, data, window, event) {
   const isDraftMode =
     data.publishMode === "draft" || data.publishToDraft === true;
@@ -1111,6 +1210,7 @@ export default async function (page, data, window, event) {
     console.error(`❌ ${stage}`, e);
     const pageSnapshot =
       e?.dyPageSnapshot ||
+      e?.dyPublishConfirmation ||
       (await inspectDyPublishPage(page).catch(() => null));
     const diagnostic = await capturePublishFailureDiagnostics({
       page,
@@ -1124,6 +1224,7 @@ export default async function (page, data, window, event) {
       status: false,
       message: detail.length > 200 ? `${detail.slice(0, 200)}…` : detail,
       diagnostic,
+      nonRetryable: e?.nonRetryable === true,
     });
   };
 
@@ -1151,7 +1252,7 @@ export default async function (page, data, window, event) {
 
   try {
     await waitForDyUploadPageReady(page, {
-      timeoutMs: WAIT_SELECTOR_APPEAR_MS,
+      timeoutMs: DY_UPLOAD_INPUT_TIMEOUT_MS,
       intervalMs: 500,
       timeoutMessage: "未找到抖音视频上传输入框",
     });
@@ -1267,18 +1368,23 @@ export default async function (page, data, window, event) {
 
     // 自主声明入口在视频转码完成后才出现，必须在点击发布前完成
     await selectDyCreativeStatementWithRetry(page, data);
-    await selectDyLocation(page, data);
+    await selectDyLocationWithRetry(page, data);
 
     await clickDyPublish(page, isDraftMode);
-    console.log(isDraftMode ? "✅ 抖音视频已保存草稿" : "✅ 抖音视频上传成功");
-    setTimeout(() => {
-      event.reply("puppeteerFile-done", {
-        ...data,
-        status: true,
-        message: isDraftMode ? "保存草稿成功" : "上传成功",
-      });
-      maybeClosePublishWindow(data, window);
-    }, 5000);
+    const confirmation = await waitForDyPublishConfirmation(page, {
+      isDraftMode,
+    });
+    console.log(
+      isDraftMode ? "✅ 抖音已确认保存草稿成功" : "✅ 抖音已确认视频发布成功",
+      JSON.stringify(confirmation),
+    );
+    event.reply("puppeteerFile-done", {
+      ...data,
+      status: true,
+      publishConfirmed: true,
+      message: isDraftMode ? "保存草稿成功" : "发布成功",
+    });
+    maybeClosePublishWindow(data, window);
   } catch (e) {
     await reportFailure("上传失败", e);
   }

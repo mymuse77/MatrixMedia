@@ -132,6 +132,13 @@ async function runDryRun(opts) {
     }
     if (request === "./puppeteerFile") {
       return {
+        async runPuppeteerPreflight() {
+          return {
+            status: true,
+            preflight: true,
+            message: "dry-run preflight passed",
+          };
+        },
         runPuppeteerTask(data, transport, onFinish) {
           captured.push(data);
           setImmediate(() => {

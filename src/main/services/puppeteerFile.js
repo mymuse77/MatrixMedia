@@ -311,7 +311,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
   data.partition = data.partition.split("-")[0];
   const isXhsTask = isXhsPlatform(data.pt);
   const maxRetries = data.mmPreflightOnly
-    ? 1
+    ? 2
     : getPublishAttemptLimit(data, 5);
   const logStage = createPublishStageLogger(data);
   logStage("任务开始", getPublishFileInfo(data.filePath));
@@ -1003,7 +1003,10 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
           if (finished) return;
           console.log(`尝试${currentAttempt}执行平台逻辑失败:`, err);
           const failurePayload = err && err._mmUploadFailurePayload;
-          if (currentAttempt >= maxRetries) {
+          if (
+            failurePayload?.nonRetryable ||
+            currentAttempt >= maxRetries
+          ) {
             safeReply("puppeteerFile-done", {
               ...data,
               ...failurePayload,
