@@ -13,6 +13,10 @@
  *   范畴，天然不会被这里拦截——两者是完全独立的机制，互不影响。
  */
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:"]);
+const SUPPRESSED_EXTERNAL_PROTOCOLS = ["bitbitbrowser"];
+const ERR_ABORTED = -3;
+const guardedWebContents = new WeakSet();
+const guardedSessions = new WeakSet();
 
 function isAllowedNavigationUrl(url) {
   try {
@@ -20,6 +24,67 @@ function isAllowedNavigationUrl(url) {
   } catch (_) {
     return false;
   }
+}
+
+function suppressExternalProtocol(webContents, scheme) {
+  const protocol = webContents?.session?.protocol;
+  if (
+    !protocol ||
+    typeof protocol.isProtocolRegistered !== "function" ||
+    typeof protocol.registerStringProtocol !== "function"
+  ) {
+    console.warn(`[nav-guard] 无法注册 ${scheme} 协议拦截器`);
+    return false;
+  }
+
+  try {
+    if (protocol.isProtocolRegistered(scheme)) return true;
+
+    const registered = protocol.registerStringProtocol(
+      scheme,
+      (request, callback) => {
+        console.warn(`[nav-guard] 已拦截外部协议请求: ${request.url}`);
+        callback({ error: ERR_ABORTED });
+      },
+    );
+
+    if (!registered) {
+      console.warn(`[nav-guard] 注册 ${scheme} 协议拦截器失败`);
+    }
+    return registered;
+  } catch (error) {
+    console.warn(
+      `[nav-guard] 注册 ${scheme} 协议拦截器异常:`,
+      error?.message || error,
+    );
+    return false;
+  }
+}
+
+function guardExternalProtocolPermissions(webContents) {
+  const targetSession = webContents?.session;
+  if (
+    !targetSession ||
+    guardedSessions.has(targetSession) ||
+    typeof targetSession.setPermissionRequestHandler !== "function"
+  ) {
+    return;
+  }
+
+  targetSession.setPermissionRequestHandler(
+    (_requestingWebContents, permission, callback, details = {}) => {
+      if (permission !== "openExternal") {
+        // Electron 默认允许远程页面的权限请求；这里只收紧外部协议，不改变其它行为。
+        callback(true);
+        return;
+      }
+
+      const externalUrl = String(details.externalURL || "未知地址");
+      console.warn(`[nav-guard] 已拒绝外部协议权限: ${externalUrl}`);
+      callback(false);
+    },
+  );
+  guardedSessions.add(targetSession);
 }
 
 /**
@@ -33,12 +98,21 @@ function isAllowedNavigationUrl(url) {
  * 的自动化窗口。这里在文档导航阶段直接挡掉非 http(s)/ws(s) 协议，从根源
  * 上避免把这类 URL 交给系统。
  *
- * 只挡文档级导航，不影响页面内部的 fetch / XHR / WebSocket 等网络请求。
+ * 当前 session 会拒绝全部 openExternal 权限，并为已知协议注册取消处理器，
+ * 从而覆盖 iframe 等不会触发顶层导航事件的协议探测；不影响网页网络请求。
  *
  * @param {import("electron").WebContents} webContents
  */
 export function guardExternalNavigation(webContents) {
   if (!webContents || webContents.isDestroyed()) return;
+  guardExternalProtocolPermissions(webContents);
+  for (const scheme of SUPPRESSED_EXTERNAL_PROTOCOLS) {
+    suppressExternalProtocol(webContents, scheme);
+  }
+
+  if (guardedWebContents.has(webContents)) return;
+  guardedWebContents.add(webContents);
+
   const blockIfExternal = (event, url) => {
     if (isAllowedNavigationUrl(url)) return;
     console.warn("[nav-guard] 已拦截非 http(s)/ws(s) 协议的外部跳转:", url);
@@ -48,4 +122,8 @@ export function guardExternalNavigation(webContents) {
   webContents.on("will-redirect", blockIfExternal);
 }
 
-export { isAllowedNavigationUrl };
+export {
+  guardExternalProtocolPermissions,
+  isAllowedNavigationUrl,
+  suppressExternalProtocol,
+};
