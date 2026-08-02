@@ -107,7 +107,12 @@ wsClient.registerTaskHandler('publish_article', async (taskData) => {
 ```javascript
 {
   type: 'auth',
+  clientType: 'matrix_pc_client',
+  clientId: 'mm-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
   deviceId: 'device-xxx',
+  timeZone: 'Asia/Shanghai',
+  utcOffsetMinutes: 480,
+  clientTimeMs: 1234567890000,
   timestamp: 1234567890,
   accounts: [
     { phone: '13800138000', platform: '抖音' },
@@ -164,9 +169,16 @@ wsClient.registerTaskHandler('publish_article', async (taskData) => {
 
 ```javascript
 {
+  clientType: 'matrix_pc_client',
+  clientId: 'mm-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+  timeZone: 'Asia/Shanghai',
+  utcOffsetMinutes: 480,
+  clientTimeMs: 1234567890000,
   timestamp: 1234567890
 }
 ```
+
+`timeZone`、`utcOffsetMinutes` 和 `clientTimeMs` 必须在认证和每次心跳中按当前系统时间上报。网页会使用它们检测客户端时区和系统时间是否与网页端一致；缺失时会提示“客户端未上报时区信息，定时发布时间暂无法校验”。
 
 ### 服务器 → 客户端
 
@@ -186,6 +198,14 @@ wsClient.registerTaskHandler('publish_article', async (taskData) => {
   timestamp: 1234567890
 }
 ```
+
+矩阵批量视频任务使用 `type: 'publish_videos'`。客户端必须按 `data.scheduleMode` 执行：
+
+- `immediate`：立即发布；当 `data.scheduleMixDistribution === true` 时，按 `data.publishItems[].scheduledPublishAt` 分散执行。
+- `scheduled`：按每个 `publishItems[].scheduledPublishAt` 执行，并将 `publishItems[].itemId` 原样带回结果。
+- `none`：网页端不会下发任务，只保存任务；用户之后恢复时会复用原 `taskId`。
+
+定时或混合分散的后续结果必须继续使用原任务 `taskId`，不能生成新的任务 ID，否则网页端无法把结果归并到同一发布任务。
 
 #### 2. 服务器消息 (message)
 

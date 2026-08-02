@@ -1086,6 +1086,60 @@ function formatScheduledPublishAt(value) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
+function isFutureScheduledPublishAt(value, nowMs = Date.now()) {
+  const publishAt = Number(value);
+  return Number.isFinite(publishAt) && publishAt > nowMs + 1_000;
+}
+
+async function deferMixedImmediatePublishItems(publishQueue, taskId, nowMs = Date.now()) {
+  const immediateQueue = [];
+  const scheduledResults = [];
+
+  for (const queued of publishQueue) {
+    if (!isFutureScheduledPublishAt(queued.scheduledPublishAt, nowMs)) {
+      immediateQueue.push(queued);
+      continue;
+    }
+
+    const scheduledPublishAt = formatScheduledPublishAt(queued.scheduledPublishAt);
+    if (!scheduledPublishAt) {
+      immediateQueue.push(queued);
+      continue;
+    }
+
+    let scheduledFilePath = queued.videoPath;
+    if (queued.videoUrl) {
+      const cachedVideo = await resolvePublishFile(queued.videoUrl, {
+        headers: queued.download?.headers || queued.downloadHeaders,
+        cacheKey: queued.itemId || queued.serverId,
+      });
+      scheduledFilePath = cachedVideo.localPath;
+    }
+
+    const scheduledRecord = createScheduledRecord({
+      ...queued.publishData,
+      matrixTaskId: taskId,
+      matrixItemId: queued.itemId,
+      filePath: scheduledFilePath || '',
+      sourceVideoUrl: queued.videoUrl || '',
+    }, scheduledPublishAt, nowMs);
+
+    await changeData({ type: 'add', fileName: 'pushData', item: scheduledRecord });
+    schedulePublishRecord(scheduledRecord, nowMs);
+    scheduledResults.push({
+      itemId: queued.itemId,
+      phone: queued.phone,
+      platform: queued.platform,
+      videoPath: queued.videoPath,
+      videoUrl: queued.videoUrl,
+      status: 'scheduled',
+      scheduledPublishAt: queued.scheduledPublishAt,
+    });
+  }
+
+  return { immediateQueue, scheduledResults };
+}
+
 export async function handlePublishVideo(taskData, wsClient) {
   const { taskId, data } = taskData;
   const {
@@ -1575,13 +1629,21 @@ export async function handlePublishVideos(taskData, wsClient) {
     };
   }
 
+  const isMixedImmediatePublish =
+    cleanText(data.scheduleMode) === 'immediate' && data.scheduleMixDistribution === true;
+  const mixedImmediateSchedule = isMixedImmediatePublish
+    ? await deferMixedImmediatePublishItems(publishQueue, taskId)
+    : { immediateQueue: publishQueue, scheduledResults: [] };
+  const immediatePublishQueue = mixedImmediateSchedule.immediateQueue;
+  const scheduledResults = mixedImmediateSchedule.scheduledResults;
+
   const douyinBatchPreflightCompleted = await preflightDouyinBatchAccounts({
-    publishQueue,
+    publishQueue: immediatePublishQueue,
     taskId,
     wsClient,
   });
 
-  for (const queued of publishQueue) {
+  for (const queued of immediatePublishQueue) {
     await changeData({
       type: 'add',
       fileName: 'pushData',
@@ -1589,7 +1651,7 @@ export async function handlePublishVideos(taskData, wsClient) {
     });
   }
 
-  for (const queued of publishQueue) {
+  for (const queued of immediatePublishQueue) {
     const {
       phone,
       platform,
@@ -1677,6 +1739,27 @@ export async function handlePublishVideos(taskData, wsClient) {
       });
       wsClient.sendProgress(taskId, Number(progressEnd.toFixed(2)), `发布失败 ${currentIndex}/${total}: ${message}`);
     }
+  }
+
+  if (scheduledResults.length > 0) {
+    wsClient.sendProgress(
+      taskId,
+      100,
+      immediatePublishQueue.length > 0
+        ? `已完成即时发布，并安排 ${scheduledResults.length} 条分散发布计划`
+        : `已安排 ${scheduledResults.length} 条分散发布计划`,
+    );
+    return {
+      success: true,
+      action: 'publish_videos',
+      status: 'running',
+      taskName,
+      total,
+      successCount,
+      failCount,
+      results: [...results, ...scheduledResults],
+      message: `已安排 ${scheduledResults.length} 条分散发布计划`,
+    };
   }
 
   wsClient.sendProgress(taskId, 100, `批量发布完成：成功 ${successCount}，失败 ${failCount}`);

@@ -26,6 +26,7 @@ const progressEvents = [];
 const taskResultEvents = [];
 const changeDataCalls = [];
 const resolvePublishCalls = [];
+const scheduledPublishRecords = [];
 let remoteDownloadIndex = 0;
 
 const originalLoad = Module._load;
@@ -48,6 +49,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
 
   if (request === "./puppeteerFile") {
     return {
+      runPuppeteerPreflight: async () => ({ success: true }),
       runPuppeteerTask(data, transport, onFinish) {
         capturedPublishPayloads.push(data);
         setImmediate(() => {
@@ -124,6 +126,22 @@ Module._load = function patchedLoad(request, parent, isMain) {
     return {
       getAccountLoginStatus: async () => ({ isLoggedIn: true, loginStatus: "valid" }),
       getAccountPartition: (phone, accountPlatform) => `persist:${phone}${accountPlatform}`,
+    };
+  }
+
+  if (request === "./scheduledPublish") {
+    return {
+      createScheduledRecord: (publishData, scheduledPublishAt) => ({
+        ...publishData,
+        id: `scheduled-${scheduledPublishRecords.length + 1}`,
+        date: "2026-08-02",
+        scheduledPublishAt,
+        publishStatus: "scheduled",
+      }),
+      schedulePublishRecord: (record) => {
+        scheduledPublishRecords.push(record);
+      },
+      subscribeScheduledPublishEvents: () => () => {},
     };
   }
 
@@ -413,6 +431,66 @@ async function main() {
   );
   assert(remoteRecordUpdate);
   assert.strictEqual(remoteRecordUpdate.item.matrixSourceVideoUrl, "");
+
+  const mixedPublishCountBefore = capturedPublishPayloads.length;
+  const mixedScheduledCountBefore = scheduledPublishRecords.length;
+  const mixedResult = await handlePublishVideos(
+    {
+      taskId: "matrix-task-mixed-immediate-test",
+      type: "publish_videos",
+      data: {
+        taskName: "Mixed immediate test",
+        scheduleMode: "immediate",
+        scheduleMixDistribution: true,
+        platforms: [platform],
+        accounts: [{ id: "account-1", phone: "13800138000", platform }],
+        videos: [
+          { id: "video-1", filePath: firstVideoPath },
+          { id: "video-2", filePath: secondVideoPath },
+        ],
+        publishItems: [
+          {
+            itemId: "mixed-immediate-item",
+            accountId: "account-1",
+            phone: "13800138000",
+            platform,
+            videoId: "video-1",
+            videoPath: firstVideoPath,
+            scheduledPublishAt: Date.now() - 1_000,
+            captionText: "Immediate item",
+          },
+          {
+            itemId: "mixed-scheduled-item",
+            accountId: "account-1",
+            phone: "13800138000",
+            platform,
+            videoId: "video-2",
+            videoPath: secondVideoPath,
+            scheduledPublishAt: Date.now() + 60 * 60 * 1_000,
+            captionText: "Scheduled item",
+          },
+        ],
+      },
+    },
+    wsClient,
+  );
+
+  assert.strictEqual(mixedResult.success, true);
+  assert.strictEqual(mixedResult.status, "running");
+  assert.strictEqual(mixedResult.total, 2);
+  assert.strictEqual(mixedResult.successCount, 1);
+  assert.strictEqual(mixedResult.failCount, 0);
+  assert.strictEqual(capturedPublishPayloads.length, mixedPublishCountBefore + 1);
+  assert.strictEqual(scheduledPublishRecords.length, mixedScheduledCountBefore + 1);
+  assert.strictEqual(scheduledPublishRecords.at(-1).matrixTaskId, "matrix-task-mixed-immediate-test");
+  assert.strictEqual(scheduledPublishRecords.at(-1).matrixItemId, "mixed-scheduled-item");
+  assert.deepStrictEqual(
+    mixedResult.results.map((item) => ({ itemId: item.itemId, success: item.success, status: item.status })),
+    [
+      { itemId: "mixed-immediate-item", success: true, status: undefined },
+      { itemId: "mixed-scheduled-item", success: undefined, status: "scheduled" },
+    ],
+  );
 
   console.log("test-websocket-publish-videos passed");
 }

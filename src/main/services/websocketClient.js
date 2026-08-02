@@ -23,6 +23,21 @@ const clientCapabilities = [
   'client.status',
 ];
 
+function getClientClockInfo(nowMs = Date.now()) {
+  let timeZone = '';
+  try {
+    timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  } catch (_) {
+    timeZone = process.env.TZ || '';
+  }
+
+  return {
+    timeZone,
+    utcOffsetMinutes: -new Date(nowMs).getTimezoneOffset(),
+    clientTimeMs: nowMs,
+  };
+}
+
 function isAxiosError(error) {
   return !!(error && (error.isAxiosError || error.name === 'AxiosError'));
 }
@@ -193,6 +208,7 @@ class WebSocketClient {
    */
   authenticate() {
     // TODO: 获取本地账号列表
+    const clockInfo = getClientClockInfo();
     const authData = {
       type: 'auth',
       clientType: config.clientType,
@@ -201,6 +217,7 @@ class WebSocketClient {
       appVersion: packageJson.version,
       protocolVersion,
       capabilities: clientCapabilities,
+      ...clockInfo,
       timestamp: Date.now(),
       // accounts: [], // 可用账号列表
     };
@@ -347,6 +364,7 @@ class WebSocketClient {
    * 发送客户端状态
    */
   sendStatus(statusData) {
+    const clockInfo = getClientClockInfo();
     this.socket.emit('status', {
       clientType: config.clientType,
       clientId: this.clientId,
@@ -354,6 +372,7 @@ class WebSocketClient {
       protocolVersion,
       capabilities: clientCapabilities,
       ...statusData,
+      ...clockInfo,
       timestamp: Date.now(),
     });
   }
@@ -423,12 +442,14 @@ class WebSocketClient {
    */
   sendHeartbeat() {
     if (this.isConnected) {
+      const clockInfo = getClientClockInfo();
       this.socket.emit('heartbeat', {
         clientType: config.clientType,
         clientId: this.clientId,
         appVersion: packageJson.version,
         protocolVersion,
         capabilities: clientCapabilities,
+        ...clockInfo,
         timestamp: Date.now()
       });
     }
@@ -474,4 +495,5 @@ function getWebSocketClient() {
 module.exports = {
   getWebSocketClient,
   WebSocketClient,
+  getClientClockInfo,
 };
