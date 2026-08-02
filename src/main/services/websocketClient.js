@@ -96,6 +96,7 @@ class WebSocketClient {
     this.heartbeatTimer = null; // 心跳定时器
     this.manualReconnectTimer = null; // 达到上限后的低频自恢复重连
     this.taskTypeById = new Map();
+    this.executionTokenByTaskId = new Map();
   }
 
   /**
@@ -245,6 +246,9 @@ class WebSocketClient {
   handleTask(taskData) {
     const { taskId, type } = taskData;
     this.taskTypeById.set(taskId, type);
+    if (taskData?.data?.executionToken) {
+      this.executionTokenByTaskId.set(taskId, taskData.data.executionToken);
+    }
 
     // 立即发送 ACK 确认收到任务
     this.sendAck(taskId);
@@ -259,6 +263,8 @@ class WebSocketClient {
             this.sendTaskResult(taskId, 'success', {
               action: 'publish_video',
               itemId: taskPayload.itemId || '',
+              idempotencyKey: taskPayload.idempotencyKey || '',
+              executionToken: taskPayload.executionToken || '',
               phone: taskPayload.phone || '',
               platform: taskPayload.platform || '',
               videoPath: taskPayload.videoPath || taskPayload.sourceFilePath || taskPayload.filePath || '',
@@ -281,6 +287,8 @@ class WebSocketClient {
             this.sendTaskResult(taskId, 'failed', {
               action: 'publish_video',
               itemId: taskPayload.itemId || '',
+              idempotencyKey: taskPayload.idempotencyKey || '',
+              executionToken: taskPayload.executionToken || '',
               phone: taskPayload.phone || '',
               platform: taskPayload.platform || '',
               videoPath: taskPayload.videoPath || taskPayload.sourceFilePath || taskPayload.filePath || '',
@@ -338,6 +346,7 @@ class WebSocketClient {
       console.log(`[WebSocket] 已发送任务结果: ${taskId}, 状态: ${status}`);
     }
     this.taskTypeById.delete(taskId);
+    this.executionTokenByTaskId.delete(taskId);
   }
 
   /**
@@ -351,6 +360,7 @@ class WebSocketClient {
       taskId,
       progress, // 0-100
       message,
+      executionToken: this.executionTokenByTaskId.get(taskId) || '',
       timestamp: Date.now(),
     };
 

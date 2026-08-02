@@ -11,6 +11,8 @@ import { isRemotePublishFile, resolvePublishFile } from "./resolvePublishFile";
 
 const MAX_TIMER_DELAY_MS = 24 * 60 * 60 * 1000;
 const REFRESH_INTERVAL_MS = 60 * 1000;
+const MAX_PUBLISH_ATTEMPTS = 4;
+const PUBLISH_RETRY_DELAYS_MS = [1_000, 3_000, 8_000];
 const scheduledTimers = new Map();
 let schedulerStarted = false;
 let refreshInterval = null;
@@ -89,6 +91,7 @@ export function createScheduledRecord(
     scheduledPublishAtText: parsed.text,
     publishStatus: "scheduled",
     publishAttemptCount: Number(recordItem.publishAttemptCount) || 1,
+    publishMaxAttempts: MAX_PUBLISH_ATTEMPTS,
     republishCount: Number(recordItem.republishCount) || 0,
     publishSuccessCount: Number(recordItem.publishSuccessCount) || 0,
     publishFailCount: Number(recordItem.publishFailCount) || 0,
@@ -209,6 +212,24 @@ function listScheduledRecords() {
   return rows;
 }
 
+export async function cancelScheduledPublishRecords(matrixTaskId) {
+  const targetTaskId = String(matrixTaskId || "").trim();
+  if (!targetTaskId) return 0;
+  const records = listScheduledRecords().filter((record) => String(record.matrixTaskId || "").trim() === targetTaskId);
+  for (const record of records) {
+    const key = `${record.date || ""}:${record.id}`;
+    const timer = scheduledTimers.get(key);
+    if (timer) clearTimeout(timer);
+    scheduledTimers.delete(key);
+    await changeData({
+      fileName: "pushData",
+      type: "delete",
+      item: { id: record.id, date: record.date },
+    });
+  }
+  return records.length;
+}
+
 function finishScheduledRecord(record, payload) {
   if (payload && payload.skipped) {
     updateRecord(record, {
@@ -320,7 +341,15 @@ async function executeScheduledRecordAsync(record) {
       lastPublishAt: Date.now(),
     });
 
-    await new Promise((resolve) => {
+    let finalPayload = null;
+    for (let attempt = 1; attempt <= MAX_PUBLISH_ATTEMPTS; attempt += 1) {
+      updateRecord(record, {
+        publishStatus: "publishing",
+        publishAttemptCount: attempt,
+        lastPublishMessage: attempt === 1 ? "定时任务开始发布" : `发布失败，正在进行第 ${attempt} 次重试`,
+        lastPublishAt: Date.now(),
+      });
+      const attemptPayload = await new Promise((resolve) => {
       let publishSettled = false;
       const finish = () => {
         if (publishSettled) return;
@@ -332,21 +361,23 @@ async function executeScheduledRecordAsync(record) {
           if (payload && payload.taskId != null && payload.taskId !== taskId)
             return;
           if (channel === "puppeteerFile-done") {
-            finishScheduledRecord(record, payload);
+            resolve(payload);
             finish();
           } else if (channel === "puppeteer-noLogin") {
-            updateRecord(record, {
-              publishStatus: "failed",
-              publishFailCount: 1,
-              lastPublishMessage: "登录态异常或未登录",
-              lastPublishAt: Date.now(),
-            });
+            resolve({ status: false, message: "登录态异常或未登录" });
             finish();
           }
         },
       };
       runPuppeteerTask(taskPayload, transport, () => {});
-    });
+      });
+      finalPayload = attemptPayload;
+      if (attemptPayload?.status === true || attemptPayload?.skipped) break;
+      if (attempt < MAX_PUBLISH_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, PUBLISH_RETRY_DELAYS_MS[attempt - 1]));
+      }
+    }
+    finishScheduledRecord(record, finalPayload || { status: false, message: "定时发布执行失败" });
   } finally {
     if (cleanupDownload) cleanupDownload();
   }

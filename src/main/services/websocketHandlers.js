@@ -17,11 +17,13 @@ import { getAccountLoginStatus, getAccountPartition } from './accountLoginStatus
 import { openAccountLoginWindow } from './accountLoginWindow';
 import { resolvePublishFile } from './resolvePublishFile';
 import { getAppSettings } from './appSettings';
-import { createScheduledRecord, schedulePublishRecord, subscribeScheduledPublishEvents } from './scheduledPublish';
+import { cancelScheduledPublishRecords, createScheduledRecord, schedulePublishRecord, subscribeScheduledPublishEvents } from './scheduledPublish';
 import { resolveTaskTransportStatus } from './taskResultStatus';
 
 const LOGIN_STATUS_WATCH_INTERVAL_MS = 3_000;
 const LOGIN_STATUS_WATCH_TIMEOUT_MS = 10 * 60 * 1_000;
+const PUBLISH_MAX_ATTEMPTS = 4;
+const PUBLISH_RETRY_DELAYS_MS = [1_000, 3_000, 8_000];
 const activeLoginStatusWatches = new Map();
 
 /**
@@ -95,7 +97,8 @@ function getAllPushDataRecords() {
 function normalizePublishSnapshotStatus(record) {
   const rawStatus = cleanText(record?.publishStatus).toLowerCase();
   if (rawStatus === 'success') return 'success';
-  if (rawStatus === 'failed' || rawStatus === 'skipped' || rawStatus === 'interrupted' || rawStatus === 'expired') {
+  if (rawStatus === 'expired') return 'expired';
+  if (rawStatus === 'failed' || rawStatus === 'skipped' || rawStatus === 'interrupted') {
     return 'failed';
   }
   if (rawStatus === 'publishing' || rawStatus === 'scheduled') return 'running';
@@ -107,23 +110,26 @@ function normalizePublishSnapshotStatus(record) {
 function summarizePublishSnapshotStatus(results) {
   const successCount = results.filter(item => item.status === 'success').length;
   const failCount = results.filter(item => item.status === 'failed').length;
+  const expiredCount = results.filter(item => item.status === 'expired').length;
   const runningCount = results.filter(item => item.status === 'running').length;
   const pendingCount = results.filter(item => item.status === 'pending').length;
   const total = results.length;
 
   const status =
-    runningCount > 0 ? 'running'
+    expiredCount > 0 && successCount === 0 && failCount === 0 ? 'expired'
+      : runningCount > 0 ? 'running'
       : failCount > 0 && successCount > 0 ? 'partial'
         : failCount > 0 && successCount === 0 && pendingCount === 0 ? 'failed'
           : total > 0 && successCount >= total ? 'completed'
             : pendingCount > 0 ? 'running'
               : successCount > 0 ? 'partial'
-                : 'running';
+      : 'running';
 
   return {
     total,
     successCount,
     failCount,
+    expiredCount,
     runningCount,
     pendingCount,
     status,
@@ -911,6 +917,8 @@ function createLocalPublishData({
   coverPath,
   location,
   show,
+  idempotencyKey,
+  executionToken,
 }) {
   const localRecordName = cleanText(taskName) || title || path.basename(videoPath);
   const shortTitle = description || (platform === '视频号' ? title : '');
@@ -949,6 +957,8 @@ function createLocalPublishData({
     pt: platform,
     phone,
     matrixItemId: cleanText(itemId),
+    idempotencyKey: cleanText(idempotencyKey),
+    executionToken: cleanText(executionToken),
     matrixSourceVideoPath: cleanText(sourceVideoPath || videoPath),
     matrixSourceVideoUrl: cleanText(sourceVideoUrl),
     date: formatDateKey(new Date()),
@@ -990,6 +1000,10 @@ function normalizeLocalPublishData(localPublishRecord, overrides = {}) {
   return next;
 }
 
+function waitForPublishRetry(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
 function sendBatchPublishItemResult(wsClient, taskId, payload) {
   if (!wsClient || typeof wsClient.sendTaskResult !== 'function') {
     return;
@@ -1013,6 +1027,7 @@ function sendBatchPublishItemResult(wsClient, taskId, payload) {
     total: payload.total,
     successCount: payload.successCount,
     failCount: payload.failCount,
+    executionToken: payload.detail.executionToken || '',
     results: [payload.detail],
     message: isDone
       ? `批量发布完成：成功 ${payload.successCount}，失败 ${payload.failCount}`
@@ -1128,6 +1143,8 @@ async function deferMixedImmediatePublishItems(publishQueue, taskId, nowMs = Dat
     schedulePublishRecord(scheduledRecord, nowMs);
     scheduledResults.push({
       itemId: queued.itemId,
+      idempotencyKey: queued.idempotencyKey,
+      executionToken: queued.executionToken,
       phone: queued.phone,
       platform: queued.platform,
       videoPath: queued.videoPath,
@@ -1161,6 +1178,8 @@ export async function handlePublishVideo(taskData, wsClient) {
     location,
     progressRange,
     localPublishRecord,
+    idempotencyKey,
+    executionToken,
   } = data;
   let cleanupDownloadedVideo = null;
 
@@ -1251,6 +1270,8 @@ export async function handlePublishVideo(taskData, wsClient) {
     const publishOverrides = {
       taskId,
       itemId,
+      idempotencyKey,
+      executionToken,
       phone,
       pt: platform,
       partition,
@@ -1281,6 +1302,8 @@ export async function handlePublishVideo(taskData, wsClient) {
         coverPath,
         location,
         show: data.show,
+        idempotencyKey,
+        executionToken,
       });
 
     // 请求里的 location 必须落到 dy.js 读取的 data.address（含带 localPublishRecord 的重发）
@@ -1515,6 +1538,10 @@ export async function handlePublishVideos(taskData, wsClient) {
     : publishAccounts.flatMap(account => videos.map(video => ({ account, video })));
   const total = publishPairs.length;
 
+  if (data.replaceExisting === true && cleanText(data.matrixTaskId)) {
+    await cancelScheduledPublishRecords(data.matrixTaskId);
+  }
+
   if (!publishAccounts.length) {
     throw new Error('没有可发布的账号');
   }
@@ -1547,6 +1574,8 @@ export async function handlePublishVideos(taskData, wsClient) {
     const publishData = createLocalPublishData({
       taskId,
       itemId: cleanText(plannedItem?.itemId) || publishItemIds[detailIndex] || '',
+      idempotencyKey: cleanText(plannedItem?.idempotencyKey),
+      executionToken: cleanText(data.executionToken),
       phone,
       platform,
       partition,
@@ -1560,6 +1589,8 @@ export async function handlePublishVideos(taskData, wsClient) {
 
     publishQueue.push({
       itemId: cleanText(plannedItem?.itemId) || publishItemIds[detailIndex] || '',
+      idempotencyKey: cleanText(plannedItem?.idempotencyKey),
+      executionToken: cleanText(data.executionToken),
       serverId: getRemoteVideoCacheKey({
         itemId: publishItemIds[detailIndex] || '',
         video,
@@ -1573,6 +1604,8 @@ export async function handlePublishVideos(taskData, wsClient) {
       download,
       publishText,
       publishData,
+      idempotencyKey,
+      executionToken,
       currentIndex,
       progressStart,
       progressEnd,
@@ -1608,6 +1641,8 @@ export async function handlePublishVideos(taskData, wsClient) {
       schedulePublishRecord(scheduledRecord);
       scheduledResults.push({
         itemId: queued.itemId,
+        idempotencyKey: queued.idempotencyKey,
+        executionToken: queued.executionToken,
         phone: queued.phone,
         platform: queued.platform,
         videoPath: queued.videoPath,
@@ -1624,6 +1659,7 @@ export async function handlePublishVideos(taskData, wsClient) {
       total,
       successCount: 0,
       failCount: 0,
+      executionToken: cleanText(data.executionToken),
       results: scheduledResults,
       message: `已写入 ${scheduledResults.length} 条定时发布计划`,
     };
@@ -1671,31 +1707,52 @@ export async function handlePublishVideos(taskData, wsClient) {
     try {
       wsClient.sendProgress(taskId, Number(progressStart.toFixed(2)), `正在发布 ${currentIndex}/${total}`);
 
-      const result = await handlePublishVideo({
-        taskId,
-        type: 'publish_video',
-        data: {
-          phone,
-          platform,
-          itemId,
-          serverId,
-          partition,
-          videoUrl,
-          videoPath,
-          download,
-          taskName,
-          title: publishText.title,
-          description: publishText.description,
-          tags: publishText.tags,
-          localPublishRecord: publishData,
-          progressRange: {
-            start: progressStart,
-            end: progressEnd,
-          },
-          skipPublishPreflight:
-            douyinBatchPreflightCompleted && platform === '抖音',
-        },
-      }, wsClient);
+      let result;
+      let lastError;
+      let attemptCount = 0;
+      for (let attempt = 1; attempt <= PUBLISH_MAX_ATTEMPTS; attempt += 1) {
+        attemptCount = attempt;
+        try {
+          result = await handlePublishVideo({
+            taskId,
+            type: 'publish_video',
+            data: {
+              phone,
+              platform,
+              itemId,
+              idempotencyKey,
+              executionToken,
+              serverId,
+              partition,
+              videoUrl,
+              videoPath,
+              download,
+              taskName,
+              title: publishText.title,
+              description: publishText.description,
+              tags: publishText.tags,
+              localPublishRecord: publishData,
+              progressRange: {
+                start: progressStart,
+                end: progressEnd,
+              },
+              skipPublishPreflight:
+                douyinBatchPreflightCompleted && platform === '抖音',
+            },
+          }, wsClient);
+          break;
+        } catch (error) {
+          lastError = error;
+          if (attempt < PUBLISH_MAX_ATTEMPTS) {
+            wsClient.sendProgress(taskId, Number(progressStart.toFixed(2)), `发布失败，${PUBLISH_RETRY_DELAYS_MS[attempt - 1] / 1000} 秒后自动重试（${attempt}/${PUBLISH_MAX_ATTEMPTS - 1}）`);
+            await waitForPublishRetry(PUBLISH_RETRY_DELAYS_MS[attempt - 1]);
+          }
+        }
+      }
+      if (!result) {
+        lastError.attemptCount = attemptCount;
+        throw lastError;
+      }
 
       successCount += 1;
       const detail = {
@@ -1705,6 +1762,9 @@ export async function handlePublishVideos(taskData, wsClient) {
         platform,
         videoPath,
         videoUrl,
+        idempotencyKey,
+        executionToken,
+        attemptCount,
         result,
       };
       results.push(detail);
@@ -1726,6 +1786,9 @@ export async function handlePublishVideos(taskData, wsClient) {
         platform,
         videoPath,
         videoUrl,
+        idempotencyKey,
+        executionToken,
+        attemptCount,
         error: message,
         ...(diagnostic ? { diagnostic } : {}),
       };
@@ -1757,6 +1820,7 @@ export async function handlePublishVideos(taskData, wsClient) {
       total,
       successCount,
       failCount,
+      executionToken: cleanText(data.executionToken),
       results: [...results, ...scheduledResults],
       message: `已安排 ${scheduledResults.length} 条分散发布计划`,
     };
@@ -1772,6 +1836,7 @@ export async function handlePublishVideos(taskData, wsClient) {
     total,
     successCount,
     failCount,
+    executionToken: cleanText(data.executionToken),
     results,
     message: `批量发布完成：成功 ${successCount}，失败 ${failCount}`,
   };
@@ -1950,19 +2015,22 @@ export function registerWebSocketHandlers(wsClient) {
       return;
     }
 
-    if (record.publishStatus === 'success' || record.publishStatus === 'failed' || record.publishStatus === 'skipped') {
+    if (record.publishStatus === 'success' || record.publishStatus === 'failed' || record.publishStatus === 'skipped' || record.publishStatus === 'expired') {
       const success = record.publishStatus === 'success';
       wsClient.sendTaskResult(matrixTaskId, 'success', {
         action: 'publish_videos',
         status: 'running',
+        executionToken: cleanText(record.executionToken),
         results: [{
           itemId,
+          idempotencyKey: cleanText(record.idempotencyKey),
+          executionToken: cleanText(record.executionToken),
           phone: record.phone,
           platform: record.pt,
           videoPath: record.filePath,
           success,
           status: success ? 'success' : record.publishStatus,
-          error: success ? '' : record.lastPublishMessage || '发布失败',
+          error: success ? '' : record.lastPublishMessage || (record.publishStatus === 'expired' ? '错过发布时间' : '发布失败'),
         }],
       });
     }
