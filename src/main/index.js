@@ -181,9 +181,9 @@ startApplication();
 
 function onAppReady() {
   const appSettings = getAppSettings();
+  startMatrixWebSocketClient();
   startScheduledPublishScheduler();
   startBuiltInHttpServer();
-  startMatrixWebSocketClient();
   initWindow((win) => {
     mainWin = win;
 

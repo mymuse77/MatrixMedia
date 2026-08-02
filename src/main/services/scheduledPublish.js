@@ -8,6 +8,7 @@ import { runPuppeteerTask } from "./puppeteerFile";
 import { changeData } from "../server/utils";
 import { normalizeCreativeStatement } from "../../shared/creativeStatement.js";
 import { isRemotePublishFile, resolvePublishFile } from "./resolvePublishFile";
+import { notifyPublishSuccess } from "./publishNotification";
 
 const MAX_TIMER_DELAY_MS = 24 * 60 * 60 * 1000;
 const REFRESH_INTERVAL_MS = 60 * 1000;
@@ -243,6 +244,13 @@ function finishScheduledRecord(record, payload) {
     return;
   }
   const ok = payload && payload.status === true;
+  if (ok) {
+    notifyPublishSuccess({
+      phone: record.phone,
+      platform: record.pt,
+      videoName: record.filePath || record.sourceVideoUrl || record.selectedFile,
+    });
+  }
   updateRecord(record, {
     publishStatus: ok ? "success" : "failed",
     publishSuccessCount: ok ? 1 : 0,

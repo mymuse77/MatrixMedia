@@ -144,6 +144,19 @@ function normalizeRequestHeaders(headers) {
   return Object.keys(normalized).length ? normalized : undefined;
 }
 
+function normalizeDownloadError(error) {
+  const status = Number(error?.response?.status);
+  const responseText = typeof error?.response?.data === "string"
+    ? error.response.data.replace(/\s+/g, " ").trim().slice(0, 240)
+    : "";
+  const baseMessage = String(error?.message || "远程视频下载失败").trim() || "远程视频下载失败";
+  const statusText = Number.isFinite(status) && status > 0 ? `（HTTP ${status}）` : "";
+  const detailText = responseText ? `：${responseText}` : "";
+  const safeError = new Error(`下载视频失败${statusText}${detailText || `：${baseMessage}`}`);
+  if (error?.code) safeError.code = String(error.code);
+  return safeError;
+}
+
 /**
  * 将发布 file 解析为本地路径；若为 http(s) URL 则下载到可复用缓存目录。
  * @param {string} file 本地路径或 http(s) URL
@@ -271,16 +284,18 @@ export async function resolvePublishFile(file, options = {}) {
       cleanup: null,
     };
   } catch (error) {
+    const safeError = normalizeDownloadError(error);
     console.error(
       "[resolvePublishFile] 下载失败:",
       JSON.stringify({
         remoteUrl: raw,
         localPath,
-        error: error && error.message ? error.message : String(error),
+        error: safeError.message,
+        code: safeError.code || undefined,
       })
     );
     safeUnlink(partPath);
-    throw error;
+    throw safeError;
   } finally {
     if (activeDownloads.get(localPath) === downloadPromise) {
       activeDownloads.delete(localPath);

@@ -17,6 +17,7 @@ import { getAccountLoginStatus, getAccountPartition } from './accountLoginStatus
 import { openAccountLoginWindow } from './accountLoginWindow';
 import { resolvePublishFile } from './resolvePublishFile';
 import { getAppSettings } from './appSettings';
+import { notifyPublishSuccess } from './publishNotification';
 import { cancelScheduledPublishRecords, createScheduledRecord, schedulePublishRecord, subscribeScheduledPublishEvents } from './scheduledPublish';
 import { resolveTaskTransportStatus } from './taskResultStatus';
 
@@ -1379,6 +1380,11 @@ export async function handlePublishVideo(taskData, wsClient) {
         if (settled) return;
         settled = true;
         await updateLocalPublishRecord(publishData, 'success', message || '视频发布成功');
+        notifyPublishSuccess({
+          phone,
+          platform,
+          videoName: localVideoPath || videoPath || videoUrl || title,
+        });
         cleanupOnce();
         resolve(result);
       };
@@ -1604,8 +1610,6 @@ export async function handlePublishVideos(taskData, wsClient) {
       download,
       publishText,
       publishData,
-      idempotencyKey,
-      executionToken,
       currentIndex,
       progressStart,
       progressEnd,
@@ -1617,39 +1621,46 @@ export async function handlePublishVideos(taskData, wsClient) {
 
   if (cleanText(data.scheduleMode) === 'scheduled') {
     const scheduledResults = [];
-    for (const queued of publishQueue) {
-      const publishAt = formatScheduledPublishAt(queued.scheduledPublishAt);
-      if (!publishAt) {
-        throw new Error('定时发布任务缺少有效发布时间');
-      }
-      let scheduledFilePath = queued.videoPath;
-      if (queued.videoUrl) {
-        const cachedVideo = await resolvePublishFile(queued.videoUrl, {
-          headers: queued.download?.headers || queued.downloadHeaders,
-          cacheKey: queued.itemId || queued.serverId,
+    try {
+      for (const queued of publishQueue) {
+        const publishAt = formatScheduledPublishAt(queued.scheduledPublishAt);
+        if (!publishAt) {
+          throw new Error('定时发布任务缺少有效发布时间');
+        }
+        let scheduledFilePath = queued.videoPath;
+        if (queued.videoUrl) {
+          const cachedVideo = await resolvePublishFile(queued.videoUrl, {
+            headers: queued.download?.headers || queued.downloadHeaders,
+            cacheKey: queued.itemId || queued.serverId,
+          });
+          scheduledFilePath = cachedVideo.localPath;
+        }
+        const scheduledRecord = createScheduledRecord({
+          ...queued.publishData,
+          matrixTaskId: taskId,
+          matrixItemId: queued.itemId,
+          filePath: scheduledFilePath,
+          sourceVideoUrl: queued.videoUrl || '',
+        }, publishAt);
+        await changeData({ type: 'add', fileName: 'pushData', item: scheduledRecord });
+        schedulePublishRecord(scheduledRecord);
+        scheduledResults.push({
+          itemId: queued.itemId,
+          idempotencyKey: queued.idempotencyKey,
+          executionToken: queued.executionToken,
+          phone: queued.phone,
+          platform: queued.platform,
+          videoPath: queued.videoPath,
+          videoUrl: queued.videoUrl,
+          status: 'scheduled',
+          scheduledPublishAt: queued.scheduledPublishAt,
         });
-        scheduledFilePath = cachedVideo.localPath;
       }
-      const scheduledRecord = createScheduledRecord({
-        ...queued.publishData,
-        matrixTaskId: taskId,
-        matrixItemId: queued.itemId,
-        filePath: scheduledFilePath,
-        sourceVideoUrl: queued.videoUrl || '',
-      }, publishAt);
-      await changeData({ type: 'add', fileName: 'pushData', item: scheduledRecord });
-      schedulePublishRecord(scheduledRecord);
-      scheduledResults.push({
-        itemId: queued.itemId,
-        idempotencyKey: queued.idempotencyKey,
-        executionToken: queued.executionToken,
-        phone: queued.phone,
-        platform: queued.platform,
-        videoPath: queued.videoPath,
-        videoUrl: queued.videoUrl,
-        status: 'scheduled',
-        scheduledPublishAt: queued.scheduledPublishAt,
+    } catch (error) {
+      await cancelScheduledPublishRecords(taskId).catch((cleanupError) => {
+        console.warn('[WebSocket] 清理失败的定时发布计划失败:', cleanupError?.message || cleanupError);
       });
+      throw error;
     }
     wsClient.sendProgress(taskId, 100, `已写入 ${scheduledResults.length} 条定时发布计划`);
     return {
@@ -1667,24 +1678,51 @@ export async function handlePublishVideos(taskData, wsClient) {
 
   const isMixedImmediatePublish =
     cleanText(data.scheduleMode) === 'immediate' && data.scheduleMixDistribution === true;
-  const mixedImmediateSchedule = isMixedImmediatePublish
-    ? await deferMixedImmediatePublishItems(publishQueue, taskId)
-    : { immediateQueue: publishQueue, scheduledResults: [] };
+  let mixedImmediateSchedule;
+  try {
+    mixedImmediateSchedule = isMixedImmediatePublish
+      ? await deferMixedImmediatePublishItems(publishQueue, taskId)
+      : { immediateQueue: publishQueue, scheduledResults: [] };
+  } catch (error) {
+    await cancelScheduledPublishRecords(taskId).catch((cleanupError) => {
+      console.warn('[WebSocket] 清理失败的分散发布计划失败:', cleanupError?.message || cleanupError);
+    });
+    throw error;
+  }
   const immediatePublishQueue = mixedImmediateSchedule.immediateQueue;
   const scheduledResults = mixedImmediateSchedule.scheduledResults;
 
-  const douyinBatchPreflightCompleted = await preflightDouyinBatchAccounts({
-    publishQueue: immediatePublishQueue,
-    taskId,
-    wsClient,
-  });
-
-  for (const queued of immediatePublishQueue) {
-    await changeData({
-      type: 'add',
-      fileName: 'pushData',
-      item: queued.publishData,
+  let douyinBatchPreflightCompleted;
+  try {
+    douyinBatchPreflightCompleted = await preflightDouyinBatchAccounts({
+      publishQueue: immediatePublishQueue,
+      taskId,
+      wsClient,
     });
+  } catch (error) {
+    if (scheduledResults.length > 0) {
+      await cancelScheduledPublishRecords(taskId).catch((cleanupError) => {
+        console.warn('[WebSocket] 清理预检失败后的分散发布计划失败:', cleanupError?.message || cleanupError);
+      });
+    }
+    throw error;
+  }
+
+  try {
+    for (const queued of immediatePublishQueue) {
+      await changeData({
+        type: 'add',
+        fileName: 'pushData',
+        item: queued.publishData,
+      });
+    }
+  } catch (error) {
+    if (scheduledResults.length > 0) {
+      await cancelScheduledPublishRecords(taskId).catch((cleanupError) => {
+        console.warn('[WebSocket] 清理本地记录失败后的分散发布计划失败:', cleanupError?.message || cleanupError);
+      });
+    }
+    throw error;
   }
 
   for (const queued of immediatePublishQueue) {
@@ -1699,17 +1737,19 @@ export async function handlePublishVideos(taskData, wsClient) {
       download,
       publishText,
       publishData,
+      idempotencyKey,
+      executionToken,
       currentIndex,
       progressStart,
       progressEnd,
     } = queued;
+    let attemptCount = 0;
 
     try {
       wsClient.sendProgress(taskId, Number(progressStart.toFixed(2)), `正在发布 ${currentIndex}/${total}`);
 
       let result;
       let lastError;
-      let attemptCount = 0;
       for (let attempt = 1; attempt <= PUBLISH_MAX_ATTEMPTS; attempt += 1) {
         attemptCount = attempt;
         try {
@@ -1923,6 +1963,7 @@ export async function handleGetPublishTaskStatus(taskData, wsClient) {
           success: status === 'success',
           error: status === 'failed' ? cleanText(record.lastPublishMessage) || '发布失败' : '',
           message: cleanText(record.lastPublishMessage),
+          executionToken: cleanText(record.executionToken),
           lastPublishAt: Number(record.lastPublishAt) || 0,
           date: cleanText(record.date),
         };
@@ -1930,6 +1971,7 @@ export async function handleGetPublishTaskStatus(taskData, wsClient) {
       .sort((left, right) => (right.lastPublishAt || 0) - (left.lastPublishAt || 0));
 
     const summary = summarizePublishSnapshotStatus(results);
+    const executionTokens = [...new Set(results.map((item) => cleanText(item.executionToken)).filter(Boolean))];
 
     wsClient.sendProgress(taskId, 100, `已同步 ${summary.total} 条发布状态`);
 
@@ -1943,6 +1985,7 @@ export async function handleGetPublishTaskStatus(taskData, wsClient) {
       failCount: summary.failCount,
       runningCount: summary.runningCount,
       pendingCount: summary.pendingCount,
+      executionToken: executionTokens.length === 1 ? executionTokens[0] : '',
       results,
       message: `已同步 ${summary.total} 条发布状态`,
     };
@@ -1950,6 +1993,25 @@ export async function handleGetPublishTaskStatus(taskData, wsClient) {
     console.error('[WebSocket] 获取发布任务状态失败:', error);
     throw error;
   }
+}
+
+export async function handleCancelPublishSchedule(taskData, wsClient) {
+  const { taskId, data = {} } = taskData;
+  const matrixTaskId = cleanText(data.matrixTaskId);
+  if (!matrixTaskId) {
+    throw new Error('缺少 matrixTaskId');
+  }
+
+  wsClient.sendProgress(taskId, 50, '正在取消本地定时发布计划');
+  const canceledCount = await cancelScheduledPublishRecords(matrixTaskId);
+  wsClient.sendProgress(taskId, 100, `已取消 ${canceledCount} 条本地定时发布计划`);
+  return {
+    success: true,
+    action: 'cancel_publish_schedule',
+    matrixTaskId,
+    canceledCount,
+    message: `已取消 ${canceledCount} 条本地定时发布计划`,
+  };
 }
 
 /**
@@ -2085,7 +2147,11 @@ export function registerWebSocketHandlers(wsClient) {
     handleGetPublishTaskStatus(taskData, wsClient)
   );
 
-  // 10. 获取客户端状态
+  wsClient.registerTaskHandler('cancel_publish_schedule', (taskData) =>
+    handleCancelPublishSchedule(taskData, wsClient)
+  );
+
+  // 11. 获取客户端状态
   wsClient.registerTaskHandler('get_client_status', (taskData) =>
     handleGetClientStatus(taskData, wsClient)
   );

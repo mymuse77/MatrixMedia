@@ -19,6 +19,7 @@ const clientCapabilities = [
   'publish.video',
   'publish.videos',
   'publish.remote-url',
+  'publish.schedule.cancel',
   'publish.history',
   'client.status',
 ];
@@ -281,7 +282,9 @@ class WebSocketClient {
           );
         })
         .catch((error) => {
-          console.error(`[WebSocket] 任务执行失败 (${taskId}):`, formatTaskError(error));
+          const errorSummary = formatTaskError(error);
+          const errorMessage = errorSummary.message || '任务执行失败';
+          console.error(`[WebSocket] 任务执行失败 (${taskId}):`, errorSummary);
           if (type === 'publish_video') {
             const taskPayload = taskData && typeof taskData.data === 'object' && taskData.data !== null ? taskData.data : {};
             this.sendTaskResult(taskId, 'failed', {
@@ -293,12 +296,24 @@ class WebSocketClient {
               platform: taskPayload.platform || '',
               videoPath: taskPayload.videoPath || taskPayload.sourceFilePath || taskPayload.filePath || '',
               videoUrl: taskPayload.videoUrl || taskPayload.url || '',
-              error: error.message,
+              error: errorMessage,
             });
             return;
           }
 
-          this.sendTaskResult(taskId, 'failed', { error: error.message });
+          if (type === 'publish_videos') {
+            const taskPayload = taskData && typeof taskData.data === 'object' && taskData.data !== null ? taskData.data : {};
+            this.sendTaskResult(taskId, 'failed', {
+              action: 'publish_videos',
+              success: false,
+              status: 'failed',
+              executionToken: taskPayload.executionToken || '',
+              error: errorMessage,
+            });
+            return;
+          }
+
+          this.sendTaskResult(taskId, 'failed', { error: errorMessage });
         });
     } else {
       console.warn(`[WebSocket] 未找到任务类型 "${type}" 的处理器`);
@@ -345,8 +360,13 @@ class WebSocketClient {
     if (this.shouldLogTask(taskId)) {
       console.log(`[WebSocket] 已发送任务结果: ${taskId}, 状态: ${status}`);
     }
-    this.taskTypeById.delete(taskId);
-    this.executionTokenByTaskId.delete(taskId);
+    const resultData = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+    const businessStatus = String(resultData.status || '').toLowerCase();
+    const keepsExecutionContext = businessStatus === 'running' || businessStatus === 'scheduled';
+    if (!keepsExecutionContext) {
+      this.taskTypeById.delete(taskId);
+      this.executionTokenByTaskId.delete(taskId);
+    }
   }
 
   /**
