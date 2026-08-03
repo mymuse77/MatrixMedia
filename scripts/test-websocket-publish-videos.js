@@ -69,6 +69,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
 
   if (request === "./resolvePublishFile") {
     return {
+      isRemotePublishFile: (file) => /^https?:\/\//i.test(String(file || "").trim()),
       resolvePublishFile: async (file, options = {}) => {
         resolvePublishCalls.push({ file, options });
         const raw = String(file || "").trim();
@@ -131,6 +132,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
 
   if (request === "./scheduledPublish") {
     return {
+      cancelScheduledPublishRecords: async () => 0,
       createScheduledRecord: (publishData, scheduledPublishAt) => ({
         ...publishData,
         id: `scheduled-${scheduledPublishRecords.length + 1}`,
@@ -148,6 +150,12 @@ Module._load = function patchedLoad(request, parent, isMain) {
   if (request === "./accountLoginWindow") {
     return {
       openAccountLoginWindow: async () => ({ ok: true }),
+    };
+  }
+
+  if (request === "./appSettings") {
+    return {
+      getAppSettings: () => ({ webSocketServerUrl: "https://matrix.example.com" }),
     };
   }
 
@@ -431,6 +439,39 @@ async function main() {
   );
   assert(remoteRecordUpdate);
   assert.strictEqual(remoteRecordUpdate.item.matrixSourceVideoUrl, "");
+
+  const scheduledResolveCountBefore = resolvePublishCalls.length;
+  const scheduledResult = await handlePublishVideos(
+    {
+      taskId: "matrix-task-scheduled-preload-test",
+      type: "publish_videos",
+      data: {
+        taskName: "Scheduled preload test",
+        scheduleMode: "scheduled",
+        platforms: [platform],
+        accounts: [{ id: "account-1", phone: "13800138000", platform }],
+        videos: [{ id: "scheduled-video", videoPath: "http://127.0.0.1:3000/api/matrix/publish/download/job-1/0" }],
+        publishItems: [{
+          itemId: "scheduled-item",
+          accountId: "account-1",
+          phone: "13800138000",
+          platform,
+          videoId: "scheduled-video",
+          videoPath: "http://127.0.0.1:3000/api/matrix/publish/download/job-1/0",
+          scheduledPublishAt: Date.now() + 60 * 60 * 1_000,
+          captionText: "Scheduled caption",
+        }],
+        captions: [],
+      },
+    },
+    wsClient,
+  );
+
+  assert.strictEqual(scheduledResult.status, "scheduled");
+  assert.strictEqual(resolvePublishCalls.length, scheduledResolveCountBefore + 1);
+  assert.strictEqual(resolvePublishCalls.at(-1).file, "https://matrix.example.com/api/matrix/publish/download/job-1/0");
+  assert.notStrictEqual(scheduledPublishRecords.at(-1).filePath, "http://127.0.0.1:3000/api/matrix/publish/download/job-1/0");
+  assert.strictEqual(scheduledPublishRecords.at(-1).matrixItemId, "scheduled-item");
 
   const mixedPublishCountBefore = capturedPublishPayloads.length;
   const mixedScheduledCountBefore = scheduledPublishRecords.length;

@@ -8,6 +8,7 @@ import { runPuppeteerTask } from "./puppeteerFile";
 import { changeData } from "../server/utils";
 import { normalizeCreativeStatement } from "../../shared/creativeStatement.js";
 import { isRemotePublishFile, resolvePublishFile } from "./resolvePublishFile";
+import { getAppSettings } from "./appSettings";
 import { notifyPublishSuccess } from "./publishNotification";
 
 const MAX_TIMER_DELAY_MS = 24 * 60 * 60 * 1000;
@@ -15,6 +16,7 @@ const REFRESH_INTERVAL_MS = 60 * 1000;
 const MAX_PUBLISH_ATTEMPTS = 4;
 const PUBLISH_RETRY_DELAYS_MS = [1_000, 3_000, 8_000];
 const scheduledTimers = new Map();
+const scheduledPreloadPromises = new Map();
 let schedulerStarted = false;
 let refreshInterval = null;
 const scheduledPublishListeners = new Set();
@@ -188,6 +190,87 @@ function updateRecord(record, patch) {
   emitScheduledPublishEvent(record, patch);
 }
 
+function getScheduledRecordKey(record) {
+  return `${record?.date || ""}:${record?.id || ""}`;
+}
+
+function isLoopbackHostname(hostname) {
+  const normalized = String(hostname || "").trim().toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
+}
+
+function normalizeScheduledVideoUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  let serverOrigin = "";
+  try {
+    const configuredUrl = String(getAppSettings()?.webSocketServerUrl || "").trim();
+    serverOrigin = configuredUrl ? new URL(configuredUrl).origin : "";
+  } catch (_) {
+    serverOrigin = "";
+  }
+  if (!serverOrigin) return raw;
+
+  try {
+    const serviceUrl = new URL(serverOrigin);
+    if (/^https?:\/\//i.test(raw)) {
+      const sourceUrl = new URL(raw);
+      if (isLoopbackHostname(sourceUrl.hostname) && !isLoopbackHostname(serviceUrl.hostname)) {
+        return new URL(sourceUrl.pathname + sourceUrl.search + sourceUrl.hash, serviceUrl).toString();
+      }
+      return sourceUrl.toString();
+    }
+    return new URL(raw, serviceUrl).toString();
+  } catch (_) {
+    return raw;
+  }
+}
+
+async function preloadScheduledRecord(record) {
+  if (!record || record.textType === "article") return record;
+
+  const localPath = String(record.filePath || "").trim();
+  if (localPath && !isRemotePublishFile(localPath) && fs.existsSync(localPath)) {
+    return record;
+  }
+
+  const sourceUrl = normalizeScheduledVideoUrl(record.sourceVideoUrl || (isRemotePublishFile(localPath) ? localPath : ""));
+  if (!sourceUrl) {
+    throw new Error("定时发布视频缺少可下载地址");
+  }
+
+  const key = getScheduledRecordKey(record);
+  const existingPromise = scheduledPreloadPromises.get(key);
+  if (existingPromise) return existingPromise;
+
+  const preloadPromise = resolvePublishFile(sourceUrl, {
+    headers: record.downloadHeaders,
+    cacheKey: record.matrixItemId || record.serverId || record.itemId || record.id,
+  }).then((resolved) => {
+    if (!resolved?.localPath || !fs.existsSync(resolved.localPath)) {
+      throw new Error("视频预下载完成但本地缓存不存在");
+    }
+
+    const patch = {
+      filePath: resolved.localPath,
+      selectedFile: path.basename(resolved.localPath),
+      sourceVideoUrl: sourceUrl,
+      lastPublishMessage: "视频已预下载，等待定时发布",
+      lastPublishAt: Date.now(),
+    };
+    updateRecord(record, patch);
+    return { ...record, ...patch };
+  }).finally(() => {
+    if (scheduledPreloadPromises.get(key) === preloadPromise) {
+      scheduledPreloadPromises.delete(key);
+    }
+  });
+
+  scheduledPreloadPromises.set(key, preloadPromise);
+  return preloadPromise;
+}
+
 function listScheduledRecords() {
   const result = changeData({
     fileName: "pushData",
@@ -277,46 +360,14 @@ function executeScheduledRecord(record) {
 async function executeScheduledRecordAsync(record) {
   if (!record || !record.id) return;
 
-  let cleanupDownload = null;
   let publishFilePath = record.filePath;
 
   if (record.textType !== "article") {
-    if (!publishFilePath) {
+    if (!publishFilePath || isRemotePublishFile(publishFilePath) || !fs.existsSync(publishFilePath)) {
       updateRecord(record, {
         publishStatus: "failed",
         publishFailCount: 1,
-        lastPublishMessage: "本地视频文件不存在",
-        lastPublishAt: Date.now(),
-      });
-      return;
-    }
-
-    if (isRemotePublishFile(publishFilePath)) {
-      try {
-        const resolved = await resolvePublishFile(publishFilePath, {
-          cacheKey:
-            record.matrixItemId ||
-            record.serverId ||
-            record.itemId ||
-            record.id ||
-            "",
-        });
-        publishFilePath = resolved.localPath;
-        cleanupDownload = resolved.cleanup;
-      } catch (e) {
-        updateRecord(record, {
-          publishStatus: "failed",
-          publishFailCount: 1,
-          lastPublishMessage: `下载视频失败: ${e && e.message ? e.message : e}`,
-          lastPublishAt: Date.now(),
-        });
-        return;
-      }
-    } else if (!fs.existsSync(publishFilePath)) {
-      updateRecord(record, {
-        publishStatus: "failed",
-        publishFailCount: 1,
-        lastPublishMessage: "本地视频文件不存在",
+        lastPublishMessage: "定时视频本地缓存不存在，请重新创建定时任务",
         lastPublishAt: Date.now(),
       });
       return;
@@ -337,27 +388,26 @@ async function executeScheduledRecordAsync(record) {
     return;
   }
 
-  try {
-    const taskPayload = buildTaskPayloadFromRecord({
+  const taskPayload = buildTaskPayloadFromRecord({
       ...record,
       filePath: publishFilePath,
-    });
-    const taskId = taskPayload.taskId;
-    updateRecord(record, {
+  });
+  const taskId = taskPayload.taskId;
+  updateRecord(record, {
       publishStatus: "publishing",
       lastPublishMessage: "定时任务开始发布",
       lastPublishAt: Date.now(),
-    });
+  });
 
-    let finalPayload = null;
-    for (let attempt = 1; attempt <= MAX_PUBLISH_ATTEMPTS; attempt += 1) {
-      updateRecord(record, {
+  let finalPayload = null;
+  for (let attempt = 1; attempt <= MAX_PUBLISH_ATTEMPTS; attempt += 1) {
+    updateRecord(record, {
         publishStatus: "publishing",
         publishAttemptCount: attempt,
         lastPublishMessage: attempt === 1 ? "定时任务开始发布" : `发布失败，正在进行第 ${attempt} 次重试`,
         lastPublishAt: Date.now(),
-      });
-      const attemptPayload = await new Promise((resolve) => {
+    });
+    const attemptPayload = await new Promise((resolve) => {
       let publishSettled = false;
       const finish = () => {
         if (publishSettled) return;
@@ -378,17 +428,14 @@ async function executeScheduledRecordAsync(record) {
         },
       };
       runPuppeteerTask(taskPayload, transport, () => {});
-      });
-      finalPayload = attemptPayload;
-      if (attemptPayload?.status === true || attemptPayload?.skipped) break;
-      if (attempt < MAX_PUBLISH_ATTEMPTS) {
-        await new Promise((resolve) => setTimeout(resolve, PUBLISH_RETRY_DELAYS_MS[attempt - 1]));
-      }
+    });
+    finalPayload = attemptPayload;
+    if (attemptPayload?.status === true || attemptPayload?.skipped) break;
+    if (attempt < MAX_PUBLISH_ATTEMPTS) {
+      await new Promise((resolve) => setTimeout(resolve, PUBLISH_RETRY_DELAYS_MS[attempt - 1]));
     }
-    finishScheduledRecord(record, finalPayload || { status: false, message: "定时发布执行失败" });
-  } finally {
-    if (cleanupDownload) cleanupDownload();
   }
+  finishScheduledRecord(record, finalPayload || { status: false, message: "定时发布执行失败" });
 }
 
 export function schedulePublishRecord(record, nowMs = Date.now()) {
@@ -424,7 +471,25 @@ export function schedulePublishRecord(record, nowMs = Date.now()) {
 export function refreshScheduledPublishScheduler() {
   const nowMs = Date.now();
   listScheduledRecords().forEach((record) => {
-    schedulePublishRecord(record, nowMs);
+    if (record.textType === "article" || (record.filePath && !isRemotePublishFile(record.filePath) && fs.existsSync(record.filePath))) {
+      schedulePublishRecord(record, nowMs);
+      return;
+    }
+
+    if (isExpiredScheduledRecord(record, nowMs)) {
+      schedulePublishRecord(record, nowMs);
+      return;
+    }
+
+    void preloadScheduledRecord(record)
+      .then((preparedRecord) => schedulePublishRecord(preparedRecord, Date.now()))
+      .catch((error) => {
+        console.warn("[scheduledPublish] 定时视频预下载失败，将继续重试:", error?.message || error);
+        updateRecord(record, {
+          lastPublishMessage: `视频预下载失败，稍后重试: ${error?.message || error}`,
+          lastPublishAt: Date.now(),
+        });
+      });
   });
 }
 

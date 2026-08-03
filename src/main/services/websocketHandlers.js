@@ -15,7 +15,7 @@ import fs from 'fs';
 import { app, BrowserWindow } from 'electron';
 import { getAccountLoginStatus, getAccountPartition } from './accountLoginStatus';
 import { openAccountLoginWindow } from './accountLoginWindow';
-import { resolvePublishFile } from './resolvePublishFile';
+import { isRemotePublishFile, resolvePublishFile } from './resolvePublishFile';
 import { getAppSettings } from './appSettings';
 import { notifyPublishSuccess } from './publishNotification';
 import { cancelScheduledPublishRecords, createScheduledRecord, schedulePublishRecord, subscribeScheduledPublishEvents } from './scheduledPublish';
@@ -1107,6 +1107,45 @@ function isFutureScheduledPublishAt(value, nowMs = Date.now()) {
   return Number.isFinite(publishAt) && publishAt > nowMs + 1_000;
 }
 
+async function prepareScheduledVideoFile(queued) {
+  const rawVideoPath = cleanText(queued?.videoPath);
+  const rawVideoUrl = cleanText(queued?.videoUrl) || (isRemotePublishFile(rawVideoPath) ? rawVideoPath : '');
+  const downloadRequest = createDownloadRequest(
+    rawVideoUrl,
+    queued?.download,
+    queued?.downloadHeaders,
+    queued?.downloadExpiresAt,
+  );
+  const remoteUrl = cleanText(downloadRequest?.url || rawVideoUrl);
+
+  if (remoteUrl) {
+    const cachedVideo = await resolvePublishFile(remoteUrl, {
+      headers: downloadRequest?.headers,
+      cacheKey: queued?.itemId || queued?.serverId,
+    });
+    if (!cachedVideo?.localPath || !fs.existsSync(cachedVideo.localPath)) {
+      throw new Error('视频预下载完成但本地缓存不存在');
+    }
+    return {
+      localPath: cachedVideo.localPath,
+      remoteUrl,
+      downloadHeaders: downloadRequest?.headers || null,
+      downloadExpiresAt: downloadRequest?.expiresAt || null,
+    };
+  }
+
+  if (rawVideoPath && fs.existsSync(rawVideoPath)) {
+    return {
+      localPath: rawVideoPath,
+      remoteUrl: '',
+      downloadHeaders: null,
+      downloadExpiresAt: null,
+    };
+  }
+
+  throw new Error('定时发布视频无法预下载：未找到本地文件或远程视频地址');
+}
+
 async function deferMixedImmediatePublishItems(publishQueue, taskId, nowMs = Date.now()) {
   const immediateQueue = [];
   const scheduledResults = [];
@@ -1123,25 +1162,23 @@ async function deferMixedImmediatePublishItems(publishQueue, taskId, nowMs = Dat
       continue;
     }
 
-    let scheduledFilePath = queued.videoPath;
-    if (queued.videoUrl) {
-      const cachedVideo = await resolvePublishFile(queued.videoUrl, {
-        headers: queued.download?.headers || queued.downloadHeaders,
-        cacheKey: queued.itemId || queued.serverId,
-      });
-      scheduledFilePath = cachedVideo.localPath;
-    }
+    const preparedVideo = await prepareScheduledVideoFile(queued);
 
     const scheduledRecord = createScheduledRecord({
       ...queued.publishData,
       matrixTaskId: taskId,
       matrixItemId: queued.itemId,
-      filePath: scheduledFilePath || '',
-      sourceVideoUrl: queued.videoUrl || '',
-    }, scheduledPublishAt, nowMs);
+      filePath: preparedVideo.localPath,
+      selectedFile: path.basename(preparedVideo.localPath),
+      matrixSourceVideoPath: queued.videoPath || queued.videoUrl || '',
+      matrixSourceVideoUrl: preparedVideo.remoteUrl,
+      sourceVideoUrl: preparedVideo.remoteUrl,
+      downloadHeaders: preparedVideo.downloadHeaders,
+      downloadExpiresAt: preparedVideo.downloadExpiresAt,
+    }, scheduledPublishAt, Date.now());
 
     await changeData({ type: 'add', fileName: 'pushData', item: scheduledRecord });
-    schedulePublishRecord(scheduledRecord, nowMs);
+    schedulePublishRecord(scheduledRecord);
     scheduledResults.push({
       itemId: queued.itemId,
       idempotencyKey: queued.idempotencyKey,
@@ -1627,20 +1664,18 @@ export async function handlePublishVideos(taskData, wsClient) {
         if (!publishAt) {
           throw new Error('定时发布任务缺少有效发布时间');
         }
-        let scheduledFilePath = queued.videoPath;
-        if (queued.videoUrl) {
-          const cachedVideo = await resolvePublishFile(queued.videoUrl, {
-            headers: queued.download?.headers || queued.downloadHeaders,
-            cacheKey: queued.itemId || queued.serverId,
-          });
-          scheduledFilePath = cachedVideo.localPath;
-        }
+        const preparedVideo = await prepareScheduledVideoFile(queued);
         const scheduledRecord = createScheduledRecord({
           ...queued.publishData,
           matrixTaskId: taskId,
           matrixItemId: queued.itemId,
-          filePath: scheduledFilePath,
-          sourceVideoUrl: queued.videoUrl || '',
+          filePath: preparedVideo.localPath,
+          selectedFile: path.basename(preparedVideo.localPath),
+          matrixSourceVideoPath: queued.videoPath || queued.videoUrl || '',
+          matrixSourceVideoUrl: preparedVideo.remoteUrl,
+          sourceVideoUrl: preparedVideo.remoteUrl,
+          downloadHeaders: preparedVideo.downloadHeaders,
+          downloadExpiresAt: preparedVideo.downloadExpiresAt,
         }, publishAt);
         await changeData({ type: 'add', fileName: 'pushData', item: scheduledRecord });
         schedulePublishRecord(scheduledRecord);

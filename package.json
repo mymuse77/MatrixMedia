@@ -1,6 +1,6 @@
 {
   "name": "matrix-video",
-  "version": "0.9.5",
+  "version": "0.1.2",
   "author": "lhl",
   "description": "矩阵工具",
   "license": "GPL-2.0-only",
@@ -24,6 +24,7 @@
     "test:cli-login": "node scripts/test-cli-login.js",
     "test:publish-article-args": "node scripts/test-publish-article-args.js",
     "test:article-republish": "node scripts/test-article-republish.js",
+    "test:scheduled-publish-execution": "node scripts/test-scheduled-publish-execution.js",
     "test:puppeteer-cancel": "node scripts/test-puppeteer-cancel.js",
     "test:dy-page-state": "node scripts/test-dy-page-state.js",
     "test:dy-publish-confirmation": "node scripts/test-dy-publish-confirmation.js",
