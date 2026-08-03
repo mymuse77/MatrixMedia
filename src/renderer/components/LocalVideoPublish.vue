@@ -50,12 +50,12 @@
             >会将本项作为正文内容。
           </p>
         </el-form-item>
-        <el-form-item label="定时发布">
-          <el-switch
-            v-model="scheduledPublish"
-            active-text="定时"
-            inactive-text="立即"
-          />
+        <el-form-item label="发布方式">
+          <el-radio-group v-model="publishScheduleMode">
+            <el-radio label="immediate">立即发布</el-radio>
+            <el-radio label="client">客户端定时</el-radio>
+            <el-radio label="platform">平台定时</el-radio>
+          </el-radio-group>
         </el-form-item>
         <el-form-item v-if="scheduledPublish" label="发布时间">
           <el-date-picker
@@ -65,8 +65,11 @@
             placeholder="选择年月日时分秒"
             style="width: 260px"
           />
-          <p class="bt2-tip">
-            定时任务会立即进入发布历史，到点后自动发布；如果程序关闭错过时间，会显示任务过期。
+          <p class="bt2-tip" v-if="publishScheduleMode === 'client'">
+            任务会立即进入发布历史，到点后由客户端自动发布；如果程序关闭错过时间，会显示任务过期。
+          </p>
+          <p class="bt2-tip" v-else>
+            平台定时会立即打开平台发布页，由平台保存发布时间；当前仅支持抖音，发布时间需在 2 小时后至 14 天内。
           </p>
         </el-form-item>
       </el-form>
@@ -323,12 +326,12 @@
       </el-table>
 
       <el-form label-width="88px" style="margin-bottom: 8px">
-        <el-form-item label="定时发布">
-          <el-switch
-            v-model="scheduledPublish"
-            active-text="定时"
-            inactive-text="立即"
-          />
+        <el-form-item label="发布方式">
+          <el-radio-group v-model="publishScheduleMode">
+            <el-radio label="immediate">立即发布</el-radio>
+            <el-radio label="client">客户端定时</el-radio>
+            <el-radio label="platform">平台定时</el-radio>
+          </el-radio-group>
         </el-form-item>
         <el-form-item v-if="scheduledPublish" label="发布时间">
           <el-date-picker
@@ -447,7 +450,7 @@ export default {
       },
       thisShow: false,
       closeWindow: true,
-      scheduledPublish: false,
+      publishScheduleMode: "immediate",
       publishAt: "",
       republishContext: null,
       republishTextOtherName: "",
@@ -468,6 +471,14 @@ export default {
     };
   },
   computed: {
+    scheduledPublish: {
+      get() {
+        return this.publishScheduleMode !== "immediate";
+      },
+      set(enabled) {
+        this.publishScheduleMode = enabled ? "client" : "immediate";
+      },
+    },
     displayFileName() {
       return fileBaseName(this.localFilePath);
     },
@@ -877,7 +888,25 @@ export default {
       if (!value) return "请选择定时发布时间";
       const dt = moment(value, "YYYY-MM-DD HH:mm:ss", true);
       if (!dt.isValid()) return "定时发布时间格式应为 YYYY-MM-DD HH:mm:ss";
-      if (!dt.isAfter(moment())) return "定时发布时间必须是未来时间";
+      const now = moment();
+      if (this.publishScheduleMode === "platform") {
+        if (dt.diff(now, "milliseconds") < 2 * 60 * 60 * 1000) {
+          return "平台定时发布时间必须至少在 2 小时后";
+        }
+        if (dt.diff(now, "milliseconds") > 14 * 24 * 60 * 60 * 1000) {
+          return "平台定时发布时间不能超过 14 天";
+        }
+      } else if (!dt.isAfter(now)) {
+        return "定时发布时间必须是未来时间";
+      }
+      return "";
+    },
+    validatePlatformSchedulePlatforms(platforms) {
+      if (this.publishScheduleMode !== "platform") return "";
+      const unsupported = platforms.filter((platform) => platform.pt !== "抖音");
+      if (unsupported.length > 0) {
+        return `平台定时当前仅支持抖音，不支持：${unsupported.map((p) => p.pt).join("、")}`;
+      }
       return "";
     },
     validateVideohaoBt2(value) {
@@ -1137,6 +1166,11 @@ export default {
           return;
         }
       }
+      const platformScheduleError = this.validatePlatformSchedulePlatforms(platforms);
+      if (platformScheduleError) {
+        this.$message.warning(platformScheduleError);
+        return;
+      }
       const baseVideo = this.buildVideoPayload();
       const selectedFile = fileBaseName(this.localFilePath);
       const currentDate = moment().format("YYYY-MM-DD");
@@ -1164,7 +1198,7 @@ export default {
           : true;
         const video = this.buildPlatformVideoPayload(p, baseVideo);
         const effectiveMode = resolveEffectivePublishMode(isDraftMode, p);
-        if (this.scheduledPublish && !effectiveMode.publishToDraft) {
+        if (this.publishScheduleMode === "client" && !effectiveMode.publishToDraft) {
           scheduledWriteTasks.push(
             dataRequest({
               type: "add",
@@ -1222,6 +1256,12 @@ export default {
           useragent: this.ptConfig[p.pt].useragent,
           partition,
           filePath: this.localFilePath,
+          platformScheduleMode:
+            this.publishScheduleMode === "platform" ? "platform" : "immediate",
+          platformScheduledPublishAt:
+            this.publishScheduleMode === "platform" ? scheduledAtMs : null,
+          platformScheduledPublishAtText:
+            this.publishScheduleMode === "platform" ? scheduledAtText : "",
           date: currentDate,
         });
         ipcRenderer.send(
@@ -1310,7 +1350,7 @@ export default {
         if (effectiveMode.publishToDraft) draftSubmitted++;
       }
 
-      if (this.scheduledPublish && !isDraftMode) {
+      if (this.publishScheduleMode === "client" && !isDraftMode) {
         await Promise.all(scheduledWriteTasks);
         ipcRenderer.send("scheduledPublish:refresh");
       }
@@ -1323,6 +1363,8 @@ export default {
         successMessage = `已提交 ${submitted} 个平台保存草稿`;
       } else if (scheduledSubmitted === submitted) {
         successMessage = `已创建 ${submitted} 个平台定时发布任务`;
+      } else if (this.publishScheduleMode === "platform") {
+        successMessage = `已提交 ${submitted} 个平台定时发布`;
       }
       this.$message.success(successMessage);
       this.platformVisible = false;
@@ -1478,6 +1520,11 @@ export default {
         this.$message.warning("发布到草稿不支持定时发布，请关闭定时发布后再试");
         return;
       }
+      const platformScheduleError = this.validatePlatformSchedulePlatforms(platforms);
+      if (platformScheduleError) {
+        this.$message.warning(platformScheduleError);
+        return;
+      }
       const hasVideohao = platforms.some(this.isVideohaoPlatform);
 
       const currentDate = moment().format("YYYY-MM-DD");
@@ -1547,7 +1594,7 @@ export default {
             bq = tagList.map((t) => t.replace(/^#/, "")).join(" ");
           }
 
-          if (this.scheduledPublish && !effectiveMode.publishToDraft) {
+          if (this.publishScheduleMode === "client" && !effectiveMode.publishToDraft) {
             scheduledWriteTasks.push(
               dataRequest({
                 type: "add",
@@ -1613,6 +1660,12 @@ export default {
             useragent: this.ptConfig[p.pt].useragent,
             partition,
             filePath,
+            platformScheduleMode:
+              this.publishScheduleMode === "platform" ? "platform" : "immediate",
+            platformScheduledPublishAt:
+              this.publishScheduleMode === "platform" ? scheduledAtMs : null,
+            platformScheduledPublishAtText:
+              this.publishScheduleMode === "platform" ? scheduledAtText : "",
             date: currentDate,
           });
           ipcRenderer.send(
@@ -1667,7 +1720,7 @@ export default {
         }
       }
 
-      if (this.scheduledPublish && !isDraftMode) {
+      if (this.publishScheduleMode === "client" && !isDraftMode) {
         await Promise.all(scheduledWriteTasks);
         ipcRenderer.send("scheduledPublish:refresh");
       }

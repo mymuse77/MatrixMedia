@@ -1108,6 +1108,78 @@ async function selectDyLocation(
   );
 }
 
+async function setDyPlatformSchedule(page, data) {
+  if (data.platformScheduleMode !== "platform") return;
+
+  const scheduledAt = Number(data.platformScheduledPublishAt);
+  const minAt = Date.now() + 2 * 60 * 60 * 1000;
+  const maxAt = Date.now() + 14 * 24 * 60 * 60 * 1000;
+  if (!Number.isFinite(scheduledAt) || scheduledAt < minAt || scheduledAt > maxAt) {
+    throw new Error("抖音平台定时发布时间必须在 2 小时后至 14 天内");
+  }
+
+  const dt = new Date(scheduledAt);
+  const pad = (value) => String(value).padStart(2, "0");
+  const dateText = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+  const timeText = `${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+
+  const opened = await page.evaluate(() => {
+    const visible = (el) => {
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    };
+    const normalize = (text) => String(text || "").replace(/\s+/g, "").trim();
+    const target = [...document.querySelectorAll("label, span, div, button")].find(
+      (el) => normalize(el.textContent) === "定时发布" && visible(el),
+    );
+    if (!target) return false;
+    target.scrollIntoView({ block: "center", inline: "nearest" });
+    target.click();
+    return true;
+  });
+  if (!opened) throw new Error("未找到抖音「定时发布」选项");
+
+  await page.waitForTimeout(500);
+  await page.evaluate(() => {
+    const visible = (el) => {
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    };
+    document.querySelectorAll("[data-mm-dy-schedule-field]").forEach((el) => el.removeAttribute("data-mm-dy-schedule-field"));
+    for (const input of document.querySelectorAll("input")) {
+      if (!visible(input)) continue;
+      const meta = `${input.getAttribute("placeholder") || ""} ${input.getAttribute("aria-label") || ""}`;
+      if (!/(日期|时间|年月日|时分|YYYY|HH|MM|DD)/i.test(meta)) continue;
+      const field = /(时间|时分|HH|mm)/i.test(meta) ? "time" : "date";
+      input.setAttribute("data-mm-dy-schedule-field", field);
+    }
+  });
+
+  const dateInput = await page.$("input[data-mm-dy-schedule-field='date']");
+  const timeInput = await page.$("input[data-mm-dy-schedule-field='time']");
+  const fill = async (handle, value) => {
+    if (!handle) return;
+    await handle.click({ clickCount: 3 });
+    await page.keyboard.press("Backspace");
+    await handle.type(value, { delay: 30 });
+  };
+  if (dateInput && timeInput) {
+    await fill(dateInput, dateText);
+    await fill(timeInput, timeText);
+  } else if (dateInput) {
+    await fill(dateInput, `${dateText} ${timeText}`);
+  } else if (timeInput) {
+    await fill(timeInput, `${dateText} ${timeText}`);
+  } else {
+    throw new Error("未找到抖音平台定时的日期/时间输入框");
+  }
+  await page.keyboard.press("Enter").catch(() => {});
+  await page.waitForTimeout(300);
+  console.log(`[dy] 已设置平台定时发布时间: ${data.platformScheduledPublishAtText || `${dateText} ${timeText}:00`}`);
+}
+
 function isDyLocationRequired(data) {
   return (
     data?.locationRequired === true ||
@@ -1369,6 +1441,7 @@ export default async function (page, data, window, event) {
     // 自主声明入口在视频转码完成后才出现，必须在点击发布前完成
     await selectDyCreativeStatementWithRetry(page, data);
     await selectDyLocationWithRetry(page, data);
+    await setDyPlatformSchedule(page, data);
 
     await clickDyPublish(page, isDraftMode);
     const confirmation = await waitForDyPublishConfirmation(page, {
