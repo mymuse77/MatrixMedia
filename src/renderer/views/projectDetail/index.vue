@@ -421,6 +421,16 @@ export default {
           desc: "定时发布 YYYY-MM-DD HH:mm:ss（多平台时需全部一致）",
         },
         {
+          field: "scheduleMode",
+          required: "否",
+          desc: "平台定时传 platform，当前仅支持抖音；默认 immediate",
+        },
+        {
+          field: "scheduledPublishAt",
+          required: "否",
+          desc: "平台定时使用毫秒时间戳，必须在当前时间 2 小时后至 14 天内",
+        },
+        {
           field: "draft",
           required: "否",
           desc: "true 时保存到草稿箱，不直接发布",

@@ -15,6 +15,10 @@ import {
 } from "./resolvePublishFile";
 import { resolveAccountPublishMode } from "./accountPublishSettingsResolver.js";
 import { getAccountLoginStatus } from "./accountLoginStatus.js";
+import {
+  PLATFORM_SCHEDULE_MODE,
+  validatePlatformScheduledAt,
+} from "../../shared/platformSchedule.js";
 
 function fileStemFromSource(source) {
   const raw = String(source || "").trim();
@@ -29,6 +33,13 @@ function todayYmd() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function formatPublishAt(value) {
+  const d = new Date(Number(value));
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 function derivePhoneForRecord(v) {
@@ -218,6 +229,34 @@ async function runSingleFilePublishInner(
       : "等待发布结果",
     lastPublishAt: Date.now(),
   };
+
+  if (v.scheduleMode === PLATFORM_SCHEDULE_MODE) {
+    if (v.publishAt) {
+      return {
+        exitCode: 2,
+        status: "failed",
+        message: "平台定时请使用 scheduledPublishAt，不要同时传 publishAt",
+      };
+    }
+    if (recordItem.pt !== "抖音") {
+      return {
+        exitCode: 2,
+        status: "failed",
+        message: "平台定时当前仅支持抖音",
+      };
+    }
+    const scheduleValidation = validatePlatformScheduledAt(v.scheduledPublishAt);
+    if (!scheduleValidation.ok) {
+      return {
+        exitCode: 2,
+        status: "failed",
+        message: scheduleValidation.error,
+      };
+    }
+    recordItem.platformScheduleMode = PLATFORM_SCHEDULE_MODE;
+    recordItem.platformScheduledPublishAt = scheduleValidation.value;
+    recordItem.platformScheduledPublishAtText = formatPublishAt(scheduleValidation.value);
+  }
 
   if (v.publishAt) {
     let scheduledRecord;

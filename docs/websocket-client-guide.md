@@ -203,6 +203,9 @@ wsClient.registerTaskHandler('publish_article', async (taskData) => {
 
 - `immediate`：立即发布；当 `data.scheduleMixDistribution === true` 时，按 `data.publishItems[].scheduledPublishAt` 分散执行。
 - `scheduled`：按每个 `publishItems[].scheduledPublishAt` 执行，并将 `publishItems[].itemId` 原样带回结果。
+- `platform`：立即打开对应平台发布页，由平台保存定时发布时间；当前客户端仅支持抖音，时间字段使用毫秒时间戳 `data.scheduledPublishAt`，或逐项使用 `data.publishItems[].scheduledPublishAt`。
+
+平台定时的 `scheduledPublishAt` 必须在当前时间 2 小时后至 14 天内（含边界），否则客户端会拒绝任务并返回错误。
 - `none`：网页端不会下发任务，只保存任务；用户之后恢复时会复用原 `taskId`。
 
 定时或混合分散的后续结果必须继续使用原任务 `taskId`，不能生成新的任务 ID，否则网页端无法把结果归并到同一发布任务。

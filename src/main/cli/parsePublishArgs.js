@@ -321,7 +321,15 @@ export function publishBodyToArgv(body) {
  * @param {object} body
  */
 export function parsePublishRequest(body) {
-  return parsePublishArgs(publishBodyToArgv(body));
+  const parsed = parsePublishArgs(publishBodyToArgv(body));
+  if (parsed.ok && parsed.value && typeof body === "object") {
+    parsed.value.scheduleMode = body.scheduleMode || body.platformScheduleMode || "immediate";
+    parsed.value.scheduledPublishAt =
+      body.scheduledPublishAt != null
+        ? body.scheduledPublishAt
+        : body.platformScheduledPublishAt;
+  }
+  return parsed;
 }
 
 const SHARED_PUBLISH_BODY_KEYS = [
@@ -339,6 +347,10 @@ const SHARED_PUBLISH_BODY_KEYS = [
   "bq",
   "publishAt",
   "publish-at",
+  "scheduleMode",
+  "platformScheduleMode",
+  "scheduledPublishAt",
+  "platformScheduledPublishAt",
   "creativeStatement",
   "creative-statement",
   "cs",

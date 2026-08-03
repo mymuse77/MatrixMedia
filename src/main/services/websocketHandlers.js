@@ -20,6 +20,10 @@ import { getAppSettings } from './appSettings';
 import { notifyPublishSuccess } from './publishNotification';
 import { cancelScheduledPublishRecords, createScheduledRecord, schedulePublishRecord, subscribeScheduledPublishEvents } from './scheduledPublish';
 import { resolveTaskTransportStatus } from './taskResultStatus';
+import {
+  PLATFORM_SCHEDULE_MODE,
+  validatePlatformScheduledAt,
+} from '../../shared/platformSchedule.js';
 
 const LOGIN_STATUS_WATCH_INTERVAL_MS = 3_000;
 const LOGIN_STATUS_WATCH_TIMEOUT_MS = 10 * 60 * 1_000;
@@ -1218,6 +1222,10 @@ export async function handlePublishVideo(taskData, wsClient) {
     localPublishRecord,
     idempotencyKey,
     executionToken,
+    scheduleMode,
+    scheduledPublishAt,
+    platformScheduleMode,
+    platformScheduledPublishAt,
   } = data;
   let cleanupDownloadedVideo = null;
 
@@ -1231,6 +1239,17 @@ export async function handlePublishVideo(taskData, wsClient) {
 
     if (!ptConfig[platform]) {
       throw new Error(`不支持的平台: ${platform}`);
+    }
+
+    const requestedScheduleMode = cleanText(scheduleMode) || cleanText(platformScheduleMode);
+    const requestedPlatformAt =
+      scheduledPublishAt != null ? scheduledPublishAt : platformScheduledPublishAt;
+    if (requestedScheduleMode === PLATFORM_SCHEDULE_MODE) {
+      if (platform !== '抖音') {
+        throw new Error('平台定时当前仅支持抖音');
+      }
+      const scheduleValidation = validatePlatformScheduledAt(requestedPlatformAt);
+      if (!scheduleValidation.ok) throw new Error(scheduleValidation.error);
     }
 
     if (platform === '抖音' && data.skipPublishPreflight !== true) {
@@ -1352,6 +1371,12 @@ export async function handlePublishVideo(taskData, wsClient) {
         address: resolvedLocation,
         location: resolvedLocation,
       };
+    }
+
+    if (requestedScheduleMode === PLATFORM_SCHEDULE_MODE) {
+      publishData.platformScheduleMode = PLATFORM_SCHEDULE_MODE;
+      publishData.platformScheduledPublishAt = Number(requestedPlatformAt);
+      publishData.platformScheduledPublishAtText = formatScheduledPublishAt(requestedPlatformAt);
     }
 
     // 显式 show 优先；未显式传入时沿用 appSettings 里的默认值。
@@ -1650,10 +1675,24 @@ export async function handlePublishVideos(taskData, wsClient) {
       currentIndex,
       progressStart,
       progressEnd,
-      scheduledPublishAt: Number(plannedItem?.scheduledPublishAt) || 0,
+      scheduledPublishAt:
+        Number(plannedItem?.scheduledPublishAt ?? data.scheduledPublishAt) || 0,
     });
 
     detailIndex += 1;
+  }
+
+  if (cleanText(data.scheduleMode) === PLATFORM_SCHEDULE_MODE) {
+    for (const queued of publishQueue) {
+      if (queued.platform !== '抖音') {
+        throw new Error('平台定时当前仅支持抖音');
+      }
+      const scheduleValidation = validatePlatformScheduledAt(queued.scheduledPublishAt);
+      if (!scheduleValidation.ok) throw new Error(scheduleValidation.error);
+      queued.publishData.platformScheduleMode = PLATFORM_SCHEDULE_MODE;
+      queued.publishData.platformScheduledPublishAt = queued.scheduledPublishAt;
+      queued.publishData.platformScheduledPublishAtText = formatScheduledPublishAt(queued.scheduledPublishAt);
+    }
   }
 
   if (cleanText(data.scheduleMode) === 'scheduled') {
@@ -1807,6 +1846,11 @@ export async function handlePublishVideos(taskData, wsClient) {
               description: publishText.description,
               tags: publishText.tags,
               localPublishRecord: publishData,
+              scheduleMode: cleanText(data.scheduleMode),
+              scheduledPublishAt:
+                cleanText(data.scheduleMode) === PLATFORM_SCHEDULE_MODE
+                  ? queued.scheduledPublishAt
+                  : undefined,
               progressRange: {
                 start: progressStart,
                 end: progressEnd,
