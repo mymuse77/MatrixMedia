@@ -18,7 +18,8 @@ function safeSend(mainWindow, channel, ...args) {
 }
 
 export default {
-  download(mainWindow, downloadUrL) {
+  download(mainWindow, downloadUrL, options = {}) {
+    const { onCompleted, notifyCompleted = true } = options;
     if (
       !mainWindow ||
       mainWindow.isDestroyed() ||
@@ -52,7 +53,14 @@ export default {
       item.once('done', (event, state) => {
         switch (state) {
           case 'completed':
-            safeSend(mainWindow, 'download-done', { filePath })
+            if (notifyCompleted) {
+              safeSend(mainWindow, 'download-done', { filePath })
+            }
+            if (typeof onCompleted === 'function') {
+              Promise.resolve(onCompleted(filePath)).catch((error) => {
+                console.error('下载完成后的处理失败:', error && error.message ? error.message : error)
+              })
+            }
             break
           case 'interrupted':
             safeSend(mainWindow, 'download-error', true)

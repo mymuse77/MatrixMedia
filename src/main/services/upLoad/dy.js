@@ -1122,6 +1122,7 @@ async function setDyPlatformSchedule(page, data) {
   const pad = (value) => String(value).padStart(2, "0");
   const dateText = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
   const timeText = `${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+  const scheduledText = `${dateText} ${timeText}`;
 
   const opened = await page.evaluate(() => {
     const visible = (el) => {
@@ -1141,43 +1142,41 @@ async function setDyPlatformSchedule(page, data) {
   if (!opened) throw new Error("未找到抖音「定时发布」选项");
 
   await page.waitForTimeout(500);
-  await page.evaluate(() => {
+  const inputResult = await page.evaluate((value) => {
     const visible = (el) => {
       const style = window.getComputedStyle(el);
       const rect = el.getBoundingClientRect();
       return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
     };
-    document.querySelectorAll("[data-mm-dy-schedule-field]").forEach((el) => el.removeAttribute("data-mm-dy-schedule-field"));
-    for (const input of document.querySelectorAll("input")) {
-      if (!visible(input)) continue;
-      const meta = `${input.getAttribute("placeholder") || ""} ${input.getAttribute("aria-label") || ""}`;
-      if (!/(日期|时间|年月日|时分|YYYY|HH|MM|DD)/i.test(meta)) continue;
-      const field = /(时间|时分|HH|mm)/i.test(meta) ? "time" : "date";
-      input.setAttribute("data-mm-dy-schedule-field", field);
-    }
-  });
+    const input = [...document.querySelectorAll('input[placeholder="日期和时间"]')]
+      .find(visible);
+    if (!input) return { ok: false, value: "" };
+    input.scrollIntoView({ block: "center", inline: "nearest" });
+    input.focus();
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    if (valueSetter) valueSetter.call(input, value);
+    else input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    input.blur();
+    return { ok: true, value: input.value };
+  }, scheduledText);
 
-  const dateInput = await page.$("input[data-mm-dy-schedule-field='date']");
-  const timeInput = await page.$("input[data-mm-dy-schedule-field='time']");
-  const fill = async (handle, value) => {
-    if (!handle) return;
-    await handle.click({ clickCount: 3 });
-    await page.keyboard.press("Backspace");
-    await handle.type(value, { delay: 30 });
-  };
-  if (dateInput && timeInput) {
-    await fill(dateInput, dateText);
-    await fill(timeInput, timeText);
-  } else if (dateInput) {
-    await fill(dateInput, `${dateText} ${timeText}`);
-  } else if (timeInput) {
-    await fill(timeInput, `${dateText} ${timeText}`);
-  } else {
-    throw new Error("未找到抖音平台定时的日期/时间输入框");
+  if (!inputResult.ok) {
+    throw new Error("未找到抖音平台定时输入框: placeholder=日期和时间");
   }
-  await page.keyboard.press("Enter").catch(() => {});
   await page.waitForTimeout(300);
-  console.log(`[dy] 已设置平台定时发布时间: ${data.platformScheduledPublishAtText || `${dateText} ${timeText}:00`}`);
+  const actualText = await page.evaluate(() => {
+    const input = document.querySelector('input[placeholder="日期和时间"]');
+    return input ? String(input.value || "") : "";
+  });
+  if (actualText !== scheduledText) {
+    throw new Error(`抖音平台定时输入框写入失败，期望 ${scheduledText}，实际 ${actualText || "空"}`);
+  }
+  console.log(`[dy] 已设置平台定时发布时间: ${scheduledText}`);
 }
 
 function isDyLocationRequired(data) {

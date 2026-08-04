@@ -46,6 +46,7 @@ const { getWebSocketClient } = require("./services/websocketClient");
 import { initializeElectronRuntime } from "./services/electronStartup";
 
 const cliMode = isCliMode(process.argv);
+const appVersion = require("../../package.json").version;
 
 // 确保 dev / cli / 打包后 userData 路径一致（都用 matrix-video）
 // 否则 persist: partition 的 cookie 会存在不同目录，登录状态不共享
@@ -217,6 +218,28 @@ function onAppReady() {
       });
     }
     trayItems.push(
+      {
+        label: "查看信息",
+        click: async () => {
+          const currentSettings = getAppSettings();
+          const serviceUrl = String(currentSettings.webSocketServerUrl || "").trim() || "未配置";
+          const autoUpdateEnabled = currentSettings.skipStartupUpdateCheck !== true;
+          await dialog.showMessageBox({
+            type: "info",
+            title: "客户端信息",
+            message: "矩媒客户端",
+            detail: [
+              `版本号：v${appVersion}`,
+              "",
+              `平台服务地址：${serviceUrl}`,
+              "",
+              `是否自动更新：${autoUpdateEnabled ? "是（启动时检查）" : "否（已跳过启动检查）"}`,
+            ].join("\n"),
+            buttons: ["关闭"],
+            noLink: true,
+          });
+        },
+      },
       {
         label: "重启应用",
         click: function () {

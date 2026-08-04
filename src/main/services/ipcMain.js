@@ -182,6 +182,14 @@ function pickReleaseInstaller(assets) {
 
 export default {
   async Mainfunc(IsUseSysTitle) {
+    // 更新下载完成后由主进程直接启动安装器，避免依赖隐藏的渲染窗口弹窗。
+    const launchInstaller = createLaunchInstallerHandler({
+      platform: process.platform,
+      spawn,
+      shell,
+      electronApp,
+    });
+
     // Always register the check-for-updates handler first
     ipcMain.handle("check-for-updates", async (event) => {
       const settings = getAppSettings();
@@ -203,7 +211,11 @@ export default {
       if (downloadURL && cmp > 0) {
         downloadFile.download(
           BrowserWindow.fromWebContents(event.sender),
-          downloadURL
+          downloadURL,
+          {
+            notifyCompleted: false,
+            onCompleted: (installerPath) => launchInstaller(null, installerPath),
+          }
         );
       }
       return {
@@ -217,15 +229,7 @@ export default {
     );
 
     // 先启动安装包再退出应用，避免安装器处理正在运行的主程序时失败。
-    ipcMain.handle(
-      "launch-installer",
-      createLaunchInstallerHandler({
-        platform: process.platform,
-        spawn,
-        shell,
-        electronApp,
-      })
-    );
+    ipcMain.handle("launch-installer", launchInstaller);
 
     // puppeteerFile 上传文件发布，获取登录状态
     registerPuppeteerIpc();
