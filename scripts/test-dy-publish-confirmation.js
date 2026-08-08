@@ -37,7 +37,7 @@ async function main() {
       url: "https://creator.douyin.com/creator-micro/content/manage",
       messages: [],
     }),
-    "confirmed",
+    "pending",
   );
   assert.strictEqual(
     classifyDyPublishConfirmationSnapshot({
@@ -74,7 +74,7 @@ async function main() {
       evaluate: async () => ({
         url: "https://creator.douyin.com/creator-micro/content/manage",
         title: "内容管理",
-        messages: [],
+        messages: ["作品发布成功"],
       }),
       waitForTimeout: async () => {},
     },

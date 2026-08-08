@@ -124,7 +124,29 @@ async function main() {
     ),
     (error) =>
       error.name === "DyPublishPageError" &&
-      error.code === "verification_required",
+      error.code === "verification_required" &&
+      error.nonRetryable === true,
+  );
+
+  await assert.rejects(
+    waitForDyUploadPageReady(
+      {
+        evaluate: async () => ({
+          url: "https://creator.douyin.com/login",
+          title: "扫码登录",
+          ready: false,
+          matchedLocatorId: "",
+          bodyText: "扫码登录",
+          fileInputs: [],
+        }),
+        waitForTimeout: async () => {},
+      },
+      { timeoutMs: 100, intervalMs: 1 },
+    ),
+    (error) =>
+      error.name === "DyPublishPageError" &&
+      error.code === "login_required" &&
+      error.nonRetryable === true,
   );
 
   console.log("test-dy-page-state passed");

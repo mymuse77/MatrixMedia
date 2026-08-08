@@ -96,6 +96,6 @@ export async function capturePublishFailureDiagnostics({
     );
   }
 
-  console.error("[publish-diagnostics] 已保存发布失败诊断:", result);
+  console.log("[publish-diagnostics] 已保存发布失败诊断:", result);
   return result;
 }

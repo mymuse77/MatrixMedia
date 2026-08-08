@@ -103,7 +103,7 @@ export async function runSingleFilePublish(
   const sourceFile = String(v.file || "").trim();
   const stem = fileStemFromSource(sourceFile);
   const bt1 = String(v.title).trim();
-  const bt2 = (v.bt2 && String(v.bt2).trim()) || bt1;
+  const bt2 = (v.bt2 && String(v.bt2).trim()) || "";
   const bookName = (v.bookName && String(v.bookName).trim()) || stem;
 
   let cleanupDownload = null;
@@ -556,7 +556,7 @@ export async function runMultiPlatformPublish(parsedList) {
   try {
     for (const item of sortPublishPlatforms(parsedList)) {
       const result = await runSingleFilePublish(item, fileContext, {
-        waitForResult: false,
+        waitForResult: true,
         onDone: releaseSharedDownload,
       });
       results.push({
@@ -576,17 +576,24 @@ export async function runMultiPlatformPublish(parsedList) {
       }
     }
   } finally {
-    if (results.length === 0 && cleanupDownload) cleanupDownload();
+    if (cleanupDownload) {
+      cleanupDownload();
+      cleanupDownload = null;
+    }
   }
 
+  const succeeded = results.filter((item) => item.success).length;
+  const failed = results.length - succeeded;
+  const success = failed === 0 && succeeded === results.length;
+
   return {
-    success: true,
-    exitCode: 0,
-    status: "submitted",
-    message: `已提交 ${results.length} 个平台发布`,
+    success,
+    exitCode: success ? 0 : 3,
+    status: success ? "completed" : succeeded > 0 ? "partial" : "failed",
+    message: `平台发布完成：成功 ${succeeded}，失败 ${failed}`,
     total: results.length,
-    succeeded: 0,
-    failed: 0,
+    succeeded,
+    failed,
     results,
   };
 }

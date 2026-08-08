@@ -31,18 +31,10 @@ export function classifyDyPublishConfirmationSnapshot(
   snapshot = {},
   { isDraftMode = false } = {},
 ) {
-  const url = String(snapshot.url || "");
   const messages = Array.isArray(snapshot.messages)
     ? snapshot.messages.join(" ")
     : "";
   const normalized = messages.replace(/\s+/g, "");
-
-  if (
-    !isDraftMode &&
-    /creator-micro\/content\/manage(?:[/?#]|$)/.test(url)
-  ) {
-    return "confirmed";
-  }
 
   const successPatterns = isDraftMode
     ? DRAFT_SUCCESS_PATTERNS

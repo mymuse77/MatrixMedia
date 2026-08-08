@@ -7,6 +7,13 @@ import {
 import { guardExternalNavigation } from './navigationGuard';
 
 const openingWindows = new Map();
+const LOGIN_PAGE_LOAD_ATTEMPTS = 2;
+const LOGIN_PAGE_RETRY_DELAY_MS = 500;
+
+function isRetryableLoginPageLoadError(error) {
+  const message = String(error?.message || error || '');
+  return /ERR_(?:FAILED|ABORTED|CONNECTION_(?:RESET|CLOSED)|NETWORK_CHANGED)/.test(message);
+}
 
 export async function openAccountLoginWindow(args) {
   const partition = args && args.partition;
@@ -111,9 +118,36 @@ async function openAccountLoginWindowOnce({ partition, url, useragent, title }) 
   }
   guardExternalNavigation(win.webContents);
 
-  win.loadURL(url).catch((error) => {
-    console.warn('[open-account-login-window] loadURL failed:', error && error.message);
-  });
+  for (let attempt = 1; attempt <= LOGIN_PAGE_LOAD_ATTEMPTS; attempt += 1) {
+    try {
+      await win.loadURL(url);
+      return { ok: true };
+    } catch (error) {
+      const message = (error && error.message) || '账号登录页加载失败';
+      const canRetry =
+        attempt < LOGIN_PAGE_LOAD_ATTEMPTS &&
+        !win.isDestroyed() &&
+        isRetryableLoginPageLoadError(error);
+      if (canRetry) {
+        console.warn(
+          `[open-account-login-window] loadURL 暂时失败，准备重试 ${attempt}/${LOGIN_PAGE_LOAD_ATTEMPTS - 1}:`,
+          message,
+        );
+        await new Promise((resolve) => setTimeout(resolve, LOGIN_PAGE_RETRY_DELAY_MS));
+        continue;
+      }
 
-  return { ok: true };
+      console.warn('[open-account-login-window] loadURL failed:', message);
+      if (!win.isDestroyed()) {
+        try {
+          win.close();
+        } catch (_) {
+          /* ignore */
+        }
+      }
+      return { ok: false, message };
+    }
+  }
+
+  return { ok: false, message: '账号登录页加载失败' };
 }

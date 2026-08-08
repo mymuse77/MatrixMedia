@@ -978,6 +978,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
                 ...data,
                 currentUrl,
                 message,
+                nonRetryable: true,
               });
               finishOnce();
               if (win && !win.isDestroyed()) {

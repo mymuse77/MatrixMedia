@@ -1016,27 +1016,21 @@ function sendBatchPublishItemResult(wsClient, taskId, payload) {
 
   const doneCount = payload.successCount + payload.failCount;
   const isDone = doneCount >= payload.total;
-  const status = isDone
-    ? payload.successCount === payload.total
-      ? 'completed'
-      : payload.successCount > 0
-        ? 'partial'
-        : 'failed'
-    : 'running';
+  // 最终结果统一由 websocketClient 在 handler 返回后发送，避免同一任务
+  // 先在最后一项完成时发送一次、随后又被外层发送第二次。
+  if (isDone) return;
 
   const result = {
-    success: isDone ? payload.successCount > 0 : true,
+    success: true,
     action: 'publish_videos',
-    status,
+    status: 'running',
     taskName: payload.taskName,
     total: payload.total,
     successCount: payload.successCount,
     failCount: payload.failCount,
     executionToken: payload.detail.executionToken || '',
     results: [payload.detail],
-    message: isDone
-      ? `批量发布完成：成功 ${payload.successCount}，失败 ${payload.failCount}`
-      : `批量发布中：已完成 ${doneCount}/${payload.total}`,
+    message: `批量发布中：已完成 ${doneCount}/${payload.total}`,
   };
   wsClient.sendTaskResult(
     taskId,
@@ -1269,9 +1263,12 @@ export async function handlePublishVideo(taskData, wsClient) {
           error?.preflightPayload?.diagnostic?.metadataPath ||
           '';
         const diagnosticHint = diagnostic ? `，诊断文件：${diagnostic}` : '';
-        throw new Error(
+        const preflightError = new Error(
           `抖音账号 ${phone} 发布页预检失败：${error?.message || '页面未就绪'}${diagnosticHint}`,
         );
+        preflightError.nonRetryable = error?.preflightPayload?.nonRetryable === true;
+        preflightError.publishPayload = error?.preflightPayload || null;
+        throw preflightError;
       }
     }
 
@@ -1455,6 +1452,7 @@ export async function handlePublishVideo(taskData, wsClient) {
         settled = true;
         if (error && payload) {
           error.publishPayload = payload;
+          error.nonRetryable = payload.nonRetryable === true;
         }
         const status = payload?.skipped ? 'skipped' : 'failed';
         await updateLocalPublishRecord(publishData, status, error?.message || '发布失败');
@@ -1475,12 +1473,9 @@ export async function handlePublishVideo(taskData, wsClient) {
             if (status === 'progress') {
               sendScopedProgress(wsClient, taskId, 30 + (progress || 0) * 0.7, message || '发布中', progressRange);
             } else if (status === 'success') {
-              sendScopedProgress(wsClient, taskId, 100, '发布成功', progressRange);
-              void resolveOnce({
-                success: true,
-                message: message || '视频发布成功',
-                data: payload,
-              }, message || '视频发布成功');
+              // reply 只表示平台流程已提交，最终成功必须由 puppeteerFile-done
+              // 回执确认，避免页面跳转或上传完成被误报成已发布。
+              sendScopedProgress(wsClient, taskId, 90, '已提交，等待平台最终确认', progressRange);
             } else if (status === 'error' || status === 'failed') {
               void rejectOnce(new Error(message || '发布失败'), payload);
             }
@@ -1498,7 +1493,10 @@ export async function handlePublishVideo(taskData, wsClient) {
               void rejectOnce(new Error(message || '发布失败'), payload);
             }
           } else if (channel === 'puppeteer-noLogin') {
-            void rejectOnce(new Error('登录状态异常或未登录'), payload);
+            void rejectOnce(
+              new Error(payload?.message || '登录状态异常或未登录'),
+              { ...payload, nonRetryable: true },
+            );
           }
         },
       };
@@ -1529,9 +1527,13 @@ async function preflightDouyinBatchAccounts({
   }
 
   const targets = [...uniqueAccounts.values()];
-  if (targets.length < 2) return false;
+  if (targets.length < 2) {
+    return { failures: [], passedAccountKeys: [] };
+  }
 
   console.log(`[WebSocket] 开始抖音批量发布页预检，共 ${targets.length} 个账号`);
+  const failures = [];
+  const passedAccountKeys = [];
   for (let index = 0; index < targets.length; index += 1) {
     const target = targets[index];
     wsClient.sendProgress(
@@ -1549,19 +1551,37 @@ async function preflightDouyinBatchAccounts({
         url: ptConfig[target.platform]?.upload,
         useragent: ptConfig[target.platform]?.useragent,
       });
+      passedAccountKeys.push(`${target.partition}|${target.phone}`);
     } catch (error) {
-      const diagnostic =
-        error?.preflightPayload?.diagnostic?.screenshotPath ||
-        error?.preflightPayload?.diagnostic?.metadataPath ||
-        '';
-      const diagnosticHint = diagnostic ? `，诊断文件：${diagnostic}` : '';
-      throw new Error(
-        `抖音账号 ${target.phone} 发布页预检失败：${error?.message || '页面未就绪'}${diagnosticHint}`,
-      );
+      const diagnostic = error?.preflightPayload?.diagnostic || null;
+      const diagnosticPath =
+        diagnostic?.screenshotPath || diagnostic?.metadataPath || '';
+      const diagnosticHint = diagnosticPath ? `，诊断文件：${diagnosticPath}` : '';
+      const message =
+        `抖音账号 ${target.phone} 发布页预检失败：${error?.message || '页面未就绪'}${diagnosticHint}`;
+      if (error?.preflightPayload?.nonRetryable === true) {
+        failures.push({
+          key: `${target.partition}|${target.phone}`,
+          phone: target.phone,
+          platform: target.platform,
+          message,
+          diagnostic,
+          nonRetryable: true,
+        });
+      }
+      console.warn(`[WebSocket] ${message}`);
     }
   }
-  console.log('[WebSocket] 抖音批量发布页预检全部通过');
-  return true;
+  const retryableFailureCount =
+    targets.length - passedAccountKeys.length - failures.length;
+  if (failures.length || retryableFailureCount) {
+    console.warn(
+      `[WebSocket] 抖音批量发布页预检完成：通过 ${passedAccountKeys.length}，需单项重试 ${retryableFailureCount}，不可发布 ${failures.length}`,
+    );
+  } else {
+    console.log('[WebSocket] 抖音批量发布页预检全部通过');
+  }
+  return { failures, passedAccountKeys };
 }
 
 /**
@@ -1766,21 +1786,17 @@ export async function handlePublishVideos(taskData, wsClient) {
   const immediatePublishQueue = mixedImmediateSchedule.immediateQueue;
   const scheduledResults = mixedImmediateSchedule.scheduledResults;
 
-  let douyinBatchPreflightCompleted;
-  try {
-    douyinBatchPreflightCompleted = await preflightDouyinBatchAccounts({
-      publishQueue: immediatePublishQueue,
-      taskId,
-      wsClient,
-    });
-  } catch (error) {
-    if (scheduledResults.length > 0) {
-      await cancelScheduledPublishRecords(taskId).catch((cleanupError) => {
-        console.warn('[WebSocket] 清理预检失败后的分散发布计划失败:', cleanupError?.message || cleanupError);
-      });
-    }
-    throw error;
-  }
+  const douyinBatchPreflight = await preflightDouyinBatchAccounts({
+    publishQueue: immediatePublishQueue,
+    taskId,
+    wsClient,
+  });
+  const douyinPreflightFailures = new Map(
+    douyinBatchPreflight.failures.map((failure) => [failure.key, failure]),
+  );
+  const douyinPreflightPassedAccounts = new Set(
+    douyinBatchPreflight.passedAccountKeys,
+  );
 
   try {
     for (const queued of immediatePublishQueue) {
@@ -1818,6 +1834,47 @@ export async function handlePublishVideos(taskData, wsClient) {
       progressEnd,
     } = queued;
     let attemptCount = 0;
+    const preflightFailure = douyinPreflightFailures.get(`${partition}|${phone}`);
+
+    if (preflightFailure) {
+      failCount += 1;
+      await updateLocalPublishRecord(
+        publishData,
+        'failed',
+        preflightFailure.message,
+      );
+      const detail = {
+        success: false,
+        itemId,
+        phone,
+        platform,
+        videoPath,
+        videoUrl,
+        idempotencyKey,
+        executionToken,
+        attemptCount: 0,
+        error: preflightFailure.message,
+        nonRetryable: preflightFailure.nonRetryable,
+        ...(preflightFailure.diagnostic
+          ? { diagnostic: preflightFailure.diagnostic }
+          : {}),
+      };
+      results.push(detail);
+      sendBatchPublishItemResult(wsClient, taskId, {
+        taskName,
+        total,
+        successCount,
+        failCount,
+        detail,
+        results,
+      });
+      wsClient.sendProgress(
+        taskId,
+        Number(progressEnd.toFixed(2)),
+        `跳过登录失效账号 ${currentIndex}/${total}: ${phone}`,
+      );
+      continue;
+    }
 
     try {
       wsClient.sendProgress(taskId, Number(progressStart.toFixed(2)), `正在发布 ${currentIndex}/${total}`);
@@ -1856,12 +1913,19 @@ export async function handlePublishVideos(taskData, wsClient) {
                 end: progressEnd,
               },
               skipPublishPreflight:
-                douyinBatchPreflightCompleted && platform === '抖音',
+                platform === '抖音' &&
+                douyinPreflightPassedAccounts.has(`${partition}|${phone}`),
             },
           }, wsClient);
           break;
         } catch (error) {
           lastError = error;
+          if (
+            error?.nonRetryable === true ||
+            error?.publishPayload?.nonRetryable === true
+          ) {
+            break;
+          }
           if (attempt < PUBLISH_MAX_ATTEMPTS) {
             wsClient.sendProgress(taskId, Number(progressStart.toFixed(2)), `发布失败，${PUBLISH_RETRY_DELAYS_MS[attempt - 1] / 1000} 秒后自动重试（${attempt}/${PUBLISH_MAX_ATTEMPTS - 1}）`);
             await waitForPublishRetry(PUBLISH_RETRY_DELAYS_MS[attempt - 1]);
@@ -1893,6 +1957,7 @@ export async function handlePublishVideos(taskData, wsClient) {
         successCount,
         failCount,
         detail,
+        results,
       });
     } catch (error) {
       failCount += 1;
@@ -1918,6 +1983,7 @@ export async function handlePublishVideos(taskData, wsClient) {
         successCount,
         failCount,
         detail,
+        results,
       });
       wsClient.sendProgress(taskId, Number(progressEnd.toFixed(2)), `发布失败 ${currentIndex}/${total}: ${message}`);
     }

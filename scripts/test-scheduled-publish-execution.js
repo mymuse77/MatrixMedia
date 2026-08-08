@@ -19,6 +19,7 @@ const changeDataCalls = [];
 const downloadCalls = [];
 const publishPayloads = [];
 const notifications = [];
+const queuedPublishReplies = [];
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "matrixmedia-scheduled-execution-"));
 
 function cloneRecord(record) {
@@ -112,11 +113,19 @@ Module._load = function patchedLoad(request, parent, isMain) {
       runPuppeteerTask(taskPayload, transport, onFinish) {
         publishPayloads.push(taskPayload);
         setImmediate(() => {
-          transport.reply("puppeteerFile-done", {
-            taskId: taskPayload.taskId,
-            status: true,
-            message: "published",
-          });
+          const queuedReply = queuedPublishReplies.shift();
+          if (queuedReply) {
+            transport.reply(queuedReply.channel, {
+              taskId: taskPayload.taskId,
+              ...queuedReply.payload,
+            });
+          } else {
+            transport.reply("puppeteerFile-done", {
+              taskId: taskPayload.taskId,
+              status: true,
+              message: "published",
+            });
+          }
           if (typeof onFinish === "function") onFinish();
         });
       },
@@ -206,6 +215,44 @@ async function main() {
     assert.notStrictEqual(publishPayloads[1].filePath, remoteUrl);
     assert.ok(fs.existsSync(publishPayloads[1].filePath));
     assert.strictEqual(records.find((record) => record.id === "restart-record")?.filePath, publishPayloads[1].filePath);
+    assert.strictEqual(notifications.length, 2);
+
+    const loginFailureVideoPath = path.join(tempDir, "login-failure.mp4");
+    fs.writeFileSync(loginFailureVideoPath, "login failure video");
+    const loginFailureRecord = createScheduledRecord({
+      id: "login-failure-record",
+      date: "2026-08-03",
+      textType: "local",
+      pt: "抖音",
+      phone: "13900139000",
+      partition: "persist:13900139000抖音",
+      filePath: loginFailureVideoPath,
+      selectedFile: "login-failure.mp4",
+      bt: "登录失效停止重试测试",
+    }, formatLocalDateTime(Date.now() + 1_200));
+    queuedPublishReplies.push({
+      channel: "puppeteer-noLogin",
+      payload: {
+        status: false,
+        message: "抖音登录状态已失效，请重新登录后再试",
+        nonRetryable: true,
+      },
+    });
+    const publishCountBeforeLoginFailure = publishPayloads.length;
+    records.push(cloneRecord(loginFailureRecord));
+    schedulePublishRecord(loginFailureRecord);
+    await waitFor(
+      () => records.find((record) => record.id === "login-failure-record")?.publishStatus === "failed",
+    );
+
+    const failedRecord = records.find((record) => record.id === "login-failure-record");
+    assert.strictEqual(
+      publishPayloads.length,
+      publishCountBeforeLoginFailure + 1,
+      "登录失效属于不可重试错误，定时发布只能执行一次",
+    );
+    assert.strictEqual(failedRecord.publishAttemptCount, 1);
+    assert.match(failedRecord.lastPublishMessage, /登录状态已失效/);
     assert.strictEqual(notifications.length, 2);
 
     const statusUpdates = changeDataCalls

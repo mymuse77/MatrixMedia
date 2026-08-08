@@ -136,6 +136,9 @@ function createDyPageStateError(snapshot, timeoutMessage) {
   error.name = "DyPublishPageError";
   error.code = snapshot?.state || "loading";
   error.dyPageSnapshot = snapshot || null;
+  error.nonRetryable =
+    snapshot?.state === "login_required" ||
+    snapshot?.state === "verification_required";
   return error;
 }
 

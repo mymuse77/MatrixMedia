@@ -27,6 +27,8 @@ const taskResultEvents = [];
 const changeDataCalls = [];
 const resolvePublishCalls = [];
 const scheduledPublishRecords = [];
+const preflightCalls = [];
+const preflightFailuresByPhone = new Map();
 let remoteDownloadIndex = 0;
 
 const originalLoad = Module._load;
@@ -49,7 +51,16 @@ Module._load = function patchedLoad(request, parent, isMain) {
 
   if (request === "./puppeteerFile") {
     return {
-      runPuppeteerPreflight: async () => ({ success: true }),
+      runPuppeteerPreflight: async (data) => {
+        preflightCalls.push(data);
+        const failure = preflightFailuresByPhone.get(data.phone);
+        if (failure) {
+          const error = new Error(failure.message);
+          error.preflightPayload = failure;
+          throw error;
+        }
+        return { success: true };
+      },
       runPuppeteerTask(data, transport, onFinish) {
         capturedPublishPayloads.push(data);
         setImmediate(() => {
@@ -359,9 +370,15 @@ async function main() {
     capturedPublishPayloads.slice(assignedPublishCountBefore).map((item) => item.filePath),
     [firstVideoPath, secondVideoPath, thirdVideoPath],
   );
+  const assignedTaskEvents = taskResultEvents.slice(assignedTaskEventCountBefore);
+  assert.strictEqual(
+    assignedTaskEvents.length,
+    2,
+    "最后一项完成后应由 WebSocket 外层统一发送唯一终态",
+  );
   assert.deepStrictEqual(
-    taskResultEvents.slice(assignedTaskEventCountBefore).map((event) => event.data.results[0].itemId),
-    ["publish-item-1", "publish-item-2", "publish-item-3"],
+    assignedTaskEvents.map((event) => event.data.results[0].itemId),
+    ["publish-item-1", "publish-item-2"],
   );
 
   const failedResult = await handlePublishVideos(
@@ -386,6 +403,102 @@ async function main() {
   assert.strictEqual(failedResult.successCount, 0);
   assert.strictEqual(failedResult.failCount, 1);
   assert.match(failedResult.results[0].error, /视频文件不存在/);
+
+  const isolatedPublishCountBefore = capturedPublishPayloads.length;
+  const isolatedTaskEventCountBefore = taskResultEvents.length;
+  const isolatedChangeCallCountBefore = changeDataCalls.length;
+  preflightFailuresByPhone.set("13900139000", {
+    status: false,
+    message: "抖音发布页要求重新登录",
+    nonRetryable: true,
+    diagnostic: { metadataPath: "login-required.json" },
+  });
+  const isolatedResult = await handlePublishVideos(
+    {
+      taskId: "matrix-task-isolated-login-failure-test",
+      type: "publish_videos",
+      data: {
+        taskName: "Isolated login failure test",
+        captionMode: "batch",
+        platforms: [platform],
+        accounts: [
+          { id: "account-1", phone: "13800138000", platform },
+          { id: "account-2", phone: "13900139000", platform },
+        ],
+        videos: [{ id: "video-1", filePath: firstVideoPath }],
+        captions: [{ id: "caption-1", textContent: "Caption one" }],
+      },
+    },
+    wsClient,
+  );
+  preflightFailuresByPhone.clear();
+
+  assert.strictEqual(isolatedResult.success, false);
+  assert.strictEqual(isolatedResult.status, "partial");
+  assert.strictEqual(isolatedResult.total, 2);
+  assert.strictEqual(isolatedResult.successCount, 1);
+  assert.strictEqual(isolatedResult.failCount, 1);
+  assert.strictEqual(capturedPublishPayloads.length, isolatedPublishCountBefore + 1);
+  assert.deepStrictEqual(
+    preflightCalls.slice(-2).map((item) => item.phone),
+    ["13800138000", "13900139000"],
+  );
+  assert.strictEqual(isolatedResult.results[0].phone, "13800138000");
+  assert.strictEqual(isolatedResult.results[0].success, true);
+  assert.strictEqual(isolatedResult.results[1].phone, "13900139000");
+  assert.strictEqual(isolatedResult.results[1].success, false);
+  assert.strictEqual(isolatedResult.results[1].attemptCount, 0);
+  assert.strictEqual(isolatedResult.results[1].nonRetryable, true);
+  assert.match(isolatedResult.results[1].error, /要求重新登录/);
+  assert.ok(
+    changeDataCalls
+      .slice(isolatedChangeCallCountBefore)
+      .some((call) =>
+        call.type === "update" &&
+        call.item?.publishStatus === "failed" &&
+        /要求重新登录/.test(call.item?.lastPublishMessage || ""),
+      ),
+    "登录失效的发布项应写入本地失败记录",
+  );
+  assert.strictEqual(
+    taskResultEvents.slice(isolatedTaskEventCountBefore).length,
+    1,
+    "批量终态应由 WebSocket 外层在 handler 返回后发送",
+  );
+
+  const singleFailurePreflightCountBefore = preflightCalls.length;
+  const singleFailurePublishCountBefore = capturedPublishPayloads.length;
+  preflightFailuresByPhone.set("13900139000", {
+    status: false,
+    message: "抖音发布页要求重新登录",
+    nonRetryable: true,
+  });
+  const singleFailureResult = await handlePublishVideos(
+    {
+      taskId: "matrix-task-single-login-failure-test",
+      type: "publish_videos",
+      data: {
+        taskName: "Single login failure test",
+        platforms: [platform],
+        accounts: [{ id: "account-2", phone: "13900139000", platform }],
+        videos: [{ id: "video-1", filePath: firstVideoPath }],
+        captions: [{ id: "caption-1", textContent: "Caption one" }],
+      },
+    },
+    wsClient,
+  );
+  preflightFailuresByPhone.clear();
+
+  assert.strictEqual(singleFailureResult.status, "failed");
+  assert.strictEqual(singleFailureResult.successCount, 0);
+  assert.strictEqual(singleFailureResult.failCount, 1);
+  assert.strictEqual(singleFailureResult.results[0].attemptCount, 1);
+  assert.strictEqual(
+    preflightCalls.length,
+    singleFailurePreflightCountBefore + 1,
+    "单账号登录失效不应触发批量外层重复预检",
+  );
+  assert.strictEqual(capturedPublishPayloads.length, singleFailurePublishCountBefore);
 
   const remoteChangeCallCountBefore = changeDataCalls.length;
   const remotePublishCountBefore = capturedPublishPayloads.length;
@@ -532,6 +645,10 @@ async function main() {
       { itemId: "mixed-scheduled-item", success: undefined, status: "scheduled" },
     ],
   );
+  const terminalBatchEvent = taskResultEvents.find(
+    (event) => event.taskId === "matrix-task-test" && event.data.status === "completed",
+  );
+  assert.strictEqual(terminalBatchEvent, undefined);
 
   console.log("test-websocket-publish-videos passed");
 }

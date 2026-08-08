@@ -151,7 +151,7 @@ export function buildTaskPayloadFromRecord(record) {
     data: {
       textOtherName: record.textOtherName || "",
       bt1: record.bt || "",
-      bt2: record.bt2 || record.bt || "",
+      bt2: record.bt2 || "",
       bt2Filled: record.bt2Filled || "",
       bq: record.bq || "",
       bdText: "",
@@ -422,7 +422,12 @@ async function executeScheduledRecordAsync(record) {
             resolve(payload);
             finish();
           } else if (channel === "puppeteer-noLogin") {
-            resolve({ status: false, message: "登录态异常或未登录" });
+            resolve({
+              ...payload,
+              status: false,
+              message: payload?.message || "登录态异常或未登录",
+              nonRetryable: true,
+            });
             finish();
           }
         },
@@ -430,7 +435,11 @@ async function executeScheduledRecordAsync(record) {
       runPuppeteerTask(taskPayload, transport, () => {});
     });
     finalPayload = attemptPayload;
-    if (attemptPayload?.status === true || attemptPayload?.skipped) break;
+    if (
+      attemptPayload?.status === true ||
+      attemptPayload?.skipped ||
+      attemptPayload?.nonRetryable
+    ) break;
     if (attempt < MAX_PUBLISH_ATTEMPTS) {
       await new Promise((resolve) => setTimeout(resolve, PUBLISH_RETRY_DELAYS_MS[attempt - 1]));
     }
