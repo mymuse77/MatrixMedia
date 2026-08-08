@@ -2,6 +2,7 @@ import {
   ipcMain,
   dialog,
   BrowserWindow,
+  Notification,
   app as electronApp,
   shell,
 } from "electron";
@@ -10,13 +11,14 @@ import Server from "../server/index";
 
 import { winURL } from "../config/StaticPath";
 import downloadFile from "./downloadFile";
-import { registerPuppeteerIpc } from "./puppeteerFile";
+import { hasActivePublishTasks, registerPuppeteerIpc } from "./puppeteerFile";
 import { registerScheduledPublishIpc } from "./scheduledPublish";
 import { registerSphWindowProductsIpc } from "./sphWindowProducts";
 import { createLaunchInstallerHandler } from "./launchInstaller";
 import { applyAccountProxyForTask } from "./proxyConfig";
 import { guardExternalNavigation } from "./navigationGuard";
 import { getAppSettings, updateAppSettings } from "./appSettings";
+import { quitForUpdate } from "./updateQuitCoordinator";
 import {
   closeOtherAccountLoginWindows,
   getAccountLoginWindowByPartition,
@@ -180,47 +182,132 @@ function pickReleaseInstaller(assets) {
   return null;
 }
 
+let updateDownloadInProgress = false;
+let lastNotifiedUpdateVersion = "";
+let activeUpdateNotification = null;
+
+async function resolveAvailableUpdate(updateUrl) {
+  const lastData = await getLatestRelease(updateUrl);
+  if (!lastData) return { hasUpdate: false };
+
+  const remoteVersion =
+    (lastData.tag_name && String(lastData.tag_name).replace(/^v/i, "")) ||
+    (lastData.name && String(lastData.name).replace(/^v/i, ""));
+  const installer = pickReleaseInstaller(lastData.assets || []);
+  const downloadURL = installer && installer.browser_download_url;
+  const hasUpdate = Boolean(downloadURL && compareSemver(remoteVersion, version) > 0);
+
+  return {
+    hasUpdate,
+    remoteVersion,
+    releaseName: lastData.name || lastData.tag_name || "",
+    downloadURL,
+  };
+}
+
+function showAvailableUpdateNotification(event, update) {
+  if (
+    !update.hasUpdate ||
+    !update.remoteVersion ||
+    lastNotifiedUpdateVersion === update.remoteVersion ||
+    !Notification.isSupported()
+  ) {
+    return;
+  }
+
+  const mainWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isVisible()) return;
+
+  lastNotifiedUpdateVersion = update.remoteVersion;
+  activeUpdateNotification = new Notification({
+    title: `发现新版本 v${update.remoteVersion}`,
+    body: "客户端会继续正常运行，点击后可选择下载更新。",
+    silent: true,
+  });
+  activeUpdateNotification.on("click", () => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+  activeUpdateNotification.on("close", () => {
+    activeUpdateNotification = null;
+  });
+  activeUpdateNotification.show();
+}
+
+function showDownloadedUpdateNotification(event, remoteVersion) {
+  if (!Notification.isSupported()) return;
+  const mainWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isVisible()) return;
+
+  activeUpdateNotification = new Notification({
+    title: remoteVersion ? `v${remoteVersion} 已下载` : "更新已下载",
+    body: "客户端会继续正常运行，任务结束后可选择退出并安装。",
+    silent: true,
+  });
+  activeUpdateNotification.on("click", () => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+  activeUpdateNotification.on("close", () => {
+    activeUpdateNotification = null;
+  });
+  activeUpdateNotification.show();
+}
+
 export default {
   async Mainfunc(IsUseSysTitle) {
-    // 更新下载完成后由主进程直接启动安装器，避免依赖隐藏的渲染窗口弹窗。
     const launchInstaller = createLaunchInstallerHandler({
       platform: process.platform,
       spawn,
       shell,
       electronApp,
+      hasActiveTasks: hasActivePublishTasks,
+      quitApp: () => quitForUpdate(electronApp),
     });
 
     // Always register the check-for-updates handler first
     ipcMain.handle("check-for-updates", async (event) => {
       const settings = getAppSettings();
-      const lastData = await getLatestRelease(settings.autoUpdateUrl);
-      if (!lastData) {
-        return { hasUpdate: false };
-      }
-      const remoteVer =
-        (lastData.tag_name && String(lastData.tag_name).replace(/^v/i, "")) ||
-        (lastData.name && String(lastData.name).replace(/^v/i, ""));
-      console.log(lastData, remoteVer, "remoteVer", version);
-      const cmp = compareSemver(remoteVer, version);
-      const assets = lastData.assets || [];
-
-      const installer = pickReleaseInstaller(assets);
-      const downloadURL = installer && installer.browser_download_url;
-      console.log(downloadURL, "downloadURL", assets);
-      console.log(cmp, "cmp");
-      if (downloadURL && cmp > 0) {
-        downloadFile.download(
-          BrowserWindow.fromWebContents(event.sender),
-          downloadURL,
-          {
-            notifyCompleted: false,
-            onCompleted: (installerPath) => launchInstaller(null, installerPath),
-          }
-        );
-      }
+      const update = await resolveAvailableUpdate(settings.autoUpdateUrl);
+      showAvailableUpdateNotification(event, update);
       return {
-        hasUpdate: Boolean(downloadURL && cmp > 0),
+        hasUpdate: update.hasUpdate,
+        remoteVersion: update.remoteVersion || "",
+        releaseName: update.releaseName || "",
       };
+    });
+
+    ipcMain.handle("download-update", async (event) => {
+      if (updateDownloadInProgress) {
+        return { started: false, reason: "in-progress" };
+      }
+
+      const settings = getAppSettings();
+      const update = await resolveAvailableUpdate(settings.autoUpdateUrl);
+      if (!update.hasUpdate) {
+        return { started: false, reason: "not-available" };
+      }
+
+      updateDownloadInProgress = true;
+      const started = downloadFile.download(
+        BrowserWindow.fromWebContents(event.sender),
+        update.downloadURL,
+        {
+          notifyCompleted: true,
+          onCompleted: () => {
+            showDownloadedUpdateNotification(event, update.remoteVersion);
+          },
+          onTerminated: () => {
+            updateDownloadInProgress = false;
+          },
+        }
+      );
+      if (!started) updateDownloadInProgress = false;
+      return { started, remoteVersion: update.remoteVersion };
     });
 
     ipcMain.handle("get-app-settings", async () => getAppSettings());
@@ -228,7 +315,7 @@ export default {
       updateAppSettings(patch || {})
     );
 
-    // 先启动安装包再退出应用，避免安装器处理正在运行的主程序时失败。
+    // 安装由用户主动触发；存在发布任务时拒绝退出和安装。
     ipcMain.handle("launch-installer", launchInstaller);
 
     // puppeteerFile 上传文件发布，获取登录状态

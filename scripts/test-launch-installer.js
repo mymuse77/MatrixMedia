@@ -103,7 +103,31 @@ const { createLaunchInstallerHandler } = require(launchInstallerBundle);
 
   const result = await handler(null, "");
 
-  assert.deepStrictEqual(result, { ok: false });
+  assert.deepStrictEqual(result, { ok: false, reason: "invalid-path" });
+})();
+
+(async () => {
+  let spawnCount = 0;
+  let quitCount = 0;
+  const handler = createLaunchInstallerHandler({
+    platform: "win32",
+    spawn: () => {
+      spawnCount += 1;
+      return { unref() {} };
+    },
+    shell: { openPath: async () => "" },
+    electronApp: { quit() {} },
+    hasActiveTasks: () => true,
+    quitApp: () => {
+      quitCount += 1;
+    },
+  });
+
+  const result = await handler(null, "C:\\Temp\\matrixmedia.exe");
+
+  assert.deepStrictEqual(result, { ok: false, reason: "active-tasks" });
+  assert.strictEqual(spawnCount, 0);
+  assert.strictEqual(quitCount, 0);
 })();
 
 console.log("launch installer tests passed");

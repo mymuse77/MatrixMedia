@@ -39,6 +39,7 @@ import {
 import { destroyAccountLoginWindows } from "./services/accountLoginWindowManager";
 import { registerWebSocketHandlers } from "./services/websocketHandlers";
 import { getAppSettings } from "./services/appSettings";
+import { registerUpdateQuitHandler } from "./services/updateQuitCoordinator";
 import Server from "./server/index";
 
 const websocketConfig = require("./config/websocket.config");
@@ -94,6 +95,12 @@ function performQuit() {
   allowQuit = true;
   app.quit();
 }
+
+registerUpdateQuitHandler(() => {
+  destroyAccountLoginWindows();
+  allowQuit = true;
+  app.quit();
+});
 
 function requestQuit() {
   if (allowQuit) {
@@ -233,7 +240,7 @@ function onAppReady() {
               "",
               `平台服务地址：${serviceUrl}`,
               "",
-              `是否自动更新：${autoUpdateEnabled ? "是（启动时检查）" : "否（已跳过启动检查）"}`,
+              `启动更新检查：${autoUpdateEnabled ? "是" : "否"}`,
             ].join("\n"),
             buttons: ["关闭"],
             noLink: true,

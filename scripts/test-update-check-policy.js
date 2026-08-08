@@ -42,13 +42,12 @@ try {
     }),
     true
   );
-  assert.strictEqual(storage.data[UPDATE_CHECK_DATE_KEY], "2026-06-23");
   assert.strictEqual(
     shouldRunDailyUpdateCheck({
       storage,
       now: new Date("2026-06-23T20:00:00"),
     }),
-    false
+    true
   );
   assert.strictEqual(
     shouldRunDailyUpdateCheck({
@@ -57,7 +56,7 @@ try {
     }),
     true
   );
-  assert.strictEqual(storage.data[UPDATE_CHECK_DATE_KEY], "2026-06-24");
+  assert.strictEqual(storage.data[UPDATE_CHECK_DATE_KEY], undefined);
 
   const brokenStorage = {
     getItem() {

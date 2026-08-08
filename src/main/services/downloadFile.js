@@ -1,5 +1,4 @@
 /* eslint-disable no-case-declarations */
-import { dialog } from 'electron'
 import path from 'path'
 
 function safeSend(mainWindow, channel, ...args) {
@@ -19,17 +18,19 @@ function safeSend(mainWindow, channel, ...args) {
 
 export default {
   download(mainWindow, downloadUrL, options = {}) {
-    const { onCompleted, notifyCompleted = true } = options;
+    const { onCompleted, onTerminated, notifyCompleted = true } = options;
     if (
       !mainWindow ||
       mainWindow.isDestroyed() ||
       !mainWindow.webContents ||
       mainWindow.webContents.isDestroyed()
     ) {
-      return
+      return false
     }
-    mainWindow.webContents.downloadURL(downloadUrL)
-    mainWindow.webContents.session.once('will-download', (event, item) => {
+    const downloadSession = mainWindow.webContents.session
+    const handleWillDownload = (event, item) => {
+      if (item.getURL() && item.getURL() !== downloadUrL) return
+      downloadSession.removeListener('will-download', handleWillDownload)
       const filePath = path.join(require('electron').app.getPath('downloads'), item.getFilename())
       item.setSavePath(filePath)
       item.on('updated', (event, state) => {
@@ -61,18 +62,31 @@ export default {
                 console.error('下载完成后的处理失败:', error && error.message ? error.message : error)
               })
             }
+            if (typeof onTerminated === 'function') onTerminated('completed')
             break
           case 'interrupted':
             safeSend(mainWindow, 'download-error', true)
-            dialog.showErrorBox(
-              '下载出错',
-              '由于网络或其他未知原因导致下载出错.'
-            )
+            if (typeof onTerminated === 'function') onTerminated('interrupted')
+            break
+          case 'cancelled':
+            safeSend(mainWindow, 'download-error', true)
+            if (typeof onTerminated === 'function') onTerminated('cancelled')
             break
           default:
+            if (typeof onTerminated === 'function') onTerminated(state)
             break
         }
       })
-    })
+    }
+    downloadSession.on('will-download', handleWillDownload)
+    try {
+      mainWindow.webContents.downloadURL(downloadUrL)
+      return true
+    } catch (error) {
+      downloadSession.removeListener('will-download', handleWillDownload)
+      if (typeof onTerminated === 'function') onTerminated('failed')
+      safeSend(mainWindow, 'download-error', true)
+      return false
+    }
   }
 }

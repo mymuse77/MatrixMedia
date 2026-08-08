@@ -27,57 +27,52 @@
         <svg-icon icon-class="close" class-name="icon-size"></svg-icon>
       </div>
     </div>
-    <el-dialog
-      title="自动更新"
-      :visible.sync="dialogVisible"
-      :show-close="false"
-      :close-on-press-escape="false"
-      :close-on-click-modal="false"
-      center
-      width="60%"
-      top="10vh"
+    <div
+      v-if="updateStatus !== 'idle'"
+      class="update-notice"
+      @mousedown.stop
     >
-      <el-tabs v-model="activeUpdateTab">
-        <el-tab-pane label="更新记录" name="releaseNotes">
-          <div v-if="releaseNoteTitle" class="release-notes-title">
-            {{ releaseNoteTitle }}
-          </div>
-          <pre class="release-notes-body">{{
-            releaseNoteBody || "暂无更新记录"
-          }}</pre>
-        </el-tab-pane>
-        <el-tab-pane label="安装提示" name="installTips">
-          <div style="color: red">提示未知来源请手动允许安装！！</div>
-          <div>
-            <el-image
-              style="width: 50%"
-              v-for="(item, index) in srcList"
-              :key="index"
-              :src="item"
-              z-index="999999999"
-              :preview-src-list="srcList"
-            >
-            </el-image>
-          </div>
-        </el-tab-pane>
-      </el-tabs>
-
-      <div v-if="percentage == 100">等待文件处理就绪...</div>
-      <div class="conten">
+      <div class="update-notice__content">
+        <div class="update-notice__title">{{ updateNoticeTitle }}</div>
+        <div class="update-notice__message">{{ updateNoticeMessage }}</div>
         <el-progress
-          :stroke-width="20"
+          v-if="updateStatus === 'downloading'"
           :percentage="percentage"
-          :color="colors"
-          :status="progressStaus"
-        ></el-progress>
+          :stroke-width="8"
+          :show-text="false"
+        />
       </div>
-    </el-dialog>
+      <div class="update-notice__actions">
+        <template v-if="updateStatus === 'available'">
+          <el-button size="mini" @click="dismissUpdateNotice">稍后</el-button>
+          <el-button size="mini" type="primary" @click="startUpdateDownload">
+            下载更新
+          </el-button>
+        </template>
+        <template v-else-if="updateStatus === 'ready'">
+          <el-button size="mini" @click="dismissUpdateNotice">稍后安装</el-button>
+          <el-button
+            size="mini"
+            type="primary"
+            :loading="installingUpdate"
+            @click="confirmInstallUpdate"
+          >
+            退出并安装
+          </el-button>
+        </template>
+        <template v-else-if="updateStatus === 'error'">
+          <el-button size="mini" @click="dismissUpdateNotice">关闭</el-button>
+          <el-button size="mini" type="primary" @click="startUpdateDownload">
+            重试
+          </el-button>
+        </template>
+      </div>
+    </div>
   </div>
 </template>
 
 <script>
 import { ipcRenderer } from "electron";
-import { shouldRunDailyUpdateCheck } from "./updateCheckPolicy";
 import { DEFAULT_APP_SETTINGS } from "../../../shared/appSettings.js";
 export default {
   data: () => ({
@@ -85,24 +80,13 @@ export default {
     IsUseSysTitle: false,
     isNotMac: process.platform !== "darwin",
     IsWeb: process.env.IS_WEB,
-    dialogVisible: false,
-    activeUpdateTab: "releaseNotes",
-    releaseNoteTitle: "",
-    releaseNoteBody: "",
+    updateStatus: "idle",
+    updateNoticeTitle: "",
+    updateNoticeMessage: "",
+    remoteVersion: "",
+    installingUpdate: false,
     appSettings: { ...DEFAULT_APP_SETTINGS },
-    progressStaus: null,
     filePath: "",
-    srcList:
-      process.platform === "darwin"
-        ? [require("@/assets/mac1.png"), require("@/assets/mac2.png")]
-        : [require("@/assets/i1.png"), require("@/assets/i2.png")],
-    colors: [
-      { color: "#f56c6c", percentage: 20 },
-      { color: "#e6a23c", percentage: 40 },
-      { color: "#6f7ad3", percentage: 60 },
-      { color: "#1989fa", percentage: 80 },
-      { color: "#5cb87a", percentage: 100 },
-    ],
     percentage: 0,
   }),
 
@@ -142,87 +126,105 @@ export default {
         })
         .catch(() => this.appSettings);
     },
-    fetchReleaseNotes() {
-      const url = this.appSettings.autoUpdateUrl;
-      if (!url) return Promise.resolve();
-      return fetch(url)
-        .then((res) => res.json())
-        .then((res) => {
-          const latest = Array.isArray(res) ? res[0] : res;
-          if (!latest) {
-            this.releaseNoteTitle = "";
-            this.releaseNoteBody = "";
-            return;
-          }
-          this.releaseNoteTitle = latest.name || latest.tag_name || "";
-          this.releaseNoteBody = latest.body || "";
-        })
-        .catch(() => {
-          this.releaseNoteTitle = "";
-          this.releaseNoteBody = "";
-        });
-    },
-    checkForUpdates(options = {}) {
-      if (!options.force && !shouldRunDailyUpdateCheck()) {
-        return Promise.resolve({ skipped: true });
-      }
-      return this.fetchReleaseNotes()
-        .then(() => ipcRenderer.invoke("check-for-updates"))
+    checkForUpdates() {
+      return ipcRenderer
+        .invoke("check-for-updates")
         .then((res) => {
           if (res && res.hasUpdate) {
-            this.activeUpdateTab = "releaseNotes";
+            this.remoteVersion = res.remoteVersion || "";
+            this.updateStatus = "available";
+            this.updateNoticeTitle = this.remoteVersion
+              ? `发现新版本 v${this.remoteVersion}`
+              : "发现新版本";
+            this.updateNoticeMessage =
+              "更新将在您确认后下载，不会中断当前发布任务。";
           }
           return res;
+        })
+        .catch(() => ({ hasUpdate: false }));
+    },
+    dismissUpdateNotice() {
+      this.updateStatus = "idle";
+    },
+    startUpdateDownload() {
+      this.percentage = 0;
+      this.updateStatus = "downloading";
+      this.updateNoticeTitle = "正在后台下载更新";
+      this.updateNoticeMessage = "下载不会停止或暂停当前发布任务。";
+      return ipcRenderer
+        .invoke("download-update")
+        .then((res) => {
+          if (!res || !res.started) {
+            if (res && res.reason === "in-progress") return res;
+            this.showUpdateDownloadError();
+          }
+          return res;
+        })
+        .catch(() => {
+          this.showUpdateDownloadError();
         });
     },
-    _defaultProgressColors() {
-      return [
-        { color: "#f56c6c", percentage: 20 },
-        { color: "#e6a23c", percentage: 40 },
-        { color: "#6f7ad3", percentage: 60 },
-        { color: "#1989fa", percentage: 80 },
-        { color: "#5cb87a", percentage: 100 },
-      ];
-    },
-    resetDownloadUi() {
-      this.percentage = 0;
-      this.progressStaus = null;
-      this.colors = this._defaultProgressColors();
-      this.dialogVisible = false;
+    showUpdateDownloadError() {
+      this.updateStatus = "error";
+      this.updateNoticeTitle = "更新下载失败";
+      this.updateNoticeMessage = "当前任务不受影响，可以稍后重试。";
     },
     _onDownloadProgress(event, arg) {
-      this.percentage = Number(arg);
-      this.dialogVisible = Boolean(this.percentage);
+      this.percentage = Math.max(0, Math.min(100, Number(arg) || 0));
+      this.updateStatus = "downloading";
+      this.updateNoticeTitle = `正在后台下载更新（${this.percentage}%）`;
+      this.updateNoticeMessage = "下载不会停止或暂停当前发布任务。";
     },
     _onDownloadError(event, arg) {
-      if (arg) {
-        this.progressStaus = "exception";
-        this.percentage = 40;
-        this.colors = "#d81e06";
-      }
+      if (arg) this.showUpdateDownloadError();
     },
     _onDownloadPaused(event, arg) {
       if (arg) {
-        this.progressStaus = "warning";
-        this.$alert("下载由于未知原因被中断！", "提示", {
-          confirmButtonText: "重试",
-          callback: () => {
-            this.resetDownloadUi();
-            this.checkForUpdates({ force: true });
-          },
-        });
+        this.updateStatus = "downloading";
+        this.updateNoticeTitle = "更新下载暂时中断";
+        this.updateNoticeMessage = "客户端仍可正常使用，正在等待下载恢复。";
       }
     },
     _onDownloadDone(event, age) {
       this.filePath = age.filePath;
-      this.progressStaus = "success";
-      this.dialogVisible = false;
-      this.$alert("更新下载完成！", "提示", {
-        confirmButtonText: "安装",
-        callback: () => {
-          ipcRenderer.invoke("launch-installer", this.filePath);
-        },
-      });
+      this.percentage = 100;
+      this.updateStatus = "ready";
+      this.updateNoticeTitle = "更新已下载";
+      this.updateNoticeMessage = "请在发布任务结束后选择“退出并安装”。";
+    },
+    confirmInstallUpdate() {
+      return this.$confirm(
+        "安装更新会关闭客户端。系统会再次检查发布任务，运行中的任务不会被中断。",
+        "安装更新",
+        {
+          confirmButtonText: "退出并安装",
+          cancelButtonText: "稍后安装",
+          type: "warning",
+        }
+      )
+        .then(() => {
+          this.installingUpdate = true;
+          return ipcRenderer.invoke("launch-installer", this.filePath);
+        })
+        .then((res) => {
+          if (res && res.ok) return;
+          this.installingUpdate = false;
+          this.updateStatus = "ready";
+          if (res && res.reason === "active-tasks") {
+            this.updateNoticeMessage =
+              "检测到发布任务正在运行，已取消安装；任务结束后可再次安装。";
+            this.$message.warning("发布任务正在运行，本次安装已取消");
+            return;
+          }
+          this.updateNoticeMessage = "安装程序启动失败，请稍后重试。";
+          this.$message.error("安装程序启动失败");
+        })
+        .catch((error) => {
+          this.installingUpdate = false;
+          if (error === "cancel" || error === "close") return;
+          this.updateNoticeMessage = "安装程序启动失败，请稍后重试。";
+          this.$message.error("安装程序启动失败");
+        });
     },
     Mini() {
       ipcRenderer.invoke("windows-mini");
@@ -294,25 +296,37 @@ export default {
     }
   }
 }
-.release-notes-title {
-  margin-bottom: 8px;
+.update-notice {
+  position: fixed;
+  top: 42px;
+  right: 18px;
+  z-index: 100000;
+  box-sizing: border-box;
+  width: 390px;
+  padding: 14px 16px;
+  line-height: 1.5;
+  color: #303133;
+  background: #fff;
+  border: 1px solid #ebeef5;
+  border-left: 4px solid #409eff;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  -webkit-app-region: no-drag;
+}
+.update-notice__title {
+  margin-bottom: 4px;
+  font-size: 15px;
   font-weight: 600;
 }
-.release-notes-body {
-  box-sizing: border-box;
-  width: 100%;
-  max-height: 240px;
-  padding: 12px;
-  margin: 0;
-  overflow: auto;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-  text-align: left;
-  background: #f7f8fa;
-  border: 1px solid #e4e7ed;
-  border-radius: 4px;
-  color: #303133;
-  font-family: inherit;
+.update-notice__message {
+  margin-bottom: 10px;
+  color: #606266;
+  font-size: 13px;
+}
+.update-notice__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
 }
 </style>

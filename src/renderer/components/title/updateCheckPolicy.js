@@ -13,22 +13,9 @@ export function shouldRunDailyUpdateCheck({
   now = new Date(),
   key = UPDATE_CHECK_DATE_KEY,
 } = {}) {
-  try {
-    const targetStorage =
-      storage ||
-      (typeof window !== "undefined" && window.localStorage
-        ? window.localStorage
-        : null);
-    if (!targetStorage) return true;
-
-    const today = getUpdateCheckDate(now);
-    if (targetStorage.getItem(key) === today) {
-      return false;
-    }
-
-    targetStorage.setItem(key, today);
-    return true;
-  } catch (_) {
-    return true;
-  }
+  // 保留该导出以兼容旧调用方，但不再按日期限制启动更新检查。
+  void storage;
+  void now;
+  void key;
+  return true;
 }
