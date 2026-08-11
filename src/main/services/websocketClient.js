@@ -287,6 +287,9 @@ class WebSocketClient {
           console.error(`[WebSocket] 任务执行失败 (${taskId}):`, errorSummary);
           if (type === 'publish_video') {
             const taskPayload = taskData && typeof taskData.data === 'object' && taskData.data !== null ? taskData.data : {};
+            const nonRetryable =
+              error?.nonRetryable === true ||
+              error?.publishPayload?.nonRetryable === true;
             this.sendTaskResult(taskId, 'failed', {
               action: 'publish_video',
               itemId: taskPayload.itemId || '',
@@ -297,6 +300,7 @@ class WebSocketClient {
               videoPath: taskPayload.videoPath || taskPayload.sourceFilePath || taskPayload.filePath || '',
               videoUrl: taskPayload.videoUrl || taskPayload.url || '',
               error: errorMessage,
+              nonRetryable,
             });
             return;
           }

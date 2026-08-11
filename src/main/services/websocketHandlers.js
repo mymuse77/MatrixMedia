@@ -726,6 +726,28 @@ function getAccountPlatformValue(account) {
   return cleanText(account?.platform) || cleanText(account?.pt);
 }
 
+function sendPublishLoginExpiredStatus(wsClient, { phone, platform, partition, url }) {
+  if (!wsClient || typeof wsClient.sendStatus !== 'function') return;
+
+  const checkedAt = Date.now();
+  wsClient.sendStatus({
+    action: 'account_login_status',
+    reason: 'publish_login_expired',
+    account: {
+      phone,
+      platform,
+      pt: platform,
+      partition: partition || getAccountPartition(phone, platform),
+      url: url || ptConfig[platform]?.index,
+      isLoggedIn: false,
+      loginStatus: 'expired',
+      loginStatusText: '登录失效',
+      loginExpiresAtMs: null,
+      checkedAt,
+    },
+  });
+}
+
 function getVideoPathValue(video) {
   return cleanText(video?.videoPath) || cleanText(video?.filePath) || cleanText(video?.path) || cleanText(video?.sourceFilePath);
 }
@@ -1493,6 +1515,11 @@ export async function handlePublishVideo(taskData, wsClient) {
               void rejectOnce(new Error(message || '发布失败'), payload);
             }
           } else if (channel === 'puppeteer-noLogin') {
+            sendPublishLoginExpiredStatus(wsClient, {
+              phone,
+              platform,
+              partition: publishData?.partition || partition,
+            });
             void rejectOnce(
               new Error(payload?.message || '登录状态异常或未登录'),
               { ...payload, nonRetryable: true },
@@ -1963,6 +1990,9 @@ export async function handlePublishVideos(taskData, wsClient) {
       failCount += 1;
       const message = error?.message || '发布失败';
       const diagnostic = error?.publishPayload?.diagnostic || null;
+      const nonRetryable =
+        error?.nonRetryable === true ||
+        error?.publishPayload?.nonRetryable === true;
       const detail = {
         success: false,
         itemId,
@@ -1974,6 +2004,7 @@ export async function handlePublishVideos(taskData, wsClient) {
         executionToken,
         attemptCount,
         error: message,
+        nonRetryable,
         ...(diagnostic ? { diagnostic } : {}),
       };
       results.push(detail);

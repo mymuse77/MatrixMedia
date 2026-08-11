@@ -27,7 +27,7 @@ export function normalizeAppSettings(raw = {}) {
         : DEFAULT_APP_SETTINGS.autoUpdateUrl,
     webSocketServerUrl:
       typeof data.webSocketServerUrl === "string" &&
-      data.webSocketServerUrl.trim()
+        data.webSocketServerUrl.trim()
         ? data.webSocketServerUrl.trim()
         : DEFAULT_APP_SETTINGS.webSocketServerUrl,
     skipStartupUpdateCheck: normalizeBoolean(
