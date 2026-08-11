@@ -39,6 +39,19 @@ export function closeOtherAccountLoginWindows(partition) {
   }
 }
 
+export function destroyAccountLoginWindowByPartition(partition) {
+  const win = accountLoginWindows.get(partition);
+  accountLoginWindows.delete(partition);
+  if (!isWindowAlive(win)) return false;
+
+  try {
+    win.destroy();
+  } catch (_) {
+    return false;
+  }
+  return true;
+}
+
 export function destroyAccountLoginWindows() {
   for (const [partition, win] of accountLoginWindows.entries()) {
     if (!isWindowAlive(win)) {

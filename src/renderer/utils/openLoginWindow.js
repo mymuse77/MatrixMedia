@@ -31,6 +31,7 @@ export default async function openLoginWindow(item) {
   const useragent = cfg.useragent;
 
   return ipcRenderer.invoke("open-account-login-window", {
+    accountId: item.id,
     partition,
     url,
     useragent,

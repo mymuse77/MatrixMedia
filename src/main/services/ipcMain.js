@@ -16,6 +16,7 @@ import { registerScheduledPublishIpc } from "./scheduledPublish";
 import { registerSphWindowProductsIpc } from "./sphWindowProducts";
 import { createLaunchInstallerHandler } from "./launchInstaller";
 import { applyAccountProxyForTask } from "./proxyConfig";
+import { isAccountLoginPartitionBlocked } from "./accountLoginWindow";
 import { guardExternalNavigation } from "./navigationGuard";
 import { getAppSettings, updateAppSettings } from "./appSettings";
 import { quitForUpdate } from "./updateQuitCoordinator";
@@ -348,11 +349,15 @@ export default {
     // partition 的旧登录窗，避免用户切账号时桌面上堆一排登录窗口。
     ipcMain.handle("open-account-login-window", async (_event, args) => {
       const partition = args && args.partition;
+      const accountId = args && args.accountId;
       const url = args && args.url;
       const useragent = args && args.useragent;
       const title = args && args.title;
       if (!partition || !url) {
         return { ok: false, message: "partition/url 必填" };
+      }
+      if (isAccountLoginPartitionBlocked(partition, accountId)) {
+        return { ok: false, message: "账号登录数据正在清理，请稍后重试" };
       }
 
       try {
@@ -370,6 +375,10 @@ export default {
           ok: false,
           message: (proxyErr && proxyErr.message) || "代理配置错误",
         };
+      }
+
+      if (isAccountLoginPartitionBlocked(partition, accountId)) {
+        return { ok: false, message: "账号登录数据正在清理，请稍后重试" };
       }
 
       // 先处理现有账号登录窗：

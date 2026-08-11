@@ -82,7 +82,25 @@ Module._load = function patchedLoad(request, parent, isMain) {
 };
 
 async function main() {
-  const { openAccountLoginWindow } = require("../src/main/services/accountLoginWindow");
+  const {
+    blockAccountLoginPartition,
+    openAccountLoginWindow,
+  } = require("../src/main/services/accountLoginWindow");
+
+  blockAccountLoginPartition("persist:deleting抖音", "deleted-account");
+  const blocked = await openAccountLoginWindow({
+    accountId: "deleted-account",
+    partition: "persist:deleting抖音",
+    url: "https://creator.douyin.com/creator-micro/home",
+  });
+  assert.deepStrictEqual(blocked, { ok: false, message: "账号登录数据正在清理，请稍后重试" });
+
+  const recreated = await openAccountLoginWindow({
+    accountId: "recreated-account",
+    partition: "persist:deleting抖音",
+    url: "https://creator.douyin.com/creator-micro/home",
+  });
+  assert.deepStrictEqual(recreated, { ok: true });
 
   loadErrors.push(new Error("ERR_FAILED (-2) loading login page"));
   const recovered = await openAccountLoginWindow({
@@ -92,7 +110,7 @@ async function main() {
     title: "重试账号 抖音",
   });
   assert.deepStrictEqual(recovered, { ok: true });
-  assert.strictEqual(windows[0].destroyed, false);
+  assert.strictEqual(windows[1].destroyed, false);
 
   loadErrors.push(
     new Error("ERR_FAILED (-2) loading login page"),
@@ -106,7 +124,7 @@ async function main() {
   });
   assert.strictEqual(failed.ok, false);
   assert.match(failed.message, /ERR_FAILED/);
-  assert.strictEqual(windows[1].destroyed, true);
+  assert.strictEqual(windows[2].destroyed, true);
 
   const opened = await openAccountLoginWindow({
     partition: "persist:ready抖音",
@@ -115,16 +133,16 @@ async function main() {
     title: "正常账号 抖音",
   });
   assert.deepStrictEqual(opened, { ok: true });
-  assert.strictEqual(windows[2].destroyed, false);
-  assert.strictEqual(windows[2].useragent, "MatrixMediaTest/1.0");
+  assert.strictEqual(windows[3].destroyed, false);
+  assert.strictEqual(windows[3].useragent, "MatrixMediaTest/1.0");
 
   const reused = await openAccountLoginWindow({
     partition: "persist:ready抖音",
     url: "https://creator.douyin.com/creator-micro/home",
   });
   assert.deepStrictEqual(reused, { ok: true, reused: true });
-  assert.strictEqual(windows.length, 3);
-  assert.strictEqual(windows[2].focused, true);
+  assert.strictEqual(windows.length, 4);
+  assert.strictEqual(windows[3].focused, true);
 
   console.log("test-account-login-window passed");
 }

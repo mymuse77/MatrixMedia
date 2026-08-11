@@ -14,7 +14,8 @@ import path from 'path';
 import fs from 'fs';
 import { app, BrowserWindow } from 'electron';
 import { getAccountLoginStatus, getAccountPartition } from './accountLoginStatus';
-import { openAccountLoginWindow } from './accountLoginWindow';
+import { openAccountLoginWindow, unblockAccountLoginPartition } from './accountLoginWindow';
+import { purgeAccountSession } from './accountSessionCleanup';
 import { isRemotePublishFile, resolvePublishFile } from './resolvePublishFile';
 import { getAppSettings } from './appSettings';
 import { notifyPublishSuccess } from './publishNotification';
@@ -30,6 +31,14 @@ const LOGIN_STATUS_WATCH_TIMEOUT_MS = 10 * 60 * 1_000;
 const PUBLISH_MAX_ATTEMPTS = 4;
 const PUBLISH_RETRY_DELAYS_MS = [1_000, 3_000, 8_000];
 const activeLoginStatusWatches = new Map();
+
+function stopAccountLoginStatusWatches(partition) {
+  const partitionPrefix = `${cleanText(partition)}|`;
+  for (const [key, watch] of activeLoginStatusWatches.entries()) {
+    if (!key.startsWith(partitionPrefix)) continue;
+    watch.stop();
+  }
+}
 
 /**
  * 获取账号数据目录
@@ -306,6 +315,7 @@ function watchAccountLoginStatus({ wsClient, accountId, phone, platform, partiti
     checking = true;
     try {
       const status = await getAccountLoginStatus({ phone, platform, partition, url });
+      if (stopped) return;
       if (!status.isLoggedIn) return;
       stop();
       wsClient.sendStatus({
@@ -653,6 +663,7 @@ export async function handleOpenAccountLogin(taskData, wsClient) {
     });
 
     const result = await openAccountLoginWindow({
+      accountId: account?.id || id,
       partition: data.partition || getAccountPartition(targetPhone, targetPlatform),
       url: data.url || account?.url || ptConfig[targetPlatform].index,
       useragent: ptConfig[targetPlatform].useragent,
@@ -724,6 +735,89 @@ function sendScopedProgress(wsClient, taskId, progress, message, progressRange) 
 
 function getAccountPlatformValue(account) {
   return cleanText(account?.platform) || cleanText(account?.pt);
+}
+
+export async function handlePurgeAccountSessions(taskData, wsClient) {
+  const { taskId, data = {} } = taskData;
+  const accounts = asList(data.accounts);
+  if (accounts.length === 0) {
+    throw new Error('没有要清理登录数据的账号');
+  }
+
+  wsClient.sendProgress(taskId, 10, '正在停止账号登录监控');
+  const results = [];
+
+  for (let index = 0; index < accounts.length; index += 1) {
+    const account = accounts[index];
+    const partition = cleanText(account?.partition);
+    if (!partition) {
+      results.push({
+        id: cleanText(account?.id),
+        phone: cleanText(account?.phone),
+        platform: getAccountPlatformValue(account),
+        success: false,
+        error: '缺少账号会话 partition',
+      });
+      continue;
+    }
+
+    stopAccountLoginStatusWatches(partition);
+    try {
+      results.push(await purgeAccountSession({
+        id: account?.id,
+        phone: account?.phone,
+        platform: getAccountPlatformValue(account),
+        partition,
+      }));
+    } catch (error) {
+      results.push({
+        id: cleanText(account?.id),
+        phone: cleanText(account?.phone),
+        platform: getAccountPlatformValue(account),
+        partition,
+        success: false,
+        error: error && error.message ? error.message : String(error),
+      });
+    }
+
+    const progress = 10 + Math.round(((index + 1) / accounts.length) * 90);
+    wsClient.sendProgress(taskId, progress, `已清理 ${index + 1}/${accounts.length} 个账号`);
+  }
+
+  const failedResults = results.filter(result => !result.success);
+  if (failedResults.length > 0) {
+    for (const result of results.filter(item => item.success)) {
+      unblockAccountLoginPartition(result.partition, result.id);
+    }
+    const failedNames = failedResults
+      .map(result => result.phone || result.id || result.partition || '未命名账号')
+      .join('、');
+    throw new Error(`以下账号登录数据清理失败：${failedNames}。账号记录未删除，请重试`);
+  }
+
+  return {
+    success: true,
+    action: 'purge_account_sessions',
+    results,
+    message: `已彻底清理 ${results.length} 个账号的 Cookie、缓存和登录监控`,
+  };
+}
+
+export async function handleReleaseAccountSessionPurge(taskData, wsClient) {
+  const { taskId, data = {} } = taskData;
+  const accounts = asList(data.accounts);
+  for (const account of accounts) {
+    const partition = cleanText(account?.partition);
+    if (!partition) continue;
+    unblockAccountLoginPartition(partition, account?.id);
+  }
+
+  wsClient.sendProgress(taskId, 100, '已解除账号登录清理保护');
+  return {
+    success: true,
+    action: 'release_account_session_purge',
+    message: '账号未删除，已解除登录清理保护',
+  };
 }
 
 function sendPublishLoginExpiredStatus(wsClient, { phone, platform, partition, url }) {
@@ -2276,6 +2370,14 @@ export function registerWebSocketHandlers(wsClient) {
 
   wsClient.registerTaskHandler('sync_accounts_snapshot', (taskData) =>
     handleSyncAccountsSnapshot(taskData, wsClient)
+  );
+
+  wsClient.registerTaskHandler('purge_account_sessions', (taskData) =>
+    handlePurgeAccountSessions(taskData, wsClient)
+  );
+
+  wsClient.registerTaskHandler('release_account_session_purge', (taskData) =>
+    handleReleaseAccountSessionPurge(taskData, wsClient)
   );
 
   // 1. 新增媒体账号

@@ -21,6 +21,7 @@ buildSync({
 
 const {
   closeOtherAccountLoginWindows,
+  destroyAccountLoginWindowByPartition,
   destroyAccountLoginWindows,
   getAccountLoginWindowByPartition,
   registerAccountLoginWindow,
@@ -60,6 +61,11 @@ assert.strictEqual(getAccountLoginWindowByPartition(winB.partition), winB);
 closeOtherAccountLoginWindows(winA.partition);
 assert.strictEqual(winA.closeCount, 0);
 assert.strictEqual(winB.closeCount, 1);
+
+assert.strictEqual(destroyAccountLoginWindowByPartition(winB.partition), true);
+assert.strictEqual(winB.destroyCount, 1);
+assert.strictEqual(getAccountLoginWindowByPartition(winB.partition), null);
+assert.strictEqual(destroyAccountLoginWindowByPartition(winB.partition), false);
 
 destroyAccountLoginWindows();
 assert.strictEqual(winA.destroyCount, 1);

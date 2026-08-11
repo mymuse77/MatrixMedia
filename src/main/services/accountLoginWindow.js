@@ -7,6 +7,8 @@ import {
 import { guardExternalNavigation } from './navigationGuard';
 
 const openingWindows = new Map();
+const blockedAccountLoginPartitions = new Map();
+const ACCOUNT_LOGIN_PARTITION_BLOCK_TTL_MS = 60_000;
 const LOGIN_PAGE_LOAD_ATTEMPTS = 2;
 const LOGIN_PAGE_RETRY_DELAY_MS = 500;
 
@@ -17,6 +19,7 @@ function isRetryableLoginPageLoadError(error) {
 
 export async function openAccountLoginWindow(args) {
   const partition = args && args.partition;
+  const accountId = args && args.accountId;
   const url = args && args.url;
   const useragent = args && args.useragent;
   const title = args && args.title;
@@ -25,9 +28,16 @@ export async function openAccountLoginWindow(args) {
     return { ok: false, message: 'partition/url 必填' };
   }
 
+  if (isAccountLoginPartitionBlocked(partition, accountId)) {
+    return { ok: false, message: '账号登录数据正在清理，请稍后重试' };
+  }
+
   const pending = openingWindows.get(partition);
   if (pending) {
     await pending.catch(() => undefined);
+    if (isAccountLoginPartitionBlocked(partition, accountId)) {
+      return { ok: false, message: '账号登录数据正在清理，请稍后重试' };
+    }
     const existingWin = getAccountLoginWindowByPartition(partition) || findWindowByPartition(partition);
     if (existingWin) {
       focusWindow(existingWin);
@@ -38,7 +48,11 @@ export async function openAccountLoginWindow(args) {
   const promise = openAccountLoginWindowOnce({ partition, url, useragent, title });
   openingWindows.set(partition, promise);
   try {
-    return await promise;
+    const result = await promise;
+    if (isAccountLoginPartitionBlocked(partition, accountId)) {
+      return { ok: false, message: '账号登录数据正在清理，请稍后重试' };
+    }
+    return result;
   } finally {
     if (openingWindows.get(partition) === promise) {
       openingWindows.delete(partition);
@@ -150,4 +164,38 @@ async function openAccountLoginWindowOnce({ partition, url, useragent, title }) 
   }
 
   return { ok: false, message: '账号登录页加载失败' };
+}
+
+export function blockAccountLoginPartition(partition, accountId) {
+  if (partition) {
+    blockedAccountLoginPartitions.set(partition, {
+      accountId: String(accountId || '*'),
+      expiresAt: Date.now() + ACCOUNT_LOGIN_PARTITION_BLOCK_TTL_MS,
+    });
+  }
+}
+
+export function unblockAccountLoginPartition(partition, accountId) {
+  if (!partition) return;
+  const blocked = blockedAccountLoginPartitions.get(partition);
+  if (!blocked) return;
+  if (!accountId || blocked.accountId === String(accountId)) {
+    blockedAccountLoginPartitions.delete(partition);
+  }
+}
+
+export function isAccountLoginPartitionBlocked(partition, accountId) {
+  const blocked = blockedAccountLoginPartitions.get(partition);
+  if (!blocked) return false;
+  if (blocked.expiresAt <= Date.now()) {
+    blockedAccountLoginPartitions.delete(partition);
+    return false;
+  }
+
+  const nextAccountId = String(accountId || '');
+  if (nextAccountId && blocked.accountId !== '*' && blocked.accountId !== nextAccountId) {
+    blockedAccountLoginPartitions.delete(partition);
+    return false;
+  }
+  return true;
 }

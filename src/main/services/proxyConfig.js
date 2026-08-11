@@ -151,3 +151,19 @@ export async function applyAccountProxyToSession({
 export async function applyAccountProxyForTask(options) {
   return applyAccountProxyToSession(options);
 }
+
+/**
+ * 清除账号会话关联的代理认证，并恢复直连。
+ * @param {object} options
+ * @param {Electron.Session} [options.electronSession]
+ * @param {string} options.partition
+ * @returns {Promise<void>}
+ */
+export async function clearAccountProxySession({ electronSession, partition }) {
+  const partitionKey = String(partition || "").split("-")[0];
+  if (!partitionKey) throw new Error("partition 无效");
+
+  partitionProxyAuth.delete(partitionKey);
+  const ses = electronSession || session.fromPartition(partitionKey);
+  await ses.setProxy({ mode: "direct" });
+}
