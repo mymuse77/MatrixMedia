@@ -3,7 +3,7 @@
     <div class="page-header">
       <h1 class="page-title">项目详情</h1>
       <p class="page-desc">
-        矩媒 MatrixMedia v{{ appVersion }} —
+        视媒助手 MatrixMedia v{{ appVersion }} —
         多平台视频矩阵发布与批量分发工具（Electron + CLI + HTTP + MCP）
       </p>
     </div>

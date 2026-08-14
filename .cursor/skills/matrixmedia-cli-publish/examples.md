@@ -33,9 +33,9 @@ matrixmedia cli publish \
   -p dy \
   --phone 13800138000 \
   -f "/Users/me/videos/demo.mp4" \
-  -t "矩媒CLI发布演示" \
+  -t "视媒助手CLI发布演示" \
   --name "CLI演示任务" \
-  --tags "#开源 #CLI #自动化 #矩媒"
+  --tags "#开源 #CLI #自动化 #视媒助手"
 ```
 
 ## Example 2b: Login then publish (视频号)
@@ -53,9 +53,9 @@ matrixmedia cli publish \
   -p sph \
   --phone 13800138000 \
   -f "/Users/me/videos/demo.mp4" \
-  -t "矩媒CLI发布演示" \
+  -t "视媒助手CLI发布演示" \
   --bt2 "CLI发布测试" \
-  --tags "#开源 #CLI #自动化 #矩媒"
+  --tags "#开源 #CLI #自动化 #视媒助手"
 ```
 
 ## Example 3: Show window for debugging
@@ -215,7 +215,7 @@ matrixmedia cli publish \
   -f "/Users/me/videos/demo.mp4" \
   -t "视频号发布测试" \
   --bt2 "发布测试" \
-  --tags "#测试 #矩媒"
+  --tags "#测试 #视媒助手"
 
 # 4) 回查最近一条记录
 matrixmedia cli history --phone 13800138000 -p sph -n 1

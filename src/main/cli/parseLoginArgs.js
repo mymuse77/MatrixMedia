@@ -158,8 +158,8 @@ export function loginHelpText() {
   electron . cli login -p dy --phone 13800138000
   electron . cli login -p sph --phone 13800138000 --show
   electron . cli login -p sph --phone 宠物
-  xvfb-run -a ./矩媒.AppImage cli login -p dy --phone 13800138000
+  xvfb-run -a ./视媒助手.AppImage cli login -p dy --phone 13800138000
   electron . cli login -p dy --phone 13800138000 --puppeteer-headless
-  矩媒.exe cli login -p dy --phone 13800138000
+  视媒助手.exe cli login -p dy --phone 13800138000
 `.trim()
 }

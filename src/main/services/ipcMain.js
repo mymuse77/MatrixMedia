@@ -154,7 +154,7 @@ function compareSemver(remoteRaw, localRaw) {
  *
  * 兼容历史命名（旧 Release 包仍可正常升级）：
  *   旧 Win: Setup-0.6.0-win-x64.exe
- *   旧 Mac: 矩媒-0.6.0-arm64.dmg / 矩媒-0.6.0.dmg
+ *   旧 Mac: 视媒助手-0.6.0-arm64.dmg / 视媒助手-0.6.0.dmg
  */
 function pickReleaseInstaller(assets) {
   const list = assets || [];
@@ -169,7 +169,7 @@ function pickReleaseInstaller(assets) {
     const dmgs = list.filter((a) => /\.dmg$/i.test(a.name));
     const x64Dmg = dmgs.find((a) => /-(mac-)?x64\.dmg$/i.test(a.name));
     const universalDmg = dmgs.find((a) => /-universal\.dmg$/i.test(a.name));
-    // 旧版裸命名(如 矩媒-0.6.0.dmg)做兜底；历史 arm64 包仅兼容旧 Release
+    // 旧版裸命名(如 视媒助手-0.6.0.dmg)做兜底；历史 arm64 包仅兼容旧 Release
     const plainDmg = dmgs.find(
       (a) =>
         !/-arm64\.dmg$/i.test(a.name) &&

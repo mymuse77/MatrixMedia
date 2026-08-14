@@ -1,8 +1,8 @@
 {
   "name": "matrix-video",
-  "version": "0.1.6",
+  "version": "0.1.8",
   "author": "lhl",
-  "description": "矩阵工具",
+  "description": "视媒助手-视频分发工具",
   "license": "GPL-2.0-only",
   "main": "./dist/electron/main.js",
   "scripts": {
@@ -54,7 +54,7 @@
         "url": "http://127.0.0.1"
       }
     ],
-    "productName": "矩媒",
+    "productName": "视媒助手",
     "executableName": "matrixmedia",
     "artifactName": "MatrixMedia-${version}-${os}-${arch}.${ext}",
     "appId": "com.matrix.video",

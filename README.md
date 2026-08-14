@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="./lib/icons/icon.png" alt="MatrixMedia · 矩媒" width="128" />
+  <img src="./lib/icons/icon.png" alt="MatrixMedia · 视媒助手" width="128" />
 </p>
 
-<h1 align="center">矩媒 MatrixMedia</h1>
+<h1 align="center">视媒助手 MatrixMedia</h1>
 
 > **自媒体 · 矩阵 · 批量** — 多平台视频矩阵发布与批量分发工具（Electron + CLI）
 
@@ -29,7 +29,7 @@ github 下载地址为 https://github.com/hanliang97/MatrixMedia/releases
 https://gitee.com/gzlingyi_0/pubtw/wikis/pages?sort_id=14772656&doc_id=7335804
 ## 关键词（便于搜索）
 
-自媒体、自媒体矩阵、矩阵发布、矩阵运营、内容矩阵、视频矩阵、多平台矩阵、跨平台发布、批量发布、批量上传、批量分发、一键发布、多账号发布、多平台发布、本地视频发布、短视频矩阵、内容分发、账号矩阵、自动化发布、CLI 批量、命令行发布、无头发布、智能体编排、OpenClaw、MCP 发布、抖音矩阵、快手矩阵、小红书矩阵、百家号矩阵、哔哩哔哩矩阵、头条矩阵、视频号矩阵、番茄视频、番茄视频矩阵、MatrixMedia、矩媒、pubtw
+自媒体、自媒体矩阵、矩阵发布、矩阵运营、内容矩阵、视频矩阵、多平台矩阵、跨平台发布、批量发布、批量上传、批量分发、一键发布、多账号发布、多平台发布、本地视频发布、短视频矩阵、内容分发、账号矩阵、自动化发布、CLI 批量、命令行发布、无头发布、智能体编排、OpenClaw、MCP 发布、抖音矩阵、快手矩阵、小红书矩阵、百家号矩阵、哔哩哔哩矩阵、头条矩阵、视频号矩阵、番茄视频、番茄视频矩阵、MatrixMedia、视媒助手、pubtw
 
 ## <strong>📺 [教程视频](https://www.bilibili.com/video/BV1fiX5BzEb7)</strong>
 

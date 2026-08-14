@@ -606,7 +606,7 @@ export function publishHelpText() {
 退出码 (批量 --dir): 0 全部成功, 1 部分失败, 2 全部失败
 
 示例:
-  矩媒.exe cli publish -p dy --phone 13800138000 -f C:\\\\v.mp4 -t "我的视频标题" --tags "#减脂 #健身"
+  视媒助手.exe cli publish -p dy --phone 13800138000 -f C:\\\\v.mp4 -t "我的视频标题" --tags "#减脂 #健身"
   electron . cli publish -p dy --phone 13800138000 -f ./a.mp4 --name "任务A" -t "标题" --tags "#标签1 #标签2"
   # 视频号务必带 --bt2 短标 + 空格分隔的 tags：
   matrixmedia cli publish -p sph --phone 13800138000 -f ./v.mp4 \\\\

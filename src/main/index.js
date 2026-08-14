@@ -234,7 +234,7 @@ function onAppReady() {
           await dialog.showMessageBox({
             type: "info",
             title: "客户端信息",
-            message: "矩媒客户端",
+            message: "视媒助手客户端",
             detail: [
               `版本号：v${appVersion}`,
               "",
@@ -354,7 +354,7 @@ function onAppReady() {
     const contextMenu = Menu.buildFromTemplate(trayItems);
 
     tray.setContextMenu(contextMenu);
-    tray.setToolTip("矩媒");
+    tray.setToolTip("视媒助手");
     tray.on("click", () => {
       if (appSettings.hideMainWindowOnStartup) return;
       win.isVisible() ? win.hide() : win.show();
