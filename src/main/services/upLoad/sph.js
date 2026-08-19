@@ -6,6 +6,7 @@ import {
   resolveSphCreativeStatementLabel,
 } from "../../../shared/creativeStatement.js";
 import { attachSphVideoLink } from "./sphLink.js";
+import { applySphLocation } from "./sphLocation.js";
 import {
   WAIT_SELECTOR_APPEAR_MS,
   WAIT_UPLOAD_PROCESSING_MS,
@@ -291,6 +292,7 @@ export default async function (page, data, window, event, onFinish) {
 
     await tryDeclareOriginal(page);
     await waitSphUploadProcessing(page);
+    await applySphLocation(page, data);
 
     // 所有表单项（包括商品）完成后，草稿和发布只能二选一执行。
     if (isDraftMode) await clickSphDraftButton(page);

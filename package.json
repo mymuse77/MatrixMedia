@@ -1,6 +1,6 @@
 {
   "name": "matrix-video",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "author": "lhl",
   "description": "视媒助手-视频分发工具",
   "license": "GPL-2.0-only",
@@ -35,6 +35,7 @@
     "test:account-login-window": "node scripts/test-account-login-window.js",
     "test:account-login-window-manager": "node scripts/test-account-login-window-manager.js",
     "test:account-session-cleanup": "node scripts/test-account-session-cleanup.js",
+    "test:sph-location": "node scripts/test-sph-location.js",
     "test:ws-dy-location": "node scripts/test-ws-dy-location-publish.js",
     "test:ws-dy-location:live": "node scripts/test-ws-dy-location-publish.js --live --show"
   },

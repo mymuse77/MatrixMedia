@@ -36,6 +36,7 @@ export function parsePublishArgs(subArgv) {
     bookName: null,
     bt2: null,
     bq: "",
+    location: null,
     publishAt: null,
     show: false,
     closeWindowAfterPublish: true,
@@ -66,6 +67,8 @@ export function parsePublishArgs(subArgv) {
       out.bt2 = args[++i];
     } else if (a === "--tags" || a === "--bq") {
       out.bq = args[++i] || "";
+    } else if (a === "--location") {
+      out.location = args[++i] || "";
     } else if (a === "--publish-at") {
       out.publishAt = args[++i];
     } else if (a === "--show") {
@@ -281,6 +284,7 @@ export function publishBodyToArgv(body) {
   pushPair(["title", "t"], "-t");
   pushPair(["bookName", "name", "book-name"], "--name");
   pushPair(["bt2"], "--bt2");
+  pushPair(["location"], "--location");
   const tags = pickBodyValue(body, ["tags", "bq"]);
   if (tags != null) argv.push("--tags", normalizeBodyTags(tags));
   pushPair(["publishAt", "publish-at"], "--publish-at");
@@ -343,6 +347,7 @@ const SHARED_PUBLISH_BODY_KEYS = [
   "name",
   "book-name",
   "bt2",
+  "location",
   "tags",
   "bq",
   "publishAt",
@@ -586,6 +591,7 @@ export function publishHelpText() {
                             ，。、/,;:!?'"()[]{}<> 等标点替换为空格；不传则回退为 --title（会触发 warn）。
                             抖音/小红书也会消费 bt2（抖音拼进描述、小红书回退标题或正文），
                             哔哩哔哩/百家号/头条/快手当前不使用。
+      --location <text>  发布位置；视频号与抖音会尝试选择该地点，其他平台忽略。
       --tags <text>     视频标签 → data.bq（同 --bq）。多个标签用【空格】分隔，例如 "减脂 健身 教程"。
                             【上限 4 个话题】：超过 4 个会触发 warn，agent 生成时请按相关性裁到 ≤ 4。
                             • 视频号/抖音/快手：整串拼进描述末尾；未写 # 的标签会自动补上（与 GUI 标签多选一致）。

@@ -20,6 +20,25 @@ import {
   validatePlatformScheduledAt,
 } from "../../shared/platformSchedule.js";
 
+const LOGIN_STATUS_PRECHECK_TIMEOUT_MS = 10_000;
+
+async function getLoginStatusWithTimeout(options) {
+  let timer;
+  try {
+    return await Promise.race([
+      getAccountLoginStatus(options),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("登录态预检测超时")),
+          LOGIN_STATUS_PRECHECK_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function fileStemFromSource(source) {
   const raw = String(source || "").trim();
   const base = isRemotePublishFile(raw)
@@ -174,6 +193,8 @@ async function runSingleFilePublishInner(
       bt1,
       bt2,
       bq: String(v.bq || "").trim(),
+      address: String(v.location || "").trim(),
+      location: String(v.location || "").trim(),
       bdText: "",
       creativeStatement: normalizeCreativeStatement(v.creativeStatement || ""),
     },
@@ -205,6 +226,7 @@ async function runSingleFilePublishInner(
     bt: bt1,
     bt2,
     bq: String(v.bq || "").trim(),
+    location: String(v.location || "").trim(),
     creativeStatement: normalizeCreativeStatement(v.creativeStatement || ""),
     filePath:
       v.publishAt && isRemotePublishFile(sourceFile)
@@ -321,34 +343,38 @@ async function runSingleFilePublishInner(
   // 头条/视频号/小红书）；未覆盖的平台（如番茄视频）会返回 loginStatus
   // "unknown"，此时不短路，按原流程继续尝试发布。
   try {
-    // partition 有时带用于内部去重的 "-xxx" 后缀（参考 puppeteerFile.js /
-    // proxyConfig.js 同样的归一化），必须先剥掉，否则会查到一个不存在的
-    // session 分区，永远拿不到登录 cookie，把正常账号误判为"登录失效"。
-    const normalizedPartition = v.partition
-      ? String(v.partition).split("-")[0]
-      : v.partition;
-    const loginStatus = await getAccountLoginStatus({
-      phone: derivePhoneForRecord(v),
-      platform: v.platform,
-      url: cfg.index,
-      partition: normalizedPartition,
-    });
-    if (loginStatus.loginStatus === "expired") {
-      const message = `${v.platform}（${
-        derivePhoneForRecord(v) || "未知账号"
-      }）登录状态已失效，请重新登录后再试`;
-      console.warn(`MatrixMedia: ${message}`);
-      const failedRecordId = addPushDataRecord(
-        {
-          ...recordItem,
-          publishStatus: "failed",
-          publishSuccessCount: 0,
-          publishFailCount: 1,
-          lastPublishMessage: message,
-        },
-        matchesRecordItem
-      );
-      return { exitCode: 3, status: "failed", message, id: failedRecordId };
+    if (v.platform === "视频号") {
+      console.info("MatrixMedia: 视频号跳过发布前 cookie 预检测，由发布页判定登录态");
+    } else {
+      // partition 有时带用于内部去重的 "-xxx" 后缀（参考 puppeteerFile.js /
+      // proxyConfig.js 同样的归一化），必须先剥掉，否则会查到一个不存在的
+      // session 分区，永远拿不到登录 cookie，把正常账号误判为"登录失效"。
+      const normalizedPartition = v.partition
+        ? String(v.partition).split("-")[0]
+        : v.partition;
+      const loginStatus = await getLoginStatusWithTimeout({
+        phone: derivePhoneForRecord(v),
+        platform: v.platform,
+        url: cfg.index,
+        partition: normalizedPartition,
+      });
+      if (loginStatus.loginStatus === "expired") {
+        const message = `${v.platform}（${
+          derivePhoneForRecord(v) || "未知账号"
+        }）登录状态已失效，请重新登录后再试`;
+        console.warn(`MatrixMedia: ${message}`);
+        const failedRecordId = addPushDataRecord(
+          {
+            ...recordItem,
+            publishStatus: "failed",
+            publishSuccessCount: 0,
+            publishFailCount: 1,
+            lastPublishMessage: message,
+          },
+          matchesRecordItem
+        );
+        return { exitCode: 3, status: "failed", message, id: failedRecordId };
+      }
     }
   } catch (e) {
     console.warn(
