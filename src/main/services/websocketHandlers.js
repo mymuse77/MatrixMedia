@@ -25,11 +25,18 @@ import {
   PLATFORM_SCHEDULE_MODE,
   validatePlatformScheduledAt,
 } from '../../shared/platformSchedule.js';
+import {
+  PUBLISH_ATTEMPT_TIMEOUT_MS,
+  PUBLISH_ATTEMPT_LIMIT,
+  PUBLISH_DOWNLOAD_TIMEOUT_MS,
+  PUBLISH_TASK_TIMEOUT_MS,
+  resolvePublishTimeoutMs,
+} from './upLoad/uploadTimeouts.js';
 
 const LOGIN_STATUS_WATCH_INTERVAL_MS = 3_000;
 const LOGIN_STATUS_WATCH_TIMEOUT_MS = 10 * 60 * 1_000;
-const PUBLISH_MAX_ATTEMPTS = 4;
-const PUBLISH_RETRY_DELAYS_MS = [1_000, 3_000, 8_000];
+const PUBLISH_MAX_ATTEMPTS = PUBLISH_ATTEMPT_LIMIT;
+const PUBLISH_RETRY_DELAYS_MS = [1_000];
 const activeLoginStatusWatches = new Map();
 
 function stopAccountLoginStatusWatches(partition) {
@@ -1040,6 +1047,7 @@ function createLocalPublishData({
   show,
   idempotencyKey,
   executionToken,
+  publishTimeoutMs,
 }) {
   const localRecordName = cleanText(taskName) || title || path.basename(videoPath);
   const shortTitle = description || (platform === '视频号' ? title : '');
@@ -1080,6 +1088,7 @@ function createLocalPublishData({
     matrixItemId: cleanText(itemId),
     idempotencyKey: cleanText(idempotencyKey),
     executionToken: cleanText(executionToken),
+    publishTimeoutMs,
     matrixSourceVideoPath: cleanText(sourceVideoPath || videoPath),
     matrixSourceVideoUrl: cleanText(sourceVideoUrl),
     date: formatDateKey(new Date()),
@@ -1320,6 +1329,7 @@ export async function handlePublishVideo(taskData, wsClient) {
     videoUrl,
     videoPath,
     download,
+    downloadTimeoutMs,
     downloadHeaders,
     downloadExpiresAt,
     title,
@@ -1332,6 +1342,7 @@ export async function handlePublishVideo(taskData, wsClient) {
     localPublishRecord,
     idempotencyKey,
     executionToken,
+    publishTimeoutMs,
     scheduleMode,
     scheduledPublishAt,
     platformScheduleMode,
@@ -1402,6 +1413,7 @@ export async function handlePublishVideo(taskData, wsClient) {
       sendScopedProgress(wsClient, taskId, 10, '正在下载视频', progressRange);
       const resolved = await resolvePublishFile(resolvedVideoUrl, {
         headers: downloadRequest?.headers,
+        downloadTimeoutMs,
         cacheKey: getRemoteVideoCacheKey({
           itemId: cleanText(serverId) || itemId,
           downloadRequest,
@@ -1418,6 +1430,7 @@ export async function handlePublishVideo(taskData, wsClient) {
         sendScopedProgress(wsClient, taskId, 10, '正在下载视频', progressRange);
         const resolved = await resolvePublishFile(resolvedVideoUrl, {
           headers: downloadRequest?.headers,
+          downloadTimeoutMs,
           cacheKey: getRemoteVideoCacheKey({
             itemId: cleanText(serverId) || itemId,
             downloadRequest,
@@ -1442,6 +1455,7 @@ export async function handlePublishVideo(taskData, wsClient) {
       itemId,
       idempotencyKey,
       executionToken,
+      publishTimeoutMs,
       phone,
       pt: platform,
       partition,
@@ -1474,6 +1488,7 @@ export async function handlePublishVideo(taskData, wsClient) {
         show: data.show,
         idempotencyKey,
         executionToken,
+        publishTimeoutMs,
       });
 
     // 请求里的 location 必须落到 dy.js 读取的 data.address（含带 localPublishRecord 的重发）
@@ -1785,6 +1800,7 @@ export async function handlePublishVideos(taskData, wsClient) {
       itemId: cleanText(plannedItem?.itemId) || publishItemIds[detailIndex] || '',
       idempotencyKey: cleanText(plannedItem?.idempotencyKey),
       executionToken: cleanText(data.executionToken),
+      publishTimeoutMs: data.publishTimeoutMs,
       phone,
       platform,
       partition,
@@ -1997,6 +2013,12 @@ export async function handlePublishVideos(taskData, wsClient) {
       continue;
     }
 
+    const itemTimeoutMs = resolvePublishTimeoutMs(
+      data.publishTimeoutMs,
+      PUBLISH_TASK_TIMEOUT_MS,
+    );
+    const itemDeadline = Date.now() + itemTimeoutMs;
+
     try {
       wsClient.sendProgress(taskId, Number(progressStart.toFixed(2)), `正在发布 ${currentIndex}/${total}`);
 
@@ -2005,6 +2027,22 @@ export async function handlePublishVideos(taskData, wsClient) {
       for (let attempt = 1; attempt <= PUBLISH_MAX_ATTEMPTS; attempt += 1) {
         attemptCount = attempt;
         try {
+          const remainingMs = itemDeadline - Date.now();
+          if (remainingMs <= 0) {
+            const timeoutError = new Error(
+              `单账号发布总超时（${Math.round(itemTimeoutMs / 60000)} 分钟）`,
+            );
+            timeoutError.nonRetryable = true;
+            throw timeoutError;
+          }
+          const attemptTimeoutMs = Math.min(
+            remainingMs,
+            PUBLISH_ATTEMPT_TIMEOUT_MS,
+          );
+          const downloadTimeoutMs = Math.min(
+            remainingMs,
+            PUBLISH_DOWNLOAD_TIMEOUT_MS,
+          );
           result = await handlePublishVideo({
             taskId,
             type: 'publish_video',
@@ -2019,10 +2057,12 @@ export async function handlePublishVideos(taskData, wsClient) {
               videoUrl,
               videoPath,
               download,
+              downloadTimeoutMs,
               taskName,
               title: publishText.title,
               description: publishText.description,
               tags: publishText.tags,
+              publishTimeoutMs: attemptTimeoutMs,
               localPublishRecord: publishData,
               scheduleMode: cleanText(data.scheduleMode),
               scheduledPublishAt:

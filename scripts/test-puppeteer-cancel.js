@@ -18,7 +18,7 @@ const stubModules = new Map([
   ["puppeteer-in-electron", "module.exports = {};"],
   ["puppeteer-extra-plugin-stealth", "module.exports = function StealthPlugin() { return {}; };"],
   ["./Type", "module.exports = {};"],
-  ["./upLoad/uploadTimeouts.js", "exports.UPLOAD_WINDOW_AUTO_CLOSE_MS = 60000;"],
+  ["./upLoad/uploadTimeouts.js", "exports.UPLOAD_WINDOW_AUTO_CLOSE_MS = 60000; exports.PUBLISH_TASK_TIMEOUT_MS = 60000; exports.PUBLISH_ATTEMPT_LIMIT = 2; exports.PUBLISH_ATTEMPT_TIMEOUT_MS = 30000; exports.resolvePublishTimeoutMs = (value, fallback) => Number(value) > 0 ? Number(value) : fallback;"],
   ["./upLoad/closeWindow.js", "exports.skipCloseConfirmation = function skipCloseConfirmation() {};"],
 ]);
 
@@ -73,6 +73,11 @@ async function main() {
 
   runtime.enqueueTask({ taskId: "after-cancel" }, { reply() {} });
 
+  assert.deepStrictEqual(started, ["active", "after-cancel"]);
+
+  const targeted = runtime.enqueueTask({ taskId: "targeted" }, { reply() {} });
+  assert.strictEqual(targeted.cancel("单项超时"), true);
+  assert.strictEqual(runtime.getQueueSize(), 0);
   assert.deepStrictEqual(started, ["active", "after-cancel"]);
 
   console.log("test-puppeteer-cancel passed");

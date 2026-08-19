@@ -29,6 +29,7 @@ const resolvePublishCalls = [];
 const scheduledPublishRecords = [];
 const preflightCalls = [];
 const preflightFailuresByPhone = new Map();
+const publishFailuresByPhone = new Map();
 let remoteDownloadIndex = 0;
 
 const originalLoad = Module._load;
@@ -64,11 +65,19 @@ Module._load = function patchedLoad(request, parent, isMain) {
       runPuppeteerTask(data, transport, onFinish) {
         capturedPublishPayloads.push(data);
         setImmediate(() => {
-          transport.reply("puppeteerFile-done", {
-            ...data,
-            status: true,
-            message: "published",
-          });
+          const failure = publishFailuresByPhone.get(data.phone);
+          transport.reply("puppeteerFile-done", failure
+            ? {
+              ...data,
+              status: false,
+              nonRetryable: true,
+              message: failure,
+            }
+            : {
+              ...data,
+              status: true,
+              message: "published",
+            });
           if (typeof onFinish === "function") onFinish();
         });
       },
@@ -499,6 +508,45 @@ async function main() {
     "单账号登录失效不应触发批量外层重复预检",
   );
   assert.strictEqual(capturedPublishPayloads.length, singleFailurePublishCountBefore);
+
+  const continueAfterFailurePublishCountBefore = capturedPublishPayloads.length;
+  publishFailuresByPhone.set("13900139000", "单账号上传超时");
+  const continueAfterFailureResult = await handlePublishVideos(
+    {
+      taskId: "matrix-task-continue-after-failure-test",
+      type: "publish_videos",
+      data: {
+        taskName: "Continue after single account failure test",
+        publishTimeoutMs: 1200,
+        platforms: [platform],
+        accounts: [
+          { id: "account-1", phone: "13800138000", platform },
+          { id: "account-2", phone: "13900139000", platform },
+          { id: "account-3", phone: "13700137000", platform },
+        ],
+        videos: [{ id: "video-1", filePath: firstVideoPath }],
+        captions: [{ id: "caption-1", textContent: "Continue caption" }],
+      },
+    },
+    wsClient,
+  );
+  publishFailuresByPhone.clear();
+
+  assert.strictEqual(continueAfterFailureResult.success, false);
+  assert.strictEqual(continueAfterFailureResult.status, "partial");
+  assert.strictEqual(continueAfterFailureResult.total, 3);
+  assert.strictEqual(continueAfterFailureResult.successCount, 2);
+  assert.strictEqual(continueAfterFailureResult.failCount, 1);
+  assert.strictEqual(
+    capturedPublishPayloads.length,
+    continueAfterFailurePublishCountBefore + 3,
+    "单个账号异常后仍应继续调用后续账号",
+  );
+  assert.strictEqual(capturedPublishPayloads.at(-3).publishTimeoutMs, 1200);
+  assert.strictEqual(capturedPublishPayloads.at(-2).phone, "13900139000");
+  assert.strictEqual(capturedPublishPayloads.at(-1).phone, "13700137000");
+  assert.strictEqual(continueAfterFailureResult.results[1].success, false);
+  assert.match(continueAfterFailureResult.results[1].error, /上传超时/);
 
   const remoteChangeCallCountBefore = changeDataCalls.length;
   const remotePublishCountBefore = capturedPublishPayloads.length;

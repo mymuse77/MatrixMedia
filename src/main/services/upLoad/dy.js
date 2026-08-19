@@ -1321,7 +1321,15 @@ export default async function (page, data, window, event) {
     return;
   }
 
+  console.log(
+    "[dy] 上传阶段开始:",
+    JSON.stringify({
+      phone: data.phone || data.partition || "",
+      filePath: data.filePath || "",
+    }),
+  );
   try {
+    console.log("[dy] 等待视频上传输入框");
     await waitForDyUploadPageReady(page, {
       timeoutMs: DY_UPLOAD_INPUT_TIMEOUT_MS,
       intervalMs: 500,
@@ -1331,13 +1339,19 @@ export default async function (page, data, window, event) {
     if (!uploadInput) {
       throw new Error("抖音视频上传输入框在文件选择前消失");
     }
-    console.log(`[dy] 使用上传控件定位器: ${uploadInput.locator.id}`);
+    console.log(
+      "[dy] 上传控件已定位:",
+      JSON.stringify({ locator: uploadInput.locator.id, filePath: data.filePath || "" }),
+    );
+    console.log("[dy] 开始调用文件上传");
     await uploadInput.handle.uploadFile(path.resolve(data.filePath));
+    console.log("[dy] 文件上传调用已返回，等待视频处理");
   } catch (e) {
     await reportFailure("输入文件失败", e);
     return;
   }
   try {
+    console.log("[dy] 等待标题输入框");
     await pollPageUntil(
       page,
       () => !!document.querySelector(".semi-input"),
@@ -1362,12 +1376,14 @@ export default async function (page, data, window, event) {
     // 抖音话题只有遇到空格/回车才会把当前 #xxx 转成话题胶囊；
     // bq 末尾没有分隔符会导致最后一个标签没被识别，这里补一次空格触发。
     await page.keyboard.press("Space");
+    console.log("[dy] 标题、描述和标签已填写");
   } catch (e) {
     await reportFailure("输入标题失败", e);
     return;
   }
 
   try {
+    console.log("[dy] 等待视频转码和发布配置");
     // 不依赖会随打包变化的 container-xxx：等预览区 video（抖音 CDN）与同容器内的 rc 进度条同时出现
     await pollPageUntil(
       page,
@@ -1436,13 +1452,17 @@ export default async function (page, data, window, event) {
       return false;
     });
     if (!saved) throw new Error("未找到保存权限-不允许");
+    console.log("[dy] 保存权限已设置");
 
     // 自主声明入口在视频转码完成后才出现，必须在点击发布前完成
+    console.log("[dy] 开始处理自主声明、地理位置和定时配置");
     await selectDyCreativeStatementWithRetry(page, data);
     await selectDyLocationWithRetry(page, data);
     await setDyPlatformSchedule(page, data);
 
+    console.log("[dy] 配置完成，准备点击发布");
     await clickDyPublish(page, isDraftMode);
+    console.log("[dy] 已点击发布，等待平台确认");
     const confirmation = await waitForDyPublishConfirmation(page, {
       isDraftMode,
     });

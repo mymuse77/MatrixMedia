@@ -7,7 +7,12 @@ import { addExtra } from "puppeteer-extra";
 import pie from "puppeteer-in-electron";
 import path from "path";
 import Type from "./Type";
-import { UPLOAD_WINDOW_AUTO_CLOSE_MS } from "./upLoad/uploadTimeouts.js";
+import {
+  PUBLISH_ATTEMPT_LIMIT,
+  PUBLISH_TASK_TIMEOUT_MS,
+  UPLOAD_WINDOW_AUTO_CLOSE_MS,
+  resolvePublishTimeoutMs,
+} from "./upLoad/uploadTimeouts.js";
 import { skipCloseConfirmation } from "./upLoad/closeWindow.js";
 import { applyAccountProxyForTask } from "./proxyConfig.js";
 import {
@@ -75,13 +80,38 @@ export function createPuppeteerTaskRuntime({ runTask }) {
       }
     };
     activeTask = runtimeTask;
+    next.control.runtimeTask = runtimeTask;
     runTask(runtimeTask, queueDone);
   };
 
   return {
     enqueueTask(data, transport, userOnFinish) {
-      taskQueue.push({ data, transport, userOnFinish });
+      const entry = {
+        data,
+        transport,
+        userOnFinish,
+        control: {
+          runtimeTask: null,
+          canceled: false,
+          cancel(reason = "上传任务已主动中断") {
+            if (entry.control.canceled) return false;
+            entry.control.canceled = true;
+            if (entry.control.runtimeTask) {
+              entry.control.runtimeTask.cancel(reason);
+              return true;
+            }
+
+            const index = taskQueue.indexOf(entry);
+            if (index === -1) return false;
+            taskQueue.splice(index, 1);
+            if (typeof userOnFinish === "function") userOnFinish();
+            return true;
+          },
+        },
+      };
+      taskQueue.push(entry);
       processNextTask();
+      return entry.control;
     },
     cancelPuppeteerTasks(reason = "上传任务已主动中断") {
       const queued = taskQueue.length;
@@ -112,7 +142,7 @@ const puppeteerTaskRuntime = createPuppeteerTaskRuntime({
 });
 
 function enqueueTask(data, transport, userOnFinish) {
-  puppeteerTaskRuntime.enqueueTask(data, transport, userOnFinish);
+  return puppeteerTaskRuntime.enqueueTask(data, transport, userOnFinish);
 }
 
 export function cancelPuppeteerTasks(reason) {
@@ -264,7 +294,7 @@ export function registerPuppeteerIpc() {
  * @param {() => void} [onFinish] 任务结束时回调（如视频队列）
  */
 export function runPuppeteerTask(data, transport, onFinish) {
-  enqueueTask(data, transport, onFinish);
+  return enqueueTask(data, transport, onFinish);
 }
 
 export function runPuppeteerPreflight(data) {
@@ -312,15 +342,28 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
   const isXhsTask = isXhsPlatform(data.pt);
   const maxRetries = data.mmPreflightOnly
     ? 2
-    : getPublishAttemptLimit(data, 5);
-  const logStage = createPublishStageLogger(data);
-  logStage("任务开始", getPublishFileInfo(data.filePath));
+    : getPublishAttemptLimit(data, PUBLISH_ATTEMPT_LIMIT);
+  const publishTimeoutMs = resolvePublishTimeoutMs(
+    data.publishTimeoutMs,
+    PUBLISH_TASK_TIMEOUT_MS,
+  );
+  const rawLogStage = createPublishStageLogger(data);
+  let currentStage = "初始化";
+  const logStage = (stage, extra = {}) => {
+    currentStage = stage;
+    rawLogStage(stage, extra);
+  };
+  logStage("任务开始", {
+    ...getPublishFileInfo(data.filePath),
+    publishTimeoutMs,
+  });
   let currentAttempt = 0;
   let finished = false;
   let activeBrowser = null;
   let activeWin = null;
   let autoCloseTimer = null;
   let actionCheckTimer = null;
+  let publishTimeoutTimer = null;
   const retryDelay = 1000;
 
   const safeReply = (channel, payload) => {
@@ -341,6 +384,10 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     if (autoCloseTimer) {
       clearTimeout(autoCloseTimer);
       autoCloseTimer = null;
+    }
+    if (publishTimeoutTimer) {
+      clearTimeout(publishTimeoutTimer);
+      publishTimeoutTimer = null;
     }
     if (activeBrowser) {
       try {
@@ -367,6 +414,36 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     skipCloseConfirmation(win);
     if (win && !win.isDestroyed()) win.close();
   };
+
+  const abortTask = (message, extra = {}) => {
+    if (finished) return;
+    const payload = {
+      ...data,
+      ...extra,
+      status: false,
+      message,
+    };
+    if (!Object.prototype.hasOwnProperty.call(extra, "nonRetryable")) {
+      payload.nonRetryable = true;
+    }
+    safeReply("puppeteerFile-done", payload);
+    if (activeWin && !activeWin.isDestroyed()) {
+      closePublishWinProgrammatically(activeWin);
+    }
+    finishOnce();
+  };
+
+  publishTimeoutTimer = setTimeout(() => {
+    const minutes = Number((publishTimeoutMs / 60000).toFixed(1));
+    const message = `单账号发布超时（${minutes} 分钟），阶段：${currentStage}`;
+    console.error(`[publish-timeout] ${data.pt || "未知平台"} ${data.phone || data.partition || ""}: ${message}`);
+    abortTask(message, {
+      timeout: true,
+      timeoutMs: publishTimeoutMs,
+      timeoutStage: currentStage,
+      nonRetryable: false,
+    });
+  }, publishTimeoutMs);
 
   const createAttemptTransport = () => ({
     reply(channel, ...args) {
@@ -830,12 +907,15 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       const AUTO_CLOSE_DELAY = UPLOAD_WINDOW_AUTO_CLOSE_MS;
       if (!isXhsTask) {
         autoCloseTimer = setTimeout(() => {
-          console.log(
-            `窗口 ${data.partition} 已自动关闭（${Math.round(
-              AUTO_CLOSE_DELAY / 60000
-            )} 分钟兜底超时）`
-          );
-          closePublishWinProgrammatically(win);
+          const message = `发布窗口超时（${Math.round(
+            AUTO_CLOSE_DELAY / 60000
+          )} 分钟），阶段：${currentStage}`;
+          console.error(`[publish-timeout] ${data.pt || "未知平台"} ${data.phone || data.partition || ""}: ${message}`);
+          abortTask(message, {
+            timeout: true,
+            timeoutMs: AUTO_CLOSE_DELAY,
+            timeoutStage: currentStage,
+          });
         }, AUTO_CLOSE_DELAY);
       }
 
@@ -1091,16 +1171,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     runtimeTask.setCancelHandler((reason) => {
       if (finished) return;
       const message = reason || "上传任务已主动中断";
-      safeReply("puppeteerFile-done", {
-        ...data,
-        status: false,
-        interrupted: true,
-        message,
-      });
-      if (activeWin && !activeWin.isDestroyed()) {
-        closePublishWinProgrammatically(activeWin);
-      }
-      finishOnce();
+      abortTask(message, { interrupted: true });
     });
   }
 

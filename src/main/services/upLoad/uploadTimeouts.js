@@ -18,6 +18,29 @@ export const UPLOAD_WINDOW_AUTO_CLOSE_MS = 4 * 60 * 60 * 1000;
 /** CLI `publish` 等待 puppeteerFile-done 的上限，需覆盖弱网下大文件上传 */
 export const CLI_PUBLISH_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 
+/** 单个账号单视频的总看门狗时间；调用方可通过 publishTimeoutMs 覆盖。 */
+export const PUBLISH_TASK_TIMEOUT_MS = 6 * 60 * 1000;
+
+/** 单次浏览器发布尝试的超时时间，超时后允许再尝试一次。 */
+export const PUBLISH_ATTEMPT_TIMEOUT_MS = 3 * 60 * 1000;
+
+/** 单个账号最多执行两次：首次执行加一次自动重试。 */
+export const PUBLISH_ATTEMPT_LIMIT = 2;
+
+/** 远程视频单次下载的最大等待时间。 */
+export const PUBLISH_DOWNLOAD_TIMEOUT_MS = 2 * 60 * 1000;
+
+/** 防止调用方传入一个无限等待或异常大的单账号超时时间。 */
+export const PUBLISH_TASK_TIMEOUT_MAX_MS = 4 * 60 * 60 * 1000;
+
+export function resolvePublishTimeoutMs(value, fallback = PUBLISH_TASK_TIMEOUT_MS) {
+  const requested = Number(value);
+  if (!Number.isFinite(requested) || requested <= 0) {
+    return fallback;
+  }
+  return Math.min(Math.floor(requested), PUBLISH_TASK_TIMEOUT_MAX_MS);
+}
+
 /**
  * 用短周期 evaluate 轮询替代长时间 waitForFunction，避免 Puppeteer 默认
  * protocolTimeout（约 180s）下单次 CDP Runtime.callFunctionOn 超时。

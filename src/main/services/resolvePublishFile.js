@@ -7,7 +7,7 @@ import { app } from "electron";
 import crypto from "crypto";
 
 const REMOTE_FILE_RE = /^https?:\/\//i;
-const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_DOWNLOAD_TIMEOUT_MS = 2 * 60 * 1000;
 const activeDownloads = new Map();
 
 export function isRemotePublishFile(file) {
@@ -160,7 +160,7 @@ function normalizeDownloadError(error) {
 /**
  * 将发布 file 解析为本地路径；若为 http(s) URL 则下载到可复用缓存目录。
  * @param {string} file 本地路径或 http(s) URL
- * @param {{ headers?: Record<string, string|string[]>, cacheKey?: string, serverId?: string, matrixItemId?: string, itemId?: string, fileName?: string }} [options]
+ * @param {{ headers?: Record<string, string|string[]>, cacheKey?: string, serverId?: string, matrixItemId?: string, itemId?: string, fileName?: string, downloadTimeoutMs?: number }} [options]
  * @returns {Promise<{ localPath: string, remoteUrl: string|null, cleanup: (() => void)|null }>}
  */
 export async function resolvePublishFile(file, options = {}) {
@@ -230,7 +230,9 @@ export async function resolvePublishFile(file, options = {}) {
       url: raw,
       headers,
       responseType: "stream",
-      timeout: DEFAULT_DOWNLOAD_TIMEOUT_MS,
+      timeout: Number(options.downloadTimeoutMs) > 0
+        ? Number(options.downloadTimeoutMs)
+        : DEFAULT_DOWNLOAD_TIMEOUT_MS,
       maxRedirects: 5,
       beforeRedirect: (options) => {
         const nextHost = String(options?.host || options?.hostname || "").toLowerCase();
