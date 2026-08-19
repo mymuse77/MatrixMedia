@@ -184,8 +184,9 @@ function pickReleaseInstaller(assets) {
 }
 
 let updateDownloadInProgress = false;
-let lastNotifiedUpdateVersion = "";
+let updateNotificationShownThisRun = false;
 let activeUpdateNotification = null;
+let launchInstallerHandler = null;
 
 async function resolveAvailableUpdate(updateUrl) {
   const lastData = await getLatestRelease(updateUrl);
@@ -210,7 +211,7 @@ function showAvailableUpdateNotification(event, update) {
   if (
     !update.hasUpdate ||
     !update.remoteVersion ||
-    lastNotifiedUpdateVersion === update.remoteVersion ||
+    updateNotificationShownThisRun ||
     !Notification.isSupported()
   ) {
     return;
@@ -219,22 +220,62 @@ function showAvailableUpdateNotification(event, update) {
   const mainWindow = BrowserWindow.fromWebContents(event.sender);
   if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isVisible()) return;
 
-  lastNotifiedUpdateVersion = update.remoteVersion;
+  updateNotificationShownThisRun = true;
   activeUpdateNotification = new Notification({
     title: `发现新版本 v${update.remoteVersion}`,
-    body: "客户端会继续正常运行，点击后可选择下载更新。",
+    body: "请选择下方操作：立即更新，或本次不再提示。",
     silent: true,
+    actions: [
+      { type: "button", text: "立即更新" },
+      { type: "button", text: "本次不再提示" },
+    ],
   });
-  activeUpdateNotification.on("click", () => {
-    if (!mainWindow.isDestroyed()) {
-      mainWindow.show();
-      mainWindow.focus();
+  activeUpdateNotification.on("action", (event, legacyIndex) => {
+    const index =
+      typeof event?.actionIndex === "number" ? event.actionIndex : legacyIndex;
+    if (index === 0 && !mainWindow.isDestroyed()) {
+      startUpdateDownload(mainWindow, update, true);
     }
   });
+  // 点击通知正文不唤起主界面；更新操作只通过通知下方按钮触发。
+  activeUpdateNotification.on("click", () => {});
   activeUpdateNotification.on("close", () => {
     activeUpdateNotification = null;
   });
   activeUpdateNotification.show();
+}
+
+function startUpdateDownload(mainWindow, update, installAfterDownload = false) {
+  if (updateDownloadInProgress || !launchInstallerHandler) return false;
+
+  updateDownloadInProgress = true;
+  const started = downloadFile.download(mainWindow, update.downloadURL, {
+    notifyCompleted: !installAfterDownload,
+    onCompleted: async (filePath) => {
+      if (!installAfterDownload) {
+        showDownloadedUpdateNotification(
+          { sender: mainWindow.webContents },
+          update.remoteVersion
+        );
+        return;
+      }
+
+      const result = await launchInstallerHandler(null, filePath);
+      if (!result || !result.ok) {
+        dialog.showErrorBox(
+          "更新失败",
+          result && result.reason === "active-tasks"
+            ? "检测到发布任务正在运行，请任务结束后重试更新。"
+            : "更新程序启动失败，请稍后重试。"
+        );
+      }
+    },
+    onTerminated: () => {
+      updateDownloadInProgress = false;
+    },
+  });
+  if (!started) updateDownloadInProgress = false;
+  return started;
 }
 
 function showDownloadedUpdateNotification(event, remoteVersion) {
@@ -269,6 +310,7 @@ export default {
       hasActiveTasks: hasActivePublishTasks,
       quitApp: () => quitForUpdate(electronApp),
     });
+    launchInstallerHandler = launchInstaller;
 
     // Always register the check-for-updates handler first
     ipcMain.handle("check-for-updates", async (event) => {
@@ -282,7 +324,7 @@ export default {
       };
     });
 
-    ipcMain.handle("download-update", async (event) => {
+    ipcMain.handle("download-update", async (event, options = {}) => {
       if (updateDownloadInProgress) {
         return { started: false, reason: "in-progress" };
       }
@@ -293,21 +335,11 @@ export default {
         return { started: false, reason: "not-available" };
       }
 
-      updateDownloadInProgress = true;
-      const started = downloadFile.download(
+      const started = startUpdateDownload(
         BrowserWindow.fromWebContents(event.sender),
-        update.downloadURL,
-        {
-          notifyCompleted: true,
-          onCompleted: () => {
-            showDownloadedUpdateNotification(event, update.remoteVersion);
-          },
-          onTerminated: () => {
-            updateDownloadInProgress = false;
-          },
-        }
+        update,
+        options.installAfterDownload === true
       );
-      if (!started) updateDownloadInProgress = false;
       return { started, remoteVersion: update.remoteVersion };
     });
 

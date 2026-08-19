@@ -44,9 +44,11 @@
       </div>
       <div class="update-notice__actions">
         <template v-if="updateStatus === 'available'">
-          <el-button size="mini" @click="dismissUpdateNotice">稍后</el-button>
+          <el-button size="mini" @click="dismissUpdateNotice">
+            本次不再提示
+          </el-button>
           <el-button size="mini" type="primary" @click="startUpdateDownload">
-            下载更新
+            立即更新
           </el-button>
         </template>
         <template v-else-if="updateStatus === 'ready'">
@@ -136,8 +138,7 @@ export default {
             this.updateNoticeTitle = this.remoteVersion
               ? `发现新版本 v${this.remoteVersion}`
               : "发现新版本";
-            this.updateNoticeMessage =
-              "更新将在您确认后下载，不会中断当前发布任务。";
+            this.updateNoticeMessage = "选择“立即更新”后，客户端会自动完成更新。";
           }
           return res;
         })
@@ -152,7 +153,7 @@ export default {
       this.updateNoticeTitle = "正在后台下载更新";
       this.updateNoticeMessage = "下载不会停止或暂停当前发布任务。";
       return ipcRenderer
-        .invoke("download-update")
+        .invoke("download-update", { installAfterDownload: true })
         .then((res) => {
           if (!res || !res.started) {
             if (res && res.reason === "in-progress") return res;
