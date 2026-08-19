@@ -230,7 +230,6 @@ function onAppReady() {
         click: async () => {
           const currentSettings = getAppSettings();
           const serviceUrl = String(currentSettings.webSocketServerUrl || "").trim() || "未配置";
-          const autoUpdateEnabled = currentSettings.skipStartupUpdateCheck !== true;
           await dialog.showMessageBox({
             type: "info",
             title: "客户端信息",
@@ -240,7 +239,7 @@ function onAppReady() {
               "",
               `平台服务地址：${serviceUrl}`,
               "",
-              `启动更新检查：${autoUpdateEnabled ? "是" : "否"}`,
+              "启动更新检查：每次启动自动检查",
             ].join("\n"),
             buttons: ["关闭"],
             noLink: true,

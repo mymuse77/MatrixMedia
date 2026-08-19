@@ -2,11 +2,10 @@ import {
   ipcMain,
   dialog,
   BrowserWindow,
-  Notification,
+  screen,
   app as electronApp,
   shell,
 } from "electron";
-import { spawn } from "child_process";
 import Server from "../server/index";
 
 import { winURL } from "../config/StaticPath";
@@ -94,9 +93,9 @@ const RELEASE_CACHE_TTL_MS = 60 * 60 * 1000;
 function looksLikeReleasePayload(value) {
   return Boolean(
     value &&
-      typeof value === "object" &&
-      !Array.isArray(value) &&
-      (value.tag_name || value.name || Array.isArray(value.assets))
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value.tag_name || value.name || Array.isArray(value.assets))
   );
 }
 
@@ -184,8 +183,8 @@ function pickReleaseInstaller(assets) {
 }
 
 let updateDownloadInProgress = false;
-let updateNotificationShownThisRun = false;
-let activeUpdateNotification = null;
+let updatePromptShownThisRun = false;
+let activeUpdatePromptWindow = null;
 let launchInstallerHandler = null;
 
 async function resolveAvailableUpdate(updateUrl) {
@@ -204,63 +203,184 @@ async function resolveAvailableUpdate(updateUrl) {
     remoteVersion,
     releaseName: lastData.name || lastData.tag_name || "",
     downloadURL,
+    downloadName: (installer && installer.name) || "MatrixMedia-update.exe",
   };
 }
 
-function showAvailableUpdateNotification(event, update) {
+function closeUpdatePromptWindow() {
+  if (activeUpdatePromptWindow && !activeUpdatePromptWindow.isDestroyed()) {
+    activeUpdatePromptWindow.close();
+  }
+  activeUpdatePromptWindow = null;
+}
+
+function showAvailableUpdatePrompt(event, update) {
   if (
     !update.hasUpdate ||
     !update.remoteVersion ||
-    updateNotificationShownThisRun ||
-    !Notification.isSupported()
+    updatePromptShownThisRun ||
+    (activeUpdatePromptWindow && !activeUpdatePromptWindow.isDestroyed())
   ) {
     return;
   }
 
   const mainWindow = BrowserWindow.fromWebContents(event.sender);
-  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isVisible()) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
 
-  updateNotificationShownThisRun = true;
-  activeUpdateNotification = new Notification({
-    title: `发现新版本 v${update.remoteVersion}`,
-    body: "请选择下方操作：立即更新，或本次不再提示。",
-    silent: true,
-    actions: [
-      { type: "button", text: "立即更新" },
-      { type: "button", text: "本次不再提示" },
-    ],
+  updatePromptShownThisRun = true;
+  const { workArea } = screen.getPrimaryDisplay();
+  const width = 420;
+  const height = 210;
+  const promptWindow = new BrowserWindow({
+    width,
+    height,
+    x: Math.max(workArea.x, workArea.x + workArea.width - width - 20),
+    y: Math.max(workArea.y, workArea.y + workArea.height - height - 20),
+    show: false,
+    frame: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    closable: true,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    backgroundColor: "#ffffff",
+    title: "发现新版本",
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      devTools: false,
+    },
   });
-  activeUpdateNotification.on("action", (event, legacyIndex) => {
-    const index =
-      typeof event?.actionIndex === "number" ? event.actionIndex : legacyIndex;
-    if (index === 0 && !mainWindow.isDestroyed()) {
-      startUpdateDownload(mainWindow, update, true);
+
+  activeUpdatePromptWindow = promptWindow;
+  promptWindow.setAlwaysOnTop(true, "floating");
+  const promptHtml = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; }
+    body {
+      position: relative;
+      overflow: hidden;
+      color: #243447;
+      background: #fff;
+      border: 1px solid #dbe5ef;
+      border-left: 4px solid #2563eb;
+      border-radius: 10px;
+      box-shadow: 0 12px 32px rgba(15, 23, 42, .2);
+      font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+      cursor: pointer;
     }
+    .close {
+      position: absolute;
+      top: 8px;
+      right: 10px;
+      z-index: 2;
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      border: 0;
+      border-radius: 6px;
+      color: #64748b;
+      background: transparent;
+      font-size: 22px;
+      line-height: 24px;
+      cursor: pointer;
+    }
+    .close:hover { color: #0f172a; background: #eef2f7; }
+    .content { padding: 22px 26px 12px 24px; }
+    .eyebrow { color: #2563eb; font-size: 12px; font-weight: 600; letter-spacing: .04em; }
+    .title { margin-top: 7px; color: #0f172a; font-size: 19px; font-weight: 700; }
+    .message { margin-top: 10px; color: #526173; font-size: 13px; line-height: 1.65; }
+    .hint { margin-top: 5px; color: #64748b; font-size: 12px; line-height: 1.5; }
+    .actions { display: flex; justify-content: flex-end; padding: 0 24px 18px; }
+    .update { padding: 8px 17px; border: 0; border-radius: 5px; color: #fff; background: #2563eb; font-size: 13px; cursor: pointer; }
+    .update:hover { background: #1d4ed8; }
+  </style>
+</head>
+<body>
+  <button class="close" type="button" aria-label="关闭本次更新提示">×</button>
+  <div class="content">
+    <div class="eyebrow">MatrixMedia 客户端更新</div>
+    <div class="title">发现新版本 v${String(update.remoteVersion).replace(/</g, "&lt;")}</div>
+    <div class="message">点击立即更新后，客户端将在后台下载更新。</div>
+    <div class="hint">下载完成后会自动安装更新；点击右上角关闭则本次不更新。</div>
+  </div>
+  <div class="actions"><button class="update" type="button">立即更新</button></div>
+  <script>
+    const send = (action) => { window.location.href = "matrixmedia-update://" + action; };
+    document.querySelector(".close").addEventListener("click", (event) => { event.stopPropagation(); send("dismiss"); });
+    document.querySelector(".update").addEventListener("click", (event) => { event.stopPropagation(); send("install"); });
+    document.querySelector(".content").addEventListener("click", () => send("install"));
+    document.body.addEventListener("click", (event) => {
+      if (event.target === document.body) send("install");
+    });
+  </script>
+</body>
+</html>`;
+
+  const handlePromptAction = (url) => {
+    if (!String(url || "").startsWith("matrixmedia-update://")) return;
+    const action = String(url).replace("matrixmedia-update://", "");
+    if (action === "install") {
+      closeUpdatePromptWindow();
+      startUpdateDownload(mainWindow, update, true);
+    } else if (action === "dismiss") {
+      closeUpdatePromptWindow();
+    }
+  };
+  promptWindow.webContents.on("will-navigate", (navigationEvent, url) => {
+    if (!String(url || "").startsWith("matrixmedia-update://")) return;
+    navigationEvent.preventDefault();
+    handlePromptAction(url);
   });
-  // 点击通知正文不唤起主界面；更新操作只通过通知下方按钮触发。
-  activeUpdateNotification.on("click", () => {});
-  activeUpdateNotification.on("close", () => {
-    activeUpdateNotification = null;
+  promptWindow.webContents.setWindowOpenHandler(({ url }) => {
+    handlePromptAction(url);
+    return { action: "deny" };
   });
-  activeUpdateNotification.show();
+  promptWindow.on("closed", () => {
+    if (activeUpdatePromptWindow === promptWindow) activeUpdatePromptWindow = null;
+  });
+  promptWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(promptHtml)}`);
+  promptWindow.once("ready-to-show", () => {
+    if (!promptWindow.isDestroyed()) promptWindow.showInactive();
+  });
 }
 
 function startUpdateDownload(mainWindow, update, installAfterDownload = false) {
-  if (updateDownloadInProgress || !launchInstallerHandler) return false;
+  if (updateDownloadInProgress || !launchInstallerHandler) {
+    console.warn("[更新] 下载未启动：已有更新任务或安装器未初始化");
+    return false;
+  }
 
   updateDownloadInProgress = true;
-  const started = downloadFile.download(mainWindow, update.downloadURL, {
+  const tempInstallerPath = installAfterDownload
+    ? path.join(
+        electronApp.getPath("temp"),
+        `matrixmedia-update-${Date.now()}-${String(
+          update.downloadName || "MatrixMedia-update.exe"
+        ).replace(/[\\/:*?"<>|]/g, "_")}`
+      )
+    : "";
+  console.log(
+    `[更新] 开始下载 v${update.remoteVersion}，下载完成后${installAfterDownload ? "自动启动安装程序" : "仅提示下载完成"
+    }`
+  );
+  const downloadOptions = {
     notifyCompleted: !installAfterDownload,
     onCompleted: async (filePath) => {
+      console.log(`[更新] 下载完成：${filePath}`);
       if (!installAfterDownload) {
-        showDownloadedUpdateNotification(
-          { sender: mainWindow.webContents },
-          update.remoteVersion
-        );
         return;
       }
 
+      console.log(`[更新] 正在启动安装程序：${filePath}`);
       const result = await launchInstallerHandler(null, filePath);
+      console.log("[更新] 安装程序启动结果：", result);
       if (!result || !result.ok) {
         dialog.showErrorBox(
           "更新失败",
@@ -273,38 +393,25 @@ function startUpdateDownload(mainWindow, update, installAfterDownload = false) {
     onTerminated: () => {
       updateDownloadInProgress = false;
     },
-  });
-  if (!started) updateDownloadInProgress = false;
+  };
+  const started = installAfterDownload
+    ? downloadFile.downloadToPath(
+        mainWindow,
+        update.downloadURL,
+        tempInstallerPath,
+        downloadOptions
+      )
+    : downloadFile.download(mainWindow, update.downloadURL, downloadOptions);
+  if (!started) {
+    updateDownloadInProgress = false;
+    console.warn("[更新] 下载任务创建失败");
+  }
   return started;
-}
-
-function showDownloadedUpdateNotification(event, remoteVersion) {
-  if (!Notification.isSupported()) return;
-  const mainWindow = BrowserWindow.fromWebContents(event.sender);
-  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isVisible()) return;
-
-  activeUpdateNotification = new Notification({
-    title: remoteVersion ? `v${remoteVersion} 已下载` : "更新已下载",
-    body: "客户端会继续正常运行，任务结束后可选择退出并安装。",
-    silent: true,
-  });
-  activeUpdateNotification.on("click", () => {
-    if (!mainWindow.isDestroyed()) {
-      mainWindow.show();
-      mainWindow.focus();
-    }
-  });
-  activeUpdateNotification.on("close", () => {
-    activeUpdateNotification = null;
-  });
-  activeUpdateNotification.show();
 }
 
 export default {
   async Mainfunc(IsUseSysTitle) {
     const launchInstaller = createLaunchInstallerHandler({
-      platform: process.platform,
-      spawn,
       shell,
       electronApp,
       hasActiveTasks: hasActivePublishTasks,
@@ -316,7 +423,7 @@ export default {
     ipcMain.handle("check-for-updates", async (event) => {
       const settings = getAppSettings();
       const update = await resolveAvailableUpdate(settings.autoUpdateUrl);
-      showAvailableUpdateNotification(event, update);
+      showAvailableUpdatePrompt(event, update);
       return {
         hasUpdate: update.hasUpdate,
         remoteVersion: update.remoteVersion || "",
@@ -636,8 +743,8 @@ export default {
           filters: isMac
             ? [{ name: "应用程序", extensions: ["app"] }]
             : process.platform === "win32"
-            ? [{ name: "可执行文件", extensions: ["exe"] }]
-            : [],
+              ? [{ name: "可执行文件", extensions: ["exe"] }]
+              : [],
           defaultPath: isMac ? "/Applications" : undefined,
         }
       );
@@ -873,8 +980,8 @@ export default {
                 map["文件名"] != null
                   ? map["文件名"]
                   : map["filename"] != null
-                  ? map["filename"]
-                  : map["file"] || ""
+                    ? map["filename"]
+                    : map["file"] || ""
               ),
               title: cleanCell(
                 map["标题"] != null ? map["标题"] : map["title"] || ""

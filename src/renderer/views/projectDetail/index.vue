@@ -33,9 +33,6 @@
             placeholder="请输入 Release JSON 地址"
           />
         </el-form-item>
-        <el-form-item label="启动时不检测更新">
-          <el-switch v-model="appSettings.skipStartupUpdateCheck" />
-        </el-form-item>
         <el-form-item label="启动时隐藏主界面">
           <el-switch v-model="appSettings.hideMainWindowOnStartup" />
           <p class="section-tip setting-tip">

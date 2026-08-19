@@ -26,10 +26,6 @@ const { createLaunchInstallerHandler } = require(launchInstallerBundle);
   let quitCount = 0;
 
   const handler = createLaunchInstallerHandler({
-    platform: "darwin",
-    spawn: () => {
-      throw new Error("spawn should not be used on darwin");
-    },
     shell: {
       openPath: async installerPath => {
         openedPath = installerPath;
@@ -51,23 +47,14 @@ const { createLaunchInstallerHandler } = require(launchInstallerBundle);
 })();
 
 (async () => {
-  let spawnedPath = "";
-  let unrefCalled = false;
+  let openedPath = "";
   let quitCount = 0;
 
   const handler = createLaunchInstallerHandler({
-    platform: "win32",
-    spawn: installerPath => {
-      spawnedPath = installerPath;
-      return {
-        unref: () => {
-          unrefCalled = true;
-        },
-      };
-    },
     shell: {
-      openPath: async () => {
-        throw new Error("openPath should not be used on win32");
+      openPath: async installerPath => {
+        openedPath = installerPath;
+        return "";
       },
     },
     electronApp: {
@@ -80,15 +67,12 @@ const { createLaunchInstallerHandler } = require(launchInstallerBundle);
   const result = await handler(null, "C:\\Temp\\matrixmedia.exe");
 
   assert.deepStrictEqual(result, { ok: true });
-  assert.strictEqual(spawnedPath, "C:\\Temp\\matrixmedia.exe");
-  assert.strictEqual(unrefCalled, true);
+  assert.strictEqual(openedPath, "C:\\Temp\\matrixmedia.exe");
   assert.strictEqual(quitCount, 1);
 })();
 
 (async () => {
   const handler = createLaunchInstallerHandler({
-    platform: "darwin",
-    spawn: () => {},
     shell: {
       openPath: async () => {
         throw new Error("openPath should not be called for invalid path");
@@ -107,14 +91,8 @@ const { createLaunchInstallerHandler } = require(launchInstallerBundle);
 })();
 
 (async () => {
-  let spawnCount = 0;
   let quitCount = 0;
   const handler = createLaunchInstallerHandler({
-    platform: "win32",
-    spawn: () => {
-      spawnCount += 1;
-      return { unref() {} };
-    },
     shell: { openPath: async () => "" },
     electronApp: { quit() {} },
     hasActiveTasks: () => true,
@@ -126,7 +104,28 @@ const { createLaunchInstallerHandler } = require(launchInstallerBundle);
   const result = await handler(null, "C:\\Temp\\matrixmedia.exe");
 
   assert.deepStrictEqual(result, { ok: false, reason: "active-tasks" });
-  assert.strictEqual(spawnCount, 0);
+  assert.strictEqual(quitCount, 0);
+})();
+
+(async () => {
+  let quitCount = 0;
+  const handler = createLaunchInstallerHandler({
+    shell: {
+      openPath: async () => "Windows 无法打开安装程序",
+    },
+    electronApp: { quit() {} },
+    quitApp: () => {
+      quitCount += 1;
+    },
+  });
+
+  const result = await handler(null, "C:\\Temp\\matrixmedia.exe");
+
+  assert.deepStrictEqual(result, {
+    ok: false,
+    reason: "launch-failed",
+    message: "Windows 无法打开安装程序",
+  });
   assert.strictEqual(quitCount, 0);
 })();
 

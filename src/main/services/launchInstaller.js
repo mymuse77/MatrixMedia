@@ -1,6 +1,4 @@
 export function createLaunchInstallerHandler({
-  platform,
-  spawn,
   shell,
   electronApp,
   hasActiveTasks = () => false,
@@ -16,13 +14,9 @@ export function createLaunchInstallerHandler({
     }
 
     try {
-      if (platform === "win32") {
-        spawn(installerPath, [], { detached: true, stdio: "ignore" }).unref();
-      } else {
-        const openError = await shell.openPath(installerPath);
-        if (openError) {
-          return { ok: false, reason: "launch-failed", message: openError };
-        }
+      const openError = await shell.openPath(installerPath);
+      if (openError) {
+        return { ok: false, reason: "launch-failed", message: openError };
       }
 
       quitApp();
