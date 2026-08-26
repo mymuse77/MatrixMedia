@@ -12,12 +12,36 @@ import {
   waitForDyUploadPageReady,
 } from "./dyPageState.js";
 import { capturePublishFailureDiagnostics } from "./publishDiagnostics.js";
-import { waitForDyPublishConfirmation } from "./dyPublishConfirmation.js";
+import {
+  resolveDyPublishConfirmationTimeoutMs,
+  waitForDyPublishConfirmation,
+} from "./dyPublishConfirmation.js";
 
 const DY_PREFLIGHT_TIMEOUT_MS = 60 * 1000;
 const DY_UPLOAD_INPUT_TIMEOUT_MS = 60 * 1000;
 const DY_LOCATION_ATTEMPTS = 3;
 const DY_LOCATION_PICK_TIMEOUT_MS = 15 * 1000;
+
+function revealDyVerificationWindow(window) {
+  if (!window || typeof window.isDestroyed !== "function" || window.isDestroyed()) {
+    return false;
+  }
+
+  try {
+    if (typeof window.isMinimized === "function" && window.isMinimized()) {
+      window.restore();
+    }
+    if (typeof window.isVisible !== "function" || !window.isVisible()) {
+      window.show();
+    }
+    if (typeof window.moveTop === "function") window.moveTop();
+    if (typeof window.focus === "function") window.focus();
+    return true;
+  } catch (error) {
+    console.warn("[dy] 显示抖音短信验证窗口失败:", error?.message || error);
+    return false;
+  }
+}
 
 async function selectDyCreativeStatement(page, data) {
   const value = data.data && data.data.creativeStatement;
@@ -1277,7 +1301,12 @@ export default async function (page, data, window, event) {
   // 输入框/标题输入框找不到时静默放过，流程继续往下走，最终在几十分钟到
   // 3 小时后才因为一个不相关的超时消息失败，掩盖了真实原因。
   const reportFailure = async (stage, e) => {
-    const detail = (e && e.message) || String(e);
+    const detail =
+      e?.verificationRequired === true
+        ? `抖音账号 ${data.phone || data.partition || ""} 需要接收短信验证码，请完成验证后重新发布`
+        : e?.confirmationUnknown === true
+          ? "抖音已点击发布，但在确认窗口内未收到最终结果，请到抖音作品管理核验，勿重复发布"
+          : (e && e.message) || String(e);
     console.error(`❌ ${stage}`, e);
     const pageSnapshot =
       e?.dyPageSnapshot ||
@@ -1296,6 +1325,9 @@ export default async function (page, data, window, event) {
       message: detail.length > 200 ? `${detail.slice(0, 200)}…` : detail,
       diagnostic,
       nonRetryable: e?.nonRetryable === true,
+      verificationRequired: e?.verificationRequired === true,
+      confirmationUnknown: e?.confirmationUnknown === true,
+      confirmationWaitedMs: e?.waitedMs || 0,
     });
   };
 
@@ -1463,8 +1495,40 @@ export default async function (page, data, window, event) {
     console.log("[dy] 配置完成，准备点击发布");
     await clickDyPublish(page, isDraftMode);
     console.log("[dy] 已点击发布，等待平台确认");
+    const confirmationTimeoutMs = resolveDyPublishConfirmationTimeoutMs({
+      publishTimeoutMs: data.publishTimeoutMs,
+    });
+    console.log(
+      `[dy] 发布确认最长等待 ${Math.round(confirmationTimeoutMs / 1000)} 秒`,
+    );
     const confirmation = await waitForDyPublishConfirmation(page, {
       isDraftMode,
+      publishTimeoutMs: data.publishTimeoutMs,
+      onSnapshot: (snapshot, meta) => {
+        if (!snapshot) return;
+        console.log(
+          `[dy] 发布确认状态: ${snapshot.state}，已等待 ${Math.round(
+            meta.elapsedMs / 1000,
+          )} 秒，提示=${JSON.stringify(snapshot.messages || [])}`,
+        );
+        if (snapshot.state !== "verification_required") return;
+
+        const windowShown = revealDyVerificationWindow(window);
+        const message = `抖音账号 ${data.phone || data.partition || ""} 需要接收短信验证码，请在弹出的抖音窗口中完成验证`;
+        try {
+          event.reply("puppeteerFile-reply", {
+            ...data,
+            status: "verification_required",
+            code: "dy_verification_required",
+            message: windowShown
+              ? message
+              : `${message}（窗口显示失败，请手动打开抖音发布窗口）`,
+            verificationRequired: true,
+          });
+        } catch (error) {
+          console.warn("[dy] 推送短信验证状态失败:", error?.message || error);
+        }
+      },
     });
     console.log(
       isDraftMode ? "✅ 抖音已确认保存草稿成功" : "✅ 抖音已确认视频发布成功",

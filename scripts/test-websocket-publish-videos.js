@@ -30,6 +30,7 @@ const scheduledPublishRecords = [];
 const preflightCalls = [];
 const preflightFailuresByPhone = new Map();
 const publishFailuresByPhone = new Map();
+const verificationPhones = new Set();
 let remoteDownloadIndex = 0;
 
 const originalLoad = Module._load;
@@ -65,6 +66,14 @@ Module._load = function patchedLoad(request, parent, isMain) {
       runPuppeteerTask(data, transport, onFinish) {
         capturedPublishPayloads.push(data);
         setImmediate(() => {
+          if (verificationPhones.has(data.phone)) {
+            transport.reply("puppeteerFile-reply", {
+              ...data,
+              status: "verification_required",
+              message: `抖音账号 ${data.phone} 需要接收短信验证码，请在弹出的抖音窗口中完成验证`,
+              verificationRequired: true,
+            });
+          }
           const failure = publishFailuresByPhone.get(data.phone);
           transport.reply("puppeteerFile-done", failure
             ? {
@@ -547,6 +556,32 @@ async function main() {
   assert.strictEqual(capturedPublishPayloads.at(-1).phone, "13700137000");
   assert.strictEqual(continueAfterFailureResult.results[1].success, false);
   assert.match(continueAfterFailureResult.results[1].error, /上传超时/);
+
+  const verificationProgressCountBefore = progressEvents.length;
+  verificationPhones.add("13800138000");
+  const verificationResult = await handlePublishVideos(
+    {
+      taskId: "matrix-task-verification-test",
+      type: "publish_videos",
+      data: {
+        taskName: "Douyin verification test",
+        platforms: [platform],
+        accounts: [{ id: "account-1", phone: "13800138000", platform }],
+        videos: [{ id: "video-1", filePath: firstVideoPath }],
+        captions: [{ id: "caption-1", textContent: "Verification caption" }],
+      },
+    },
+    wsClient,
+  );
+  verificationPhones.clear();
+
+  assert.strictEqual(verificationResult.success, true);
+  assert.strictEqual(verificationResult.status, "completed");
+  assert.ok(
+    progressEvents
+      .slice(verificationProgressCountBefore)
+      .some((event) => event.message.includes("需要接收短信验证码")),
+  );
 
   const remoteChangeCallCountBefore = changeDataCalls.length;
   const remotePublishCountBefore = capturedPublishPayloads.length;

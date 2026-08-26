@@ -290,6 +290,9 @@ class WebSocketClient {
             const nonRetryable =
               error?.nonRetryable === true ||
               error?.publishPayload?.nonRetryable === true;
+            const verificationRequired =
+              error?.verificationRequired === true ||
+              error?.publishPayload?.verificationRequired === true;
             this.sendTaskResult(taskId, 'failed', {
               action: 'publish_video',
               itemId: taskPayload.itemId || '',
@@ -301,6 +304,7 @@ class WebSocketClient {
               videoUrl: taskPayload.videoUrl || taskPayload.url || '',
               error: errorMessage,
               nonRetryable,
+              verificationRequired,
             });
             return;
           }

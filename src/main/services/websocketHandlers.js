@@ -1584,6 +1584,8 @@ export async function handlePublishVideo(taskData, wsClient) {
         if (error && payload) {
           error.publishPayload = payload;
           error.nonRetryable = payload.nonRetryable === true;
+          error.verificationRequired = payload.verificationRequired === true;
+          error.confirmationUnknown = payload.confirmationUnknown === true;
         }
         const status = payload?.skipped ? 'skipped' : 'failed';
         await updateLocalPublishRecord(publishData, status, error?.message || '发布失败');
@@ -1607,6 +1609,16 @@ export async function handlePublishVideo(taskData, wsClient) {
               // reply 只表示平台流程已提交，最终成功必须由 puppeteerFile-done
               // 回执确认，避免页面跳转或上传完成被误报成已发布。
               sendScopedProgress(wsClient, taskId, 90, '已提交，等待平台最终确认', progressRange);
+            } else if (status === 'verification_required') {
+              const verificationMessage =
+                message ||
+                `抖音账号 ${publishData?.phone || partition || ''} 需要接收短信验证码，请在弹出的抖音窗口中完成验证`;
+              sendScopedProgress(wsClient, taskId, 90, verificationMessage, progressRange);
+              void updateLocalPublishRecord(
+                publishData,
+                'publishing',
+                verificationMessage,
+              );
             } else if (status === 'error' || status === 'failed') {
               void rejectOnce(new Error(message || '发布失败'), payload);
             }
@@ -2127,6 +2139,9 @@ export async function handlePublishVideos(taskData, wsClient) {
       const nonRetryable =
         error?.nonRetryable === true ||
         error?.publishPayload?.nonRetryable === true;
+      const verificationRequired =
+        error?.verificationRequired === true ||
+        error?.publishPayload?.verificationRequired === true;
       const detail = {
         success: false,
         itemId,
@@ -2139,6 +2154,7 @@ export async function handlePublishVideos(taskData, wsClient) {
         attemptCount,
         error: message,
         nonRetryable,
+        verificationRequired,
         ...(diagnostic ? { diagnostic } : {}),
       };
       results.push(detail);
