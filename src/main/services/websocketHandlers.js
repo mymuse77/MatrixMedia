@@ -1168,7 +1168,7 @@ async function updateLocalPublishRecord(publishData, status, message) {
   if (!publishData?.id || !publishData?.date) return;
 
   try {
-    await changeData({
+    const result = await changeData({
       type: 'update',
       fileName: 'pushData',
       item: {
@@ -1181,6 +1181,9 @@ async function updateLocalPublishRecord(publishData, status, message) {
         ...(status === 'failed' || status === 'skipped' ? { publishFailCount: 1 } : {}),
       },
     });
+    if (!result?.success) {
+      throw new Error(result?.message || `发布记录 ${publishData.id} 状态更新失败`);
+    }
   } catch (error) {
     console.error('[WebSocket] 更新本地发布记录失败:', error);
   }

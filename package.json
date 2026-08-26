@@ -31,6 +31,7 @@
     "test:dy-publish-confirmation": "node scripts/test-dy-publish-confirmation.js",
     "test:task-result-status": "node scripts/test-task-result-status.js",
     "test:websocket-publish-videos": "node scripts/test-websocket-publish-videos.js",
+    "test:push-data-identity": "node scripts/test-push-data-identity.js",
     "test:navigation-guard": "node scripts/test-navigation-guard.js",
     "test:account-login-window": "node scripts/test-account-login-window.js",
     "test:account-login-window-manager": "node scripts/test-account-login-window-manager.js",

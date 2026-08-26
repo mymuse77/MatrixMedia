@@ -88,6 +88,26 @@ function articleTagsValue(item) {
 }
 
 function isSamePushDataRecord(existingItem, newItem) {
+  const existingMatrixItemId = recordValue(existingItem.matrixItemId).trim();
+  const newMatrixItemId = recordValue(newItem.matrixItemId).trim();
+  if (existingMatrixItemId || newMatrixItemId) {
+    return Boolean(
+      existingMatrixItemId &&
+        newMatrixItemId &&
+        existingMatrixItemId === newMatrixItemId,
+    );
+  }
+
+  const existingIdempotencyKey = recordValue(existingItem.idempotencyKey).trim();
+  const newIdempotencyKey = recordValue(newItem.idempotencyKey).trim();
+  if (existingIdempotencyKey || newIdempotencyKey) {
+    return Boolean(
+      existingIdempotencyKey &&
+        newIdempotencyKey &&
+        existingIdempotencyKey === newIdempotencyKey,
+    );
+  }
+
   if (
     existingItem.textOtherName !== newItem.textOtherName ||
     existingItem.pt !== newItem.pt ||
