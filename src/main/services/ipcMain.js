@@ -305,7 +305,7 @@ function showAvailableUpdatePrompt(event, update) {
 <body>
   <button class="close" type="button" aria-label="关闭本次更新提示">×</button>
   <div class="content">
-    <div class="eyebrow">MatrixMedia 客户端更新</div>
+    <div class="eyebrow">视媒助手-客户端更新</div>
     <div class="title">发现新版本 v${String(update.remoteVersion).replace(/</g, "&lt;")}</div>
     <div class="message">点击立即更新后，客户端将在后台下载更新。</div>
     <div class="hint">下载完成后会自动安装更新；点击右上角关闭则本次不更新。</div>
@@ -360,11 +360,11 @@ function startUpdateDownload(mainWindow, update, installAfterDownload = false) {
   updateDownloadInProgress = true;
   const tempInstallerPath = installAfterDownload
     ? path.join(
-        electronApp.getPath("temp"),
-        `matrixmedia-update-${Date.now()}-${String(
-          update.downloadName || "MatrixMedia-update.exe"
-        ).replace(/[\\/:*?"<>|]/g, "_")}`
-      )
+      electronApp.getPath("temp"),
+      `matrixmedia-update-${Date.now()}-${String(
+        update.downloadName || "MatrixMedia-update.exe"
+      ).replace(/[\\/:*?"<>|]/g, "_")}`
+    )
     : "";
   console.log(
     `[更新] 开始下载 v${update.remoteVersion}，下载完成后${installAfterDownload ? "自动启动安装程序" : "仅提示下载完成"
@@ -396,11 +396,11 @@ function startUpdateDownload(mainWindow, update, installAfterDownload = false) {
   };
   const started = installAfterDownload
     ? downloadFile.downloadToPath(
-        mainWindow,
-        update.downloadURL,
-        tempInstallerPath,
-        downloadOptions
-      )
+      mainWindow,
+      update.downloadURL,
+      tempInstallerPath,
+      downloadOptions
+    )
     : downloadFile.download(mainWindow, update.downloadURL, downloadOptions);
   if (!started) {
     updateDownloadInProgress = false;
