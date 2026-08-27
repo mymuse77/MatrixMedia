@@ -15,15 +15,13 @@ import { registerScheduledPublishIpc } from "./scheduledPublish";
 import { registerSphWindowProductsIpc } from "./sphWindowProducts";
 import { createLaunchInstallerHandler } from "./launchInstaller";
 import { applyAccountProxyForTask } from "./proxyConfig";
-import { isAccountLoginPartitionBlocked } from "./accountLoginWindow";
+import {
+  isAccountLoginPartitionBlocked,
+  openAccountLoginWindow,
+} from "./accountLoginWindow";
 import { guardExternalNavigation } from "./navigationGuard";
 import { getAppSettings, updateAppSettings } from "./appSettings";
 import { quitForUpdate } from "./updateQuitCoordinator";
-import {
-  closeOtherAccountLoginWindows,
-  getAccountLoginWindowByPartition,
-  registerAccountLoginWindow,
-} from "./accountLoginWindowManager";
 
 const https = require("https");
 const version = require("../../../package.json").version;
@@ -520,66 +518,13 @@ export default {
         return { ok: false, message: "账号登录数据正在清理，请稍后重试" };
       }
 
-      // 先处理现有账号登录窗：
-      //   - 同 partition：标记为'已存在'，等会儿 focus 复用
-      //   - 不同 partition：直接关掉，避免用户切账号时桌面上堆一排登录窗口
-      closeOtherAccountLoginWindows(partition);
-      const existingWin = getAccountLoginWindowByPartition(partition);
-
-      if (existingWin) {
-        try {
-          if (existingWin.isMinimized()) existingWin.restore();
-          existingWin.focus();
-        } catch (_) {
-          /* ignore */
-        }
-        return { ok: true, reused: true };
-      }
-
-      const win = new BrowserWindow({
-        width: 1200,
-        height: 800,
-        title: `${title || "账号登录"} ${partition}`,
-        autoHideMenuBar: true,
-        webPreferences: {
-          partition,
-          nodeIntegration: false,
-          contextIsolation: true,
-          webviewTag: false,
-          devTools: true,
-        },
+      return openAccountLoginWindow({
+        accountId,
+        partition,
+        url,
+        useragent,
+        title,
       });
-      registerAccountLoginWindow(win, partition);
-
-      // 跟视频管理的发布窗口保持一致：强制设置 UA 为 ptConfig[平台].useragent，
-      // 不要让站点看到 Electron/x.x.x 字样；扫码登录时种下的 cookie 自然就是
-      // 跟发布时同一份 UA 指纹下的。
-      if (useragent) {
-        try {
-          win.webContents.setUserAgent(useragent);
-        } catch (_) {
-          /* ignore */
-        }
-      }
-
-      // 弹窗页打不开（站点的二维码扫码经常会弹新页），统一拒绝 window.open，
-      // 让站点退回到内嵌扫码 / 当前页跳转，避免漏跑事件监听。
-      try {
-        win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-      } catch (_) {
-        /* ignore */
-      }
-      guardExternalNavigation(win.webContents);
-
-      try {
-        await win.loadURL(url);
-      } catch (e) {
-        console.warn(
-          "[open-account-login-window] loadURL 失败:",
-          e && e.message
-        );
-      }
-      return { ok: true };
     });
 
     // 通用的弹独立 BrowserWindow 加载任意 URL（不绑定 partition），用于

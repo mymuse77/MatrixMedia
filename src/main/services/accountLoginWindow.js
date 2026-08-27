@@ -11,10 +11,61 @@ const blockedAccountLoginPartitions = new Map();
 const ACCOUNT_LOGIN_PARTITION_BLOCK_TTL_MS = 60_000;
 const LOGIN_PAGE_LOAD_ATTEMPTS = 2;
 const LOGIN_PAGE_RETRY_DELAY_MS = 500;
+const LOGIN_PAGE_ABORT_RECOVERY_TIMEOUT_MS = 3_000;
+const LOGIN_PAGE_ABORT_RECOVERY_POLL_MS = 100;
+
+function getLoginPageLoadErrorCode(error) {
+  const directCode = Number(error?.errno ?? error?.code);
+  if (Number.isInteger(directCode)) return directCode;
+
+  const matchedCode = String(error?.message || error || '').match(/\((-?\d+)\)/);
+  return matchedCode ? Number(matchedCode[1]) : null;
+}
+
+function isAbortedLoginPageNavigation(error) {
+  return (
+    getLoginPageLoadErrorCode(error) === -3 ||
+    /ERR_ABORTED/.test(String(error?.message || error || ''))
+  );
+}
+
+function getCurrentLoginPageUrl(win) {
+  if (!win || win.isDestroyed()) return '';
+  try {
+    return String(win.webContents?.getURL?.() || '').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+function isUsableLoginPageUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return (
+      (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+      Boolean(parsed.hostname)
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+async function waitForAbortedLoginPageNavigation(win) {
+  const deadline = Date.now() + LOGIN_PAGE_ABORT_RECOVERY_TIMEOUT_MS;
+  while (Date.now() <= deadline) {
+    if (!win || win.isDestroyed()) return '';
+    const currentUrl = getCurrentLoginPageUrl(win);
+    if (isUsableLoginPageUrl(currentUrl)) return currentUrl;
+    await new Promise((resolve) =>
+      setTimeout(resolve, LOGIN_PAGE_ABORT_RECOVERY_POLL_MS),
+    );
+  }
+  return '';
+}
 
 function isRetryableLoginPageLoadError(error) {
   const message = String(error?.message || error || '');
-  return /ERR_(?:FAILED|ABORTED|CONNECTION_(?:RESET|CLOSED)|NETWORK_CHANGED)/.test(message);
+  return /ERR_(?:FAILED|CONNECTION_(?:RESET|CLOSED)|NETWORK_CHANGED)/.test(message);
 }
 
 export async function openAccountLoginWindow(args) {
@@ -138,10 +189,22 @@ async function openAccountLoginWindowOnce({ partition, url, useragent, title }) 
       return { ok: true };
     } catch (error) {
       const message = (error && error.message) || '账号登录页加载失败';
+      const navigationAborted = isAbortedLoginPageNavigation(error);
+      if (navigationAborted && !win.isDestroyed()) {
+        const currentUrl = await waitForAbortedLoginPageNavigation(win);
+        if (currentUrl) {
+          console.log(
+            '[open-account-login-window] loadURL 导航中断后页面已恢复:',
+            JSON.stringify({ requestedUrl: url, currentUrl, attempt }),
+          );
+          focusWindow(win);
+          return { ok: true };
+        }
+      }
       const canRetry =
         attempt < LOGIN_PAGE_LOAD_ATTEMPTS &&
         !win.isDestroyed() &&
-        isRetryableLoginPageLoadError(error);
+        (navigationAborted || isRetryableLoginPageLoadError(error));
       if (canRetry) {
         console.warn(
           `[open-account-login-window] loadURL 暂时失败，准备重试 ${attempt}/${LOGIN_PAGE_LOAD_ATTEMPTS - 1}:`,
@@ -151,7 +214,17 @@ async function openAccountLoginWindowOnce({ partition, url, useragent, title }) 
         continue;
       }
 
-      console.warn('[open-account-login-window] loadURL failed:', message);
+      console.warn(
+        '[open-account-login-window] loadURL failed:',
+        JSON.stringify({
+          message,
+          code: getLoginPageLoadErrorCode(error),
+          requestedUrl: url,
+          currentUrl: getCurrentLoginPageUrl(win),
+          destroyed: win.isDestroyed(),
+          attempt,
+        }),
+      );
       if (!win.isDestroyed()) {
         try {
           win.close();

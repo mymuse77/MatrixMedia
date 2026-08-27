@@ -23,6 +23,8 @@ class FakeBrowserWindow {
     this.options = options;
     this.destroyed = false;
     this.minimized = false;
+    this.loadURLCallCount = 0;
+    this.currentUrl = "";
     this.handlers = new Map();
     this.webContents = {
       setUserAgent: (value) => {
@@ -31,16 +33,20 @@ class FakeBrowserWindow {
       setWindowOpenHandler: (handler) => {
         this.windowOpenHandler = handler;
       },
+      getURL: () => this.currentUrl,
     };
     windows.push(this);
   }
 
   async loadURL(url) {
+    this.loadURLCallCount += 1;
     this.url = url;
     if (loadErrors.length > 0) {
       const error = loadErrors.shift();
+      if (error.navigationUrl) this.currentUrl = error.navigationUrl;
       throw error;
     }
+    this.currentUrl = url;
   }
 
   on(eventName, handler) {
@@ -112,6 +118,23 @@ async function main() {
   assert.deepStrictEqual(recovered, { ok: true });
   assert.strictEqual(windows[1].destroyed, false);
 
+  const navigationAborted = new Error(
+    "ERR_ABORTED (-3) loading https://channels.weixin.qq.com/login.html",
+  );
+  navigationAborted.code = -3;
+  navigationAborted.navigationUrl =
+    "https://channels.weixin.qq.com/platform/login-for-iframe";
+  loadErrors.push(navigationAborted);
+  const redirected = await openAccountLoginWindow({
+    partition: "persist:redirected视频号",
+    url: "https://channels.weixin.qq.com/login.html",
+    useragent: "MatrixMediaTest/1.0",
+    title: "重定向账号 视频号",
+  });
+  assert.deepStrictEqual(redirected, { ok: true });
+  assert.strictEqual(windows[2].destroyed, false);
+  assert.strictEqual(windows[2].loadURLCallCount, 1);
+
   loadErrors.push(
     new Error("ERR_FAILED (-2) loading login page"),
     new Error("ERR_FAILED (-2) loading login page"),
@@ -124,7 +147,7 @@ async function main() {
   });
   assert.strictEqual(failed.ok, false);
   assert.match(failed.message, /ERR_FAILED/);
-  assert.strictEqual(windows[2].destroyed, true);
+  assert.strictEqual(windows[3].destroyed, true);
 
   const opened = await openAccountLoginWindow({
     partition: "persist:ready抖音",
@@ -133,16 +156,16 @@ async function main() {
     title: "正常账号 抖音",
   });
   assert.deepStrictEqual(opened, { ok: true });
-  assert.strictEqual(windows[3].destroyed, false);
-  assert.strictEqual(windows[3].useragent, "MatrixMediaTest/1.0");
+  assert.strictEqual(windows[4].destroyed, false);
+  assert.strictEqual(windows[4].useragent, "MatrixMediaTest/1.0");
 
   const reused = await openAccountLoginWindow({
     partition: "persist:ready抖音",
     url: "https://creator.douyin.com/creator-micro/home",
   });
   assert.deepStrictEqual(reused, { ok: true, reused: true });
-  assert.strictEqual(windows.length, 4);
-  assert.strictEqual(windows[3].focused, true);
+  assert.strictEqual(windows.length, 5);
+  assert.strictEqual(windows[4].focused, true);
 
   console.log("test-account-login-window passed");
 }
