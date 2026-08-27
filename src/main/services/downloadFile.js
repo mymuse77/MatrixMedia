@@ -38,10 +38,28 @@ function safeSend(mainWindow, channel, ...args) {
   }
 }
 
+function reportDownloadProgress(mainWindow, onProgress, progress) {
+  const normalizedProgress = Math.max(
+    0,
+    Math.min(100, Math.round(Number(progress) || 0))
+  )
+  safeSend(mainWindow, 'download-progress', String(normalizedProgress))
+  if (typeof onProgress !== 'function') return
+  try {
+    onProgress(normalizedProgress)
+  } catch (error) {
+    console.warn(
+      '更新下载进度回调失败:',
+      error && error.message ? error.message : error
+    )
+  }
+}
+
 export default {
   download(mainWindow, downloadUrL, options = {}) {
     const {
       onCompleted,
+      onProgress,
       onTerminated,
       notifyCompleted = true,
       downloadDirectory,
@@ -64,15 +82,19 @@ export default {
           : require('electron').app.getPath('downloads')
       const filePath = path.join(targetDirectory, item.getFilename())
       item.setSavePath(filePath)
+      let lastProgress = -1
       item.on('updated', (event, state) => {
         switch (state) {
           case 'progressing': {
             const total = item.getTotalBytes()
-            const pct =
+            const progress =
               total > 0
-                ? ((item.getReceivedBytes() / total) * 100).toFixed(0)
-                : '0'
-            safeSend(mainWindow, 'download-progress', pct)
+                ? Math.round((item.getReceivedBytes() / total) * 100)
+                : 0
+            if (progress !== lastProgress) {
+              lastProgress = progress
+              reportDownloadProgress(mainWindow, onProgress, progress)
+            }
             break
           }
           case 'interrupted':
@@ -128,12 +150,18 @@ export default {
   },
 
   downloadToPath(mainWindow, downloadUrl, filePath, options = {}) {
-    const { onCompleted, onTerminated, notifyCompleted = false } = options
+    const {
+      onCompleted,
+      onProgress,
+      onTerminated,
+      notifyCompleted = false,
+    } = options
     if (!downloadUrl || !filePath) return false
 
     let finalizing = false
     let activeRequest = null
     let output = null
+    let lastProgress = -1
 
     const removePartialFile = () => {
       try {
@@ -205,11 +233,14 @@ export default {
             response.on('data', (chunk) => {
               receivedBytes += chunk.length
               if (totalBytes > 0) {
-                safeSend(
-                  mainWindow,
-                  'download-progress',
-                  ((receivedBytes / totalBytes) * 100).toFixed(0)
+                const progress = Math.min(
+                  100,
+                  Math.round((receivedBytes / totalBytes) * 100)
                 )
+                if (progress !== lastProgress) {
+                  lastProgress = progress
+                  reportDownloadProgress(mainWindow, onProgress, progress)
+                }
               }
             })
             response.once('error', fail)

@@ -212,6 +212,37 @@ function closeUpdatePromptWindow() {
   activeUpdatePromptWindow = null;
 }
 
+function setUpdatePromptState(promptWindow, state, progress = 0) {
+  if (
+    !promptWindow ||
+    promptWindow.isDestroyed() ||
+    !promptWindow.webContents ||
+    promptWindow.webContents.isDestroyed()
+  ) {
+    return;
+  }
+
+  const normalizedProgress = Math.max(
+    0,
+    Math.min(100, Math.round(Number(progress) || 0))
+  );
+  const script = `window.setUpdateDownloadState && window.setUpdateDownloadState(${JSON.stringify(
+    String(state || "downloading")
+  )}, ${normalizedProgress})`;
+  promptWindow.webContents.executeJavaScript(script, true).catch((error) => {
+    console.warn("[更新] 更新下载进度窗口失败:", error?.message || error);
+  });
+}
+
+function invokeUpdateLifecycle(callback, ...args) {
+  if (typeof callback !== "function") return;
+  try {
+    callback(...args);
+  } catch (error) {
+    console.warn("[更新] 更新生命周期回调失败:", error?.message || error);
+  }
+}
+
 function showAvailableUpdatePrompt(event, update) {
   if (
     !update.hasUpdate ||
@@ -254,6 +285,22 @@ function showAvailableUpdatePrompt(event, update) {
 
   activeUpdatePromptWindow = promptWindow;
   promptWindow.setAlwaysOnTop(true, "floating");
+  const remoteVersion = String(update.remoteVersion);
+  const escapedRemoteVersion = remoteVersion.replace(
+    /[&<>"']/g,
+    (char) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[char]
+  );
+  const remoteVersionScriptValue = JSON.stringify(remoteVersion).replace(
+    /</g,
+    "\\u003c"
+  );
   const promptHtml = `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -295,6 +342,15 @@ function showAvailableUpdatePrompt(event, update) {
     .title { margin-top: 7px; color: #0f172a; font-size: 19px; font-weight: 700; }
     .message { margin-top: 10px; color: #526173; font-size: 13px; line-height: 1.65; }
     .hint { margin-top: 5px; color: #64748b; font-size: 12px; line-height: 1.5; }
+    .progress { display: none; margin-top: 14px; }
+    .progress-meta { display: flex; justify-content: space-between; margin-bottom: 7px; color: #475569; font-size: 12px; }
+    .progress-track { height: 7px; overflow: hidden; border-radius: 999px; background: #e2e8f0; }
+    .progress-bar { width: 0; height: 100%; border-radius: inherit; background: #2563eb; transition: width .2s ease; }
+    .progress-track.indeterminate .progress-bar { width: 35%; animation: downloading 1.2s ease-in-out infinite; }
+    body.update-active .progress { display: block; }
+    body.update-active .actions { display: none; }
+    body.update-active .content { padding-bottom: 22px; }
+    @keyframes downloading { from { transform: translateX(-110%); } to { transform: translateX(310%); } }
     .actions { display: flex; justify-content: flex-end; padding: 0 24px 18px; }
     .update { padding: 8px 17px; border: 0; border-radius: 5px; color: #fff; background: #2563eb; font-size: 13px; cursor: pointer; }
     .update:hover { background: #1d4ed8; }
@@ -303,19 +359,70 @@ function showAvailableUpdatePrompt(event, update) {
 <body>
   <button class="close" type="button" aria-label="关闭本次更新提示">×</button>
   <div class="content">
-    <div class="eyebrow">MatrixMedia 客户端更新</div>
-    <div class="title">发现新版本 v${String(update.remoteVersion).replace(/</g, "&lt;")}</div>
+    <div class="eyebrow">视媒助手-客户端更新</div>
+    <div class="title">发现新版本 v${escapedRemoteVersion}</div>
     <div class="message">点击立即更新后，客户端将在后台下载更新。</div>
     <div class="hint">下载完成后会自动安装更新；点击右上角关闭则本次不更新。</div>
+    <div class="progress" aria-live="polite">
+      <div class="progress-meta"><span class="progress-label">准备下载</span><span class="progress-percent">0%</span></div>
+      <div class="progress-track indeterminate"><div class="progress-bar"></div></div>
+    </div>
   </div>
   <div class="actions"><button class="update" type="button">立即更新</button></div>
   <script>
+    const remoteVersion = ${remoteVersionScriptValue};
     const send = (action) => { window.location.href = "matrixmedia-update://" + action; };
+    const title = document.querySelector(".title");
+    const message = document.querySelector(".message");
+    const hint = document.querySelector(".hint");
+    const progressLabel = document.querySelector(".progress-label");
+    const progressPercent = document.querySelector(".progress-percent");
+    const progressTrack = document.querySelector(".progress-track");
+    const progressBar = document.querySelector(".progress-bar");
+    let updateRequested = false;
+    window.setUpdateDownloadState = (state, value) => {
+      const progress = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+      document.body.classList.add("update-active");
+      if (state === "failed") {
+        title.textContent = "更新未完成";
+        message.textContent = "新版本下载或安装程序启动失败，请稍后重新检查更新。";
+        hint.textContent = "关闭此提示后，可从客户端重新检查更新。";
+        progressLabel.textContent = "更新失败";
+        progressTrack.classList.remove("indeterminate");
+        progressBar.style.width = progress + "%";
+        progressPercent.textContent = progress + "%";
+        return;
+      }
+      if (state === "downloaded") {
+        title.textContent = "新版本下载完成";
+        message.textContent = "正在启动安装程序，请稍候。";
+        hint.textContent = "安装程序启动后客户端将自动退出。";
+        progressLabel.textContent = "下载完成";
+        progressTrack.classList.remove("indeterminate");
+        progressBar.style.width = "100%";
+        progressPercent.textContent = "100%";
+        return;
+      }
+      title.textContent = "正在下载 v" + remoteVersion;
+      message.textContent = "新版本正在后台下载，请保持客户端运行。";
+      hint.textContent = "下载完成后会自动启动安装程序；关闭此提示不影响更新。";
+      progressLabel.textContent = "下载进度";
+      progressPercent.textContent = progress + "%";
+      progressTrack.classList.toggle("indeterminate", progress <= 0);
+      if (progress > 0) progressBar.style.width = progress + "%";
+    };
+    const requestInstall = (event) => {
+      if (event) event.stopPropagation();
+      if (updateRequested) return;
+      updateRequested = true;
+      window.setUpdateDownloadState("downloading", 0);
+      send("install");
+    };
     document.querySelector(".close").addEventListener("click", (event) => { event.stopPropagation(); send("dismiss"); });
-    document.querySelector(".update").addEventListener("click", (event) => { event.stopPropagation(); send("install"); });
-    document.querySelector(".content").addEventListener("click", () => send("install"));
+    document.querySelector(".update").addEventListener("click", requestInstall);
+    document.querySelector(".content").addEventListener("click", requestInstall);
     document.body.addEventListener("click", (event) => {
-      if (event.target === document.body) send("install");
+      if (event.target === document.body) requestInstall(event);
     });
   </script>
 </body>
@@ -325,8 +432,24 @@ function showAvailableUpdatePrompt(event, update) {
     if (!String(url || "").startsWith("matrixmedia-update://")) return;
     const action = String(url).replace("matrixmedia-update://", "");
     if (action === "install") {
-      closeUpdatePromptWindow();
-      startUpdateDownload(mainWindow, update, true);
+      setUpdatePromptState(promptWindow, "downloading", 0);
+      const started = startUpdateDownload(mainWindow, update, true, {
+        onProgress: (progress) =>
+          setUpdatePromptState(promptWindow, "downloading", progress),
+        onDownloadCompleted: () =>
+          setUpdatePromptState(promptWindow, "downloaded", 100),
+        onInstallerResult: (result) => {
+          if (!result || !result.ok) {
+            setUpdatePromptState(promptWindow, "failed", 100);
+          }
+        },
+        onTerminated: (state) => {
+          if (state !== "completed") {
+            setUpdatePromptState(promptWindow, "failed", 0);
+          }
+        },
+      });
+      if (!started) setUpdatePromptState(promptWindow, "failed", 0);
     } else if (action === "dismiss") {
       closeUpdatePromptWindow();
     }
@@ -349,7 +472,12 @@ function showAvailableUpdatePrompt(event, update) {
   });
 }
 
-function startUpdateDownload(mainWindow, update, installAfterDownload = false) {
+function startUpdateDownload(
+  mainWindow,
+  update,
+  installAfterDownload = false,
+  lifecycle = {}
+) {
   if (updateDownloadInProgress || !launchInstallerHandler) {
     console.warn("[更新] 下载未启动：已有更新任务或安装器未初始化");
     return false;
@@ -358,11 +486,11 @@ function startUpdateDownload(mainWindow, update, installAfterDownload = false) {
   updateDownloadInProgress = true;
   const tempInstallerPath = installAfterDownload
     ? path.join(
-        electronApp.getPath("temp"),
-        `matrixmedia-update-${Date.now()}-${String(
-          update.downloadName || "MatrixMedia-update.exe"
-        ).replace(/[\\/:*?"<>|]/g, "_")}`
-      )
+      electronApp.getPath("temp"),
+      `matrixmedia-update-${Date.now()}-${String(
+        update.downloadName || "MatrixMedia-update.exe"
+      ).replace(/[\\/:*?"<>|]/g, "_")}`
+    )
     : "";
   console.log(
     `[更新] 开始下载 v${update.remoteVersion}，下载完成后${installAfterDownload ? "自动启动安装程序" : "仅提示下载完成"
@@ -370,8 +498,11 @@ function startUpdateDownload(mainWindow, update, installAfterDownload = false) {
   );
   const downloadOptions = {
     notifyCompleted: !installAfterDownload,
+    onProgress: (progress) =>
+      invokeUpdateLifecycle(lifecycle.onProgress, progress),
     onCompleted: async (filePath) => {
       console.log(`[更新] 下载完成：${filePath}`);
+      invokeUpdateLifecycle(lifecycle.onDownloadCompleted, filePath);
       if (!installAfterDownload) {
         return;
       }
@@ -379,6 +510,7 @@ function startUpdateDownload(mainWindow, update, installAfterDownload = false) {
       console.log(`[更新] 正在启动安装程序：${filePath}`);
       const result = await launchInstallerHandler(null, filePath);
       console.log("[更新] 安装程序启动结果：", result);
+      invokeUpdateLifecycle(lifecycle.onInstallerResult, result);
       if (!result || !result.ok) {
         dialog.showErrorBox(
           "更新失败",
@@ -388,17 +520,18 @@ function startUpdateDownload(mainWindow, update, installAfterDownload = false) {
         );
       }
     },
-    onTerminated: () => {
+    onTerminated: (state) => {
       updateDownloadInProgress = false;
+      invokeUpdateLifecycle(lifecycle.onTerminated, state);
     },
   };
   const started = installAfterDownload
     ? downloadFile.downloadToPath(
-        mainWindow,
-        update.downloadURL,
-        tempInstallerPath,
-        downloadOptions
-      )
+      mainWindow,
+      update.downloadURL,
+      tempInstallerPath,
+      downloadOptions
+    )
     : downloadFile.download(mainWindow, update.downloadURL, downloadOptions);
   if (!started) {
     updateDownloadInProgress = false;

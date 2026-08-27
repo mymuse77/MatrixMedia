@@ -35,6 +35,7 @@ server.listen(0, "127.0.0.1", async () => {
   try {
     const port = server.address().port;
     const states = [];
+    const progressValues = [];
     const started = downloadFile.downloadToPath(
       null,
       `http://127.0.0.1:${port}/MatrixMedia.exe`,
@@ -43,6 +44,7 @@ server.listen(0, "127.0.0.1", async () => {
         onCompleted: async filePath => {
           states.push(`completed:${path.basename(filePath)}`);
         },
+        onProgress: progress => progressValues.push(progress),
         onTerminated: state => states.push(`terminated:${state}`),
       }
     );
@@ -58,6 +60,7 @@ server.listen(0, "127.0.0.1", async () => {
     });
 
     assert.strictEqual(fs.readFileSync(targetPath, "utf8"), "test-installer\n");
+    assert.deepStrictEqual(progressValues, [100]);
     assert.deepStrictEqual(states, [
       `completed:${path.basename(targetPath)}`,
       "terminated:completed",
