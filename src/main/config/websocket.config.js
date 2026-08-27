@@ -18,8 +18,9 @@ module.exports = {
   reconnection: {
     enabled: true,
     delay: 1000, // 初始重连延迟（毫秒）
-    delayMax: 5000, // 最大重连延迟（毫秒）
-    attempts: 10, // 最大重连次数
+    delayMax: 30000, // 最大重连延迟（毫秒）
+    attempts: Infinity, // 网络恢复前持续重连
+    randomizationFactor: 0.5, // 加入抖动，避免大量客户端同时重连
   },
 
   // 连接超时（毫秒）

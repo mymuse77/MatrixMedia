@@ -95,9 +95,11 @@ class WebSocketClient {
     this.clientId = getClientId();
     this.taskHandlers = new Map(); // 任务处理器映射
     this.heartbeatTimer = null; // 心跳定时器
-    this.manualReconnectTimer = null; // 达到上限后的低频自恢复重连
     this.taskTypeById = new Map();
     this.executionTokenByTaskId = new Map();
+    this.lastConnectedAt = 0;
+    this.lastDisconnectedAt = 0;
+    this.lastDisconnectReason = '';
   }
 
   /**
@@ -109,8 +111,6 @@ class WebSocketClient {
       return;
     }
 
-    this.clearManualReconnectTimer();
-
     console.log(`[WebSocket] 正在连接到服务器: ${this.serverUrl}${config.path}`);
 
     this.socket = io(this.serverUrl, {
@@ -119,6 +119,7 @@ class WebSocketClient {
       reconnectionDelay: config.reconnection.delay,
       reconnectionDelayMax: config.reconnection.delayMax,
       reconnectionAttempts: config.reconnection.attempts,
+      randomizationFactor: config.reconnection.randomizationFactor,
       timeout: config.timeout,
       transports: config.transports,
     });
@@ -134,7 +135,7 @@ class WebSocketClient {
     this.socket.on('connect', () => {
       this.isConnected = true;
       this.reconnectAttempts = 0;
-      this.clearManualReconnectTimer();
+      this.lastConnectedAt = Date.now();
       console.log('[WebSocket] 连接成功, Socket ID:', this.socket.id);
 
       // 发送认证信息（可以包含设备ID、账号列表等）
@@ -148,6 +149,8 @@ class WebSocketClient {
     // 连接断开
     this.socket.on('disconnect', (reason) => {
       this.isConnected = false;
+      this.lastDisconnectedAt = Date.now();
+      this.lastDisconnectReason = String(reason || 'unknown');
       console.log('[WebSocket] 连接断开, 原因:', reason);
 
       // 停止心跳
@@ -163,7 +166,10 @@ class WebSocketClient {
     // 连接错误
     this.socket.on('connect_error', (error) => {
       this.reconnectAttempts++;
-      console.error(`[WebSocket] 连接错误 (尝试 ${this.reconnectAttempts}/${this.maxReconnectAttempts}):`, error.message);
+      const attemptText = Number.isFinite(this.maxReconnectAttempts)
+        ? `${this.reconnectAttempts}/${this.maxReconnectAttempts}`
+        : `${this.reconnectAttempts}/持续重试`;
+      console.warn(`[WebSocket] 连接失败，正在退避重试 (尝试 ${attemptText}):`, error.message);
     });
 
     // 重连尝试
@@ -172,15 +178,9 @@ class WebSocketClient {
     });
 
     // 重连成功
-    this.socket.on('reconnect', (attemptNumber) => {
+    this.socket.io.on('reconnect', (attemptNumber) => {
       console.log(`[WebSocket] 重连成功 (尝试了 ${attemptNumber} 次)`);
       this.reconnectAttempts = 0;
-      this.clearManualReconnectTimer();
-    });
-
-    this.socket.io.on('reconnect_failed', () => {
-      console.error('[WebSocket] 达到最大重连次数，切换为低频自动重试');
-      this.scheduleManualReconnect();
     });
 
     // 接收服务器的 pong 响应
@@ -364,9 +364,14 @@ class WebSocketClient {
       timestamp: Date.now(),
     };
 
+    const emittedWhileConnected = this.isConnected;
     this.socket.emit('result', result);
     if (this.shouldLogTask(taskId)) {
-      console.log(`[WebSocket] 已发送任务结果: ${taskId}, 状态: ${status}`);
+      console.log(
+        emittedWhileConnected
+          ? `[WebSocket] 已发送任务结果: ${taskId}, 状态: ${status}`
+          : `[WebSocket] 连接中断，任务结果已进入 Socket.IO 待发送队列: ${taskId}, 状态: ${status}`,
+      );
     }
     const resultData = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
     const businessStatus = String(resultData.status || '').toLowerCase();
@@ -449,32 +454,6 @@ class WebSocketClient {
     }
   }
 
-  clearManualReconnectTimer() {
-    if (this.manualReconnectTimer) {
-      clearTimeout(this.manualReconnectTimer);
-      this.manualReconnectTimer = null;
-    }
-  }
-
-  scheduleManualReconnect() {
-    if (this.manualReconnectTimer) return;
-
-    const retryDelay = Math.max(config.reconnection.delayMax || 5000, 15000);
-    this.manualReconnectTimer = setTimeout(() => {
-      this.manualReconnectTimer = null;
-
-      if (!this.socket || this.isConnected) {
-        return;
-      }
-
-      this.reconnectAttempts = 0;
-      console.log(`[WebSocket] ${retryDelay}ms 后执行手动重连...`);
-      this.socket.connect();
-    }, retryDelay);
-
-    console.log(`[WebSocket] 已安排低频自动重连，${retryDelay}ms 后重试`);
-  }
-
   /**
    * 发送心跳
    */
@@ -500,7 +479,6 @@ class WebSocketClient {
     if (this.socket) {
       console.log('[WebSocket] 正在断开连接...');
       this.stopHeartbeat();
-      this.clearManualReconnectTimer();
       this.socket.disconnect();
       this.socket = null;
       this.isConnected = false;
@@ -516,6 +494,9 @@ class WebSocketClient {
       clientId: this.clientId,
       socketId: this.socket?.id,
       reconnectAttempts: this.reconnectAttempts,
+      lastConnectedAt: this.lastConnectedAt,
+      lastDisconnectedAt: this.lastDisconnectedAt,
+      lastDisconnectReason: this.lastDisconnectReason,
     };
   }
 }
