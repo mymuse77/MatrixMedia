@@ -29,6 +29,7 @@
     "test:upload-timeouts": "node scripts/test-upload-timeouts.js",
     "test:dy-page-state": "node scripts/test-dy-page-state.js",
     "test:dy-publish-confirmation": "node scripts/test-dy-publish-confirmation.js",
+    "test:dy-sms-verification-preview": "electron scripts/preview-dy-sms-verification.js",
     "test:task-result-status": "node scripts/test-task-result-status.js",
     "test:websocket-publish-videos": "node scripts/test-websocket-publish-videos.js",
     "test:push-data-identity": "node scripts/test-push-data-identity.js",
