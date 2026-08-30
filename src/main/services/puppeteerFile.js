@@ -24,6 +24,7 @@ import { resolveChromePath } from "./chromeConfig.js";
 import xhsChromeHandler from "./upLoad/xhsChrome.js";
 import { isPlatformLoginUrl } from "../../shared/platformPageState.js";
 import { guardExternalNavigation } from "./navigationGuard.js";
+import { hidePublishWindowMenu } from "./publishWindowPresentation.js";
 
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 
@@ -692,6 +693,9 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         width: data?.width ?? 1300,
         height: data?.height ?? 800,
         title: `${data.partition} (尝试${currentAttempt}/${maxRetries})`,
+        frame: true,
+        closable: true,
+        autoHideMenuBar: true,
         webPreferences: {
           partition: data.partition,
           nodeIntegration: false,
@@ -705,6 +709,11 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
           backgroundThrottling: false,
         },
       });
+      try {
+        hidePublishWindowMenu(win);
+      } catch (error) {
+        console.warn("[publish-window] 隐藏发布窗口菜单失败:", error?.message || error);
+      }
       activeWin = win;
       openPublishWindows.add(win);
       // 发布页可能在上传完成后自动播放预览；静音仅影响本地播放，不会改动上传视频音轨。

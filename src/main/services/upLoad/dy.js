@@ -16,6 +16,7 @@ import {
   resolveDyPublishConfirmationTimeoutMs,
   waitForDyPublishConfirmation,
 } from "./dyPublishConfirmation.js";
+import { revealPublishVerificationWindow } from "../publishWindowPresentation.js";
 
 const DY_PREFLIGHT_TIMEOUT_MS = 60 * 1000;
 const DY_UPLOAD_INPUT_TIMEOUT_MS = 60 * 1000;
@@ -23,20 +24,8 @@ const DY_LOCATION_ATTEMPTS = 3;
 const DY_LOCATION_PICK_TIMEOUT_MS = 15 * 1000;
 
 function revealDyVerificationWindow(window) {
-  if (!window || typeof window.isDestroyed !== "function" || window.isDestroyed()) {
-    return false;
-  }
-
   try {
-    if (typeof window.isMinimized === "function" && window.isMinimized()) {
-      window.restore();
-    }
-    if (typeof window.isVisible !== "function" || !window.isVisible()) {
-      window.show();
-    }
-    if (typeof window.moveTop === "function") window.moveTop();
-    if (typeof window.focus === "function") window.focus();
-    return true;
+    return revealPublishVerificationWindow(window);
   } catch (error) {
     console.warn("[dy] 显示抖音短信验证窗口失败:", error?.message || error);
     return false;
