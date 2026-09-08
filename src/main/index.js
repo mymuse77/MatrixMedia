@@ -78,6 +78,7 @@ if (!cliMode) {
 let tray;
 let mainWin = null;
 let allowQuit = false;
+let quitInProgress = false;
 let matrixWebSocketStarted = false;
 
 function notifyQuitWarning() {
@@ -87,22 +88,30 @@ function notifyQuitWarning() {
   }
 }
 
-function performQuit() {
+async function performQuit() {
+  if (quitInProgress) return;
+  quitInProgress = true;
+
+  // Start the server-side interruption report before cancelling Puppeteer so
+  // the task payloads are still available. Force-killed processes are handled
+  // by the Web server's disconnected-socket takeover path.
+  const wsClient = getWebSocketClient();
+  const disconnectPromise = wsClient.disconnect("应用退出，已中断发布");
   if (hasActivePublishTasks()) {
     cancelPuppeteerTasks("应用退出，已中断发布");
   }
+  await disconnectPromise;
   destroyAccountLoginWindows();
   allowQuit = true;
   app.quit();
 }
 
 registerUpdateQuitHandler(() => {
-  destroyAccountLoginWindows();
-  allowQuit = true;
-  app.quit();
+  void performQuit();
 });
 
 function requestQuit() {
+  if (quitInProgress) return;
   if (allowQuit) {
     app.quit();
     return;
@@ -118,7 +127,7 @@ function requestQuit() {
     cancelId: 1,
     noLink: true,
   });
-  if (choice === 0) performQuit();
+  if (choice === 0) void performQuit();
 }
 
 function startMatrixWebSocketClient() {

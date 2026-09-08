@@ -96,7 +96,10 @@ class WebSocketClient {
     this.taskHandlers = new Map(); // 任务处理器映射
     this.heartbeatTimer = null; // 心跳定时器
     this.taskTypeById = new Map();
+    this.taskDataById = new Map();
+    this.taskStatusById = new Map();
     this.executionTokenByTaskId = new Map();
+    this.isShuttingDown = false;
     this.lastConnectedAt = 0;
     this.lastDisconnectedAt = 0;
     this.lastDisconnectReason = '';
@@ -110,6 +113,8 @@ class WebSocketClient {
       console.log('[WebSocket] 已存在连接，跳过重复连接');
       return;
     }
+
+    this.isShuttingDown = false;
 
     console.log(`[WebSocket] 正在连接到服务器: ${this.serverUrl}${config.path}`);
 
@@ -155,6 +160,10 @@ class WebSocketClient {
 
       // 停止心跳
       this.stopHeartbeat();
+
+      if (this.isShuttingDown) {
+        return;
+      }
 
       if (reason === 'io server disconnect') {
         // 服务器主动断开，需要手动重连
@@ -247,6 +256,10 @@ class WebSocketClient {
   handleTask(taskData) {
     const { taskId, type } = taskData;
     this.taskTypeById.set(taskId, type);
+    if (type === 'publish_video' || type === 'publish_videos') {
+      this.taskDataById.set(taskId, taskData);
+      this.taskStatusById.delete(taskId);
+    }
     if (taskData?.data?.executionToken) {
       this.executionTokenByTaskId.set(taskId, taskData.data.executionToken);
     }
@@ -259,6 +272,7 @@ class WebSocketClient {
     if (handler) {
       handler(taskData)
         .then((result) => {
+          if (this.isShuttingDown) return;
           if (type === 'publish_video') {
             const taskPayload = taskData && typeof taskData.data === 'object' && taskData.data !== null ? taskData.data : {};
             this.sendTaskResult(taskId, 'success', {
@@ -282,6 +296,7 @@ class WebSocketClient {
           );
         })
         .catch((error) => {
+          if (this.isShuttingDown) return;
           const errorSummary = formatTaskError(error);
           const errorMessage = errorSummary.message || '任务执行失败';
           console.error(`[WebSocket] 任务执行失败 (${taskId}):`, errorSummary);
@@ -378,7 +393,11 @@ class WebSocketClient {
     const keepsExecutionContext = businessStatus === 'running' || businessStatus === 'scheduled';
     if (!keepsExecutionContext) {
       this.taskTypeById.delete(taskId);
+      this.taskDataById.delete(taskId);
+      this.taskStatusById.delete(taskId);
       this.executionTokenByTaskId.delete(taskId);
+    } else {
+      this.taskStatusById.set(taskId, businessStatus);
     }
   }
 
@@ -475,14 +494,106 @@ class WebSocketClient {
   /**
    * 断开连接
    */
-  disconnect() {
-    if (this.socket) {
-      console.log('[WebSocket] 正在断开连接...');
-      this.stopHeartbeat();
-      this.socket.disconnect();
-      this.socket = null;
+  notifyInterruptedTasks(reason = '应用退出，已中断发布', timeoutMs = 4_000) {
+    const socket = this.socket;
+    if (!socket || !this.isConnected) return Promise.resolve(false);
+
+    const tasks = Array.from(this.taskDataById.entries())
+      .filter(([taskId, taskData]) => {
+        const type = this.taskTypeById.get(taskId) || taskData?.type;
+        return (
+          (type === 'publish_video' || type === 'publish_videos') &&
+          this.taskStatusById.get(taskId) !== 'scheduled'
+        );
+      })
+      .map(([taskId, taskData]) => {
+        const type = this.taskTypeById.get(taskId) || taskData?.type;
+        const data = taskData?.data && typeof taskData.data === 'object' && !Array.isArray(taskData.data)
+          ? taskData.data
+          : {};
+        const interruptedData = {
+          action: type,
+          success: false,
+          status: 'failed',
+          error: reason,
+          message: reason,
+          executionToken: data.executionToken || '',
+          ...(data.matrixTaskId ? { matrixTaskId: data.matrixTaskId } : {}),
+          ...(type === 'publish_video'
+            ? {
+              itemId: data.itemId || '',
+              idempotencyKey: data.idempotencyKey || '',
+              phone: data.phone || '',
+              platform: data.platform || '',
+              videoPath: data.videoPath || data.sourceVideoPath || data.filePath || '',
+              videoUrl: data.videoUrl || data.url || '',
+            }
+            : {}),
+        };
+
+        return {
+          taskId,
+          status: 'failed',
+          data: interruptedData,
+        };
+      });
+
+    if (tasks.length === 0) return Promise.resolve(true);
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (success) => {
+        if (settled) return;
+        settled = true;
+        resolve(success);
+      };
+
+      const timer = setTimeout(() => finish(false), timeoutMs + 250);
+      try {
+        socket.timeout(timeoutMs).emit(
+          'client:shutdown',
+          {
+            clientType: config.clientType,
+            clientId: this.clientId,
+            reason,
+            tasks,
+            timestamp: Date.now(),
+          },
+          (error, response) => {
+            clearTimeout(timer);
+            finish(!error && response?.success !== false);
+          },
+        );
+      } catch (error) {
+        clearTimeout(timer);
+        console.warn('[WebSocket] 上报退出中的发布任务失败:', error?.message || error);
+        finish(false);
+      }
+    });
+  }
+
+  async disconnect(reason = '应用退出，已中断发布') {
+    const socket = this.socket;
+    this.isShuttingDown = true;
+    this.stopHeartbeat();
+
+    if (!socket) {
       this.isConnected = false;
+      return false;
     }
+
+    console.log('[WebSocket] 正在断开连接...');
+    const notified = await this.notifyInterruptedTasks(reason);
+    socket.disconnect();
+    if (this.socket === socket) {
+      this.socket = null;
+    }
+    this.isConnected = false;
+    this.taskTypeById.clear();
+    this.taskDataById.clear();
+    this.taskStatusById.clear();
+    this.executionTokenByTaskId.clear();
+    return notified;
   }
 
   /**
