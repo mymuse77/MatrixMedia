@@ -1,0 +1,6 @@
+allowBuilds:
+  '@swc/core': true
+  core-js: true
+  electron: true
+  esbuild: true
+  vue-demi: true
