@@ -94,7 +94,7 @@ export function createPuppeteerTaskRuntime({ runTask }) {
         control: {
           runtimeTask: null,
           canceled: false,
-          cancel(reason = "上传任务已主动中断") {
+          cancel(reason = "发布任务已取消") {
             if (entry.control.canceled) return false;
             entry.control.canceled = true;
             if (entry.control.runtimeTask) {
@@ -114,7 +114,7 @@ export function createPuppeteerTaskRuntime({ runTask }) {
       processNextTask();
       return entry.control;
     },
-    cancelPuppeteerTasks(reason = "上传任务已主动中断") {
+    cancelPuppeteerTasks(reason = "发布任务已取消") {
       const queued = taskQueue.length;
       taskQueue.splice(0, taskQueue.length);
       const active = activeTask && taskBusy ? 1 : 0;
@@ -327,10 +327,10 @@ export function runPuppeteerPreflight(data) {
           if (payload?.status === true) {
             resolveOnce(payload);
           } else {
-            rejectOnce(payload, "发布页预检失败");
+            rejectOnce(payload, "发布页面预检未通过");
           }
         } else if (channel === "puppeteer-noLogin") {
-          rejectOnce(payload, "登录状态异常或未登录");
+          rejectOnce(payload, "账号未登录或登录状态已失效");
         }
       },
     });
@@ -436,7 +436,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
 
   publishTimeoutTimer = setTimeout(() => {
     const minutes = Number((publishTimeoutMs / 60000).toFixed(1));
-    const message = `单账号发布超时（${minutes} 分钟），阶段：${currentStage}`;
+    const message = `单账号发布超时（已超过 ${minutes} 分钟），停留阶段：${currentStage}`;
     console.error(`[publish-timeout] ${data.pt || "未知平台"} ${data.phone || data.partition || ""}: ${message}`);
     abortTask(message, {
       timeout: true,
@@ -455,7 +455,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         payload &&
         payload.status === false
       ) {
-        const err = new Error(payload.message || "平台上传失败");
+        const err = new Error(payload.message || "平台发布失败");
         err._mmUploadFailurePayload = payload;
         throw err;
       }
@@ -580,12 +580,12 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         // 弹窗提醒用户去浏览器登录
         dialog.showMessageBox({
           type: "info",
-          title: "小红书 - 真实浏览器登录",
-          message: "请在 Chrome 浏览器中登录小红书",
-          detail: "首次使用真实浏览器发布需要登录一次小红书创作者平台。\n登录成功后将自动继续发布，后续不再需要重复登录。\n\n最多等待 5 分钟。",
+          title: "小红书登录提示",
+          message: "请在弹出的 Chrome 浏览器中登录小红书账号",
+          detail: "首次使用 Chrome 浏览器发布，需在小红书创作者平台完成一次登录。\n登录成功后系统将自动继续发布流程，后续发布无需重复登录。\n\n系统最多等待 5 分钟。",
           buttons: ["知道了"],
           noLink: true,
-        }).catch(() => {});
+        }).catch(() => { });
 
         // 轮询等待用户登录
         const loginStartTime = Date.now();
@@ -609,11 +609,11 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
             try {
               await page.goto(data.url, { waitUntil: "domcontentloaded", timeout: 30000 });
               if (isOnPublishPage(page.url())) { loggedIn = true; break; }
-            } catch (_) {}
+            } catch (_) { }
           }
         }
         if (!loggedIn) {
-          throw new Error("等待登录超时（5 分钟），请登录后重试");
+          throw new Error("登录等待超时（5 分钟），请登录小红书账号后再试");
         }
         await new Promise((r) => setTimeout(r, 2000));
       } else {
@@ -623,11 +623,11 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       // 7. 执行发布
       await xhsChromeHandler(page, data, realBrowser, createAttemptTransport());
     } catch (err) {
-      console.error("[xhs-chrome] 真实浏览器发布失败:", err?.message || err);
+      console.error("[xhs-chrome] Chrome 浏览器发布失败:", err?.message || err);
       safeReply("puppeteerFile-done", {
         ...data,
         status: false,
-        message: `真实浏览器发布失败: ${err?.message || err}`,
+        message: `Chrome 浏览器发布失败: ${err?.message || err}`,
       });
       finishOnce();
     } finally {
@@ -643,7 +643,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         } catch (_) {
           _lastXhsRealChromePid = null;
         }
-        try { realBrowser.disconnect(); } catch (_) {}
+        try { realBrowser.disconnect(); } catch (_) { }
       }
     }
   };
@@ -692,7 +692,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
           : data?.show ?? false,
         width: data?.width ?? 1300,
         height: data?.height ?? 800,
-        title: `${data.partition} (尝试${currentAttempt}/${maxRetries})`,
+        title: `${data.partition} (第 ${currentAttempt}/${maxRetries} 次尝试)`,
         frame: true,
         closable: true,
         autoHideMenuBar: true,
@@ -732,8 +732,8 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         window.chrome.runtime.id =
           window.chrome.runtime.id ||
           "e" +
-            Math.random().toString(36).slice(2, 11) +
-            Math.random().toString(36).slice(2, 11);
+          Math.random().toString(36).slice(2, 11) +
+          Math.random().toString(36).slice(2, 11);
         window.chrome.loadTimes =
           window.chrome.loadTimes ||
           function () {
@@ -800,7 +800,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
                   namedItem(name) {
                     return fakePlugins.find((p) => p.name === name) || null;
                   },
-                  refresh() {},
+                  refresh() { },
                 }
               );
               fakePlugins.forEach((p, i) => (arr[i] = p));
@@ -900,9 +900,9 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         if (win.isDestroyed()) return;
         const choice = dialog.showMessageBoxSync(win, {
           type: "warning",
-          title: "关闭发布窗口",
+          title: "确认关闭发布窗口",
           message:
-            "当前页面可能正在上传或已暂停，关闭将放弃未完成的操作。\n\n确定要关闭吗？",
+            "当前页面可能正在执行发布任务，关闭窗口将终止未完成的操作。\n\n确定要关闭该窗口吗？",
           buttons: ["仍要关闭", "取消"],
           defaultId: 1,
           cancelId: 1,
@@ -916,9 +916,9 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       const AUTO_CLOSE_DELAY = UPLOAD_WINDOW_AUTO_CLOSE_MS;
       if (!isXhsTask) {
         autoCloseTimer = setTimeout(() => {
-          const message = `发布窗口超时（${Math.round(
+          const message = `发布窗口等待超时（${Math.round(
             AUTO_CLOSE_DELAY / 60000
-          )} 分钟），阶段：${currentStage}`;
+          )} 分钟），当前阶段：${currentStage}`;
           console.error(`[publish-timeout] ${data.pt || "未知平台"} ${data.phone || data.partition || ""}: ${message}`);
           abortTask(message, {
             timeout: true,
@@ -988,7 +988,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
               safeReply("puppeteerFile-done", {
                 ...data,
                 status: false,
-                message: "重试失败",
+                message: "重新尝试发布失败",
               });
               finishOnce();
             });
@@ -1003,7 +1003,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
             ...data,
             status: false,
             skipped: true,
-            message: "用户关闭窗口，已跳过该平台的发布",
+            message: "发布窗口已被手动关闭，已跳过本次发布",
           });
           finishOnce();
           return;
@@ -1013,7 +1013,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
           safeReply("puppeteerFile-done", {
             ...data,
             status: false,
-            message: "窗口已关闭，任务结束",
+            message: "发布窗口已关闭，任务已结束",
           });
         }
         finishOnce();
@@ -1024,7 +1024,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         if (finished) return;
         try {
           if (!page || typeof page.url !== "function") {
-            throw new Error("页面对象不可用");
+            throw new Error("发布页面异常，未能获取有效的页面对象");
           }
           const currentUrl = page.url();
           if (isExpectedPublishUrl(data, currentUrl)) {
@@ -1039,7 +1039,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
               safeReply("puppeteerFile-done", {
                 ...data,
                 status: false,
-                message: `未找到平台处理器: ${data.pt}`,
+                message: `暂不支持该平台或未配置发布处理器: ${data.pt}`,
               });
               if (win && !win.isDestroyed())
                 closePublishWinProgrammatically(win);
@@ -1061,7 +1061,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
               `尝试${currentAttempt} URL不匹配: ${currentUrl}，关闭窗口并重新尝试`
             );
             if (isPlatformLoginUrl(data.pt, currentUrl)) {
-              const message = `${data.pt}登录状态已失效，请重新登录后再试`;
+              const message = `${data.pt} 账号登录状态已失效，请重新登录后再试`;
               console.error(`[auth] ${message}: ${currentUrl}`);
               safeReply("puppeteer-noLogin", {
                 ...data,
@@ -1079,7 +1079,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
               safeReply("puppeteerFile-done", {
                 ...data,
                 status: false,
-                message: `小红书页面地址异常，已保留窗口: ${currentUrl}`,
+                message: `小红书页面未正确跳转至发布页，已保留窗口供排查: ${currentUrl}`,
               });
               finishOnce();
               return;
@@ -1101,7 +1101,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
               ...data,
               ...failurePayload,
               status: false,
-              message: (failurePayload && failurePayload.message) || "执行失败",
+              message: (failurePayload && failurePayload.message) || "发布执行失败",
             });
             if (!isXhsTask && win && !win.isDestroyed())
               closePublishWinProgrammatically(win);
@@ -1141,7 +1141,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         safeReply("puppeteerFile-done", {
           ...data,
           status: false,
-          message: error.message || "代理配置错误",
+          message: error.message || "网络代理配置异常",
         });
         finishOnce();
         return;
@@ -1151,7 +1151,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         safeReply("puppeteerFile-done", {
           ...data,
           status: false,
-          message: error.message || "小红书任务异常，已保留窗口",
+          message: error.message || "小红书发布任务异常，已保留窗口供排查",
         });
         finishOnce();
         return;
@@ -1168,7 +1168,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
           safeReply("puppeteerFile-done", {
             ...data,
             status: false,
-            message: "重试失败",
+            message: "重新尝试发布失败",
           });
           finishOnce();
         });
@@ -1179,7 +1179,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
   if (runtimeTask && typeof runtimeTask.setCancelHandler === "function") {
     runtimeTask.setCancelHandler((reason) => {
       if (finished) return;
-      const message = reason || "上传任务已主动中断";
+      const message = reason || "发布任务已取消";
       abortTask(message, { interrupted: true });
     });
   }
@@ -1190,7 +1190,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       safeReply("puppeteerFile-done", {
         ...data,
         status: false,
-        message: "创建窗口失败",
+        message: "创建发布窗口失败",
       });
       finishOnce();
     });
