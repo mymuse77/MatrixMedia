@@ -20,8 +20,12 @@ const fakeSocket = {
   on(eventName, handler) {
     socketHandlers.set(eventName, handler);
   },
-  emit(eventName, payload) {
+  emit(eventName, payload, callback) {
     emittedEvents.push({ eventName, payload });
+    if (typeof callback === "function") callback(null, { success: true });
+  },
+  timeout() {
+    return this;
   },
   connect() {
     this.connectCount += 1;
@@ -64,6 +68,13 @@ async function main() {
   assert.strictEqual(client.getConnectionStatus().isConnected, true);
   assert.ok(client.getConnectionStatus().lastConnectedAt > 0);
   assert.ok(emittedEvents.some((event) => event.eventName === "auth"));
+  client.executionTokenByTaskId.set("publish-task-1", "execution-token-1");
+  client.sendAck("publish-task-1", { queueState: "queued", queueAhead: 1 });
+  assert.ok(emittedEvents.some((event) =>
+    event.eventName === "ack" &&
+    event.payload.taskId === "publish-task-1" &&
+    event.payload.executionToken === "execution-token-1"
+  ));
 
   socketHandlers.get("disconnect")("ping timeout");
   const disconnectedStatus = client.getConnectionStatus();
@@ -74,8 +85,25 @@ async function main() {
   socketHandlers.get("disconnect")("io server disconnect");
   assert.strictEqual(fakeSocket.connectCount, 1);
 
-  client.disconnect();
+  socketHandlers.get("connect")();
+  client.taskTypeById.set("mixed-task", "publish_videos");
+  client.taskStatusById.set("mixed-task", "running");
+  client.taskDataById.set("mixed-task", {
+    taskId: "mixed-task",
+    type: "publish_videos",
+    data: {
+      matrixTaskId: "matrix-task-1",
+      scheduleMixDistribution: true,
+      executionToken: "execution-token-1",
+    },
+  });
+
+  await client.disconnect();
   assert.strictEqual(fakeSocket.disconnectCount, 1);
+  assert.ok(emittedEvents.some((event) =>
+    event.eventName === "client:shutdown" &&
+    event.payload.tasks.some((task) => task.taskId === "mixed-task")
+  ));
   console.log("test-websocket-reconnect passed");
 }
 

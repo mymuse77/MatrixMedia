@@ -305,11 +305,25 @@ export async function cancelScheduledPublishRecords(matrixTaskId) {
     const timer = scheduledTimers.get(key);
     if (timer) clearTimeout(timer);
     scheduledTimers.delete(key);
-    await changeData({
+    const canceled = changeData({
+      fileName: "pushData",
+      type: "update",
+      item: {
+        id: record.id,
+        date: record.date,
+        publishStatus: "canceled",
+        lastPublishMessage: "发布计划已取消",
+        lastPublishAt: Date.now(),
+      },
+    });
+    const deleted = changeData({
       fileName: "pushData",
       type: "delete",
       item: { id: record.id, date: record.date },
     });
+    if (canceled?.success === false && deleted?.success === false) {
+      throw new Error(deleted.message || canceled.message || `取消发布计划失败: ${record.id}`);
+    }
   }
   return records.length;
 }

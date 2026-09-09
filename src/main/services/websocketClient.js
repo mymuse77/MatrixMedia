@@ -352,16 +352,28 @@ class WebSocketClient {
   /**
    * 发送任务确认
    */
-  sendAck(taskId) {
+  sendAck(taskId, queueStatus = {}) {
+    const queuePayload = queueStatus && typeof queueStatus === 'object'
+      ? Object.fromEntries(
+        Object.entries(queueStatus).filter(([, value]) => value !== undefined && value !== null),
+      )
+      : {};
     this.socket.emit('ack', {
       clientType: config.clientType,
       clientId: this.clientId,
       protocolVersion,
       taskId,
+      executionToken: this.executionTokenByTaskId.get(taskId) || '',
+      ...queuePayload,
       timestamp: Date.now()
     });
     if (this.shouldLogTask(taskId)) {
-      console.log(`[WebSocket] 已发送任务确认: ${taskId}`);
+      const queueMessage = queuePayload.queueState === 'queued'
+        ? `，已排队，前方 ${queuePayload.queueAhead || 0} 个任务`
+        : queuePayload.queueState === 'running'
+          ? '，已开始执行'
+          : '';
+      console.log(`[WebSocket] 已发送任务确认: ${taskId}${queueMessage}`);
     }
   }
 
@@ -584,6 +596,8 @@ class WebSocketClient {
 
     console.log('[WebSocket] 正在断开连接...');
     const notified = await this.notifyInterruptedTasks(reason);
+    // 分散发布的未来计划必须继续保存在本地。客户端重启后调度器会恢复它们，
+    // 服务端退出处理只会终止当前已到时间的明细，并保留同一执行令牌。
     socket.disconnect();
     if (this.socket === socket) {
       this.socket = null;

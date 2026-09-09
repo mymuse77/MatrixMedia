@@ -42,10 +42,59 @@ export function createIpcTransport(ipcEvent) {
   };
 }
 
-export function createPuppeteerTaskRuntime({ runTask }) {
+export function createPuppeteerTaskRuntime({ runTask, queueHeartbeatMs = 30_000 }) {
   const taskQueue = [];
   let taskBusy = false;
   let activeTask = null;
+
+  const getQueueStatus = (entry) => {
+    const queuedIndex = taskQueue.indexOf(entry);
+    if (activeTask === entry && taskBusy) {
+      return {
+        queueState: "running",
+        queuePosition: 0,
+        queueAhead: 0,
+        queueSize: taskQueue.length + 1,
+      };
+    }
+
+    if (queuedIndex >= 0) {
+      const queueAhead = (activeTask && taskBusy ? 1 : 0) + queuedIndex;
+      return {
+        queueState: "queued",
+        queuePosition: queueAhead + 1,
+        queueAhead,
+        queueSize: taskQueue.length + (activeTask && taskBusy ? 1 : 0),
+      };
+    }
+
+    return {
+      queueState: "finished",
+      queuePosition: 0,
+      queueAhead: 0,
+      queueSize: 0,
+    };
+  };
+
+  const notifyQueueStatuses = () => {
+    const entries = [];
+    if (activeTask && taskBusy) entries.push(activeTask);
+    entries.push(...taskQueue);
+    for (const entry of entries) {
+      if (typeof entry.onQueueStatus !== "function") continue;
+      try {
+        entry.onQueueStatus(getQueueStatus(entry));
+      } catch (error) {
+        console.warn("发布队列状态通知失败:", error && error.message ? error.message : error);
+      }
+    }
+  };
+
+  const queueHeartbeatTimer = setInterval(
+    notifyQueueStatuses,
+    Math.max(10, Number(queueHeartbeatMs) || 30_000),
+  );
+  if (typeof queueHeartbeatTimer.unref === "function") queueHeartbeatTimer.unref();
 
   const processNextTask = () => {
     if (taskBusy) return;
@@ -71,6 +120,7 @@ export function createPuppeteerTaskRuntime({ runTask }) {
         if (activeTask === runtimeTask) activeTask = null;
         taskBusy = false;
         processNextTask();
+        notifyQueueStatuses();
       }
     };
     runtimeTask.cancel = (reason) => {
@@ -82,15 +132,17 @@ export function createPuppeteerTaskRuntime({ runTask }) {
     };
     activeTask = runtimeTask;
     next.control.runtimeTask = runtimeTask;
+    notifyQueueStatuses();
     runTask(runtimeTask, queueDone);
   };
 
   return {
-    enqueueTask(data, transport, userOnFinish) {
+    enqueueTask(data, transport, userOnFinish, onQueueStatus) {
       const entry = {
         data,
         transport,
         userOnFinish,
+        onQueueStatus,
         control: {
           runtimeTask: null,
           canceled: false,
@@ -106,12 +158,14 @@ export function createPuppeteerTaskRuntime({ runTask }) {
             if (index === -1) return false;
             taskQueue.splice(index, 1);
             if (typeof userOnFinish === "function") userOnFinish();
+            notifyQueueStatuses();
             return true;
           },
         },
       };
       taskQueue.push(entry);
       processNextTask();
+      notifyQueueStatuses();
       return entry.control;
     },
     cancelPuppeteerTasks(reason = "发布任务已取消") {
@@ -121,6 +175,7 @@ export function createPuppeteerTaskRuntime({ runTask }) {
       if (activeTask && taskBusy) {
         activeTask.cancel(reason);
       }
+      notifyQueueStatuses();
       return {
         active,
         queued,
@@ -133,6 +188,9 @@ export function createPuppeteerTaskRuntime({ runTask }) {
     isBusy() {
       return taskBusy;
     },
+    dispose() {
+      clearInterval(queueHeartbeatTimer);
+    },
   };
 }
 
@@ -142,8 +200,8 @@ const puppeteerTaskRuntime = createPuppeteerTaskRuntime({
   },
 });
 
-function enqueueTask(data, transport, userOnFinish) {
-  return puppeteerTaskRuntime.enqueueTask(data, transport, userOnFinish);
+function enqueueTask(data, transport, userOnFinish, onQueueStatus) {
+  return puppeteerTaskRuntime.enqueueTask(data, transport, userOnFinish, onQueueStatus);
 }
 
 export function cancelPuppeteerTasks(reason) {
@@ -275,6 +333,26 @@ function getPublishFileInfo(filePath) {
   }
 }
 
+export function getPublishNavigationFailureMessage(platform, error) {
+  const pt = platform || "平台";
+  const code = String(error?.code || "");
+  if (code === "ERR_NAME_NOT_RESOLVED") {
+    return `${pt} 发布页域名解析失败，请检查网络或 DNS 设置后重试`;
+  }
+  if (
+    code === "ERR_INTERNET_DISCONNECTED" ||
+    code === "ERR_NETWORK_CHANGED" ||
+    code === "ERR_CONNECTION_CLOSED" ||
+    code === "ERR_CONNECTION_RESET" ||
+    code === "ERR_CONNECTION_REFUSED" ||
+    code === "ERR_CONNECTION_TIMED_OUT" ||
+    code === "ERR_TIMED_OUT"
+  ) {
+    return `${pt} 发布页网络连接失败（${code}），请检查网络后重试`;
+  }
+  return error?.message || `${pt} 发布页加载失败，请重试`;
+}
+
 /**
  * 注册渲染进程 `puppeteerFile` IPC，与历史行为一致
  */
@@ -293,9 +371,10 @@ export function registerPuppeteerIpc() {
  * @param {object} data 与 `ipcRenderer.send("puppeteerFile", data)` 相同结构
  * @param {{ reply: (channel: string, ...args: any[]) => void }} transport
  * @param {() => void} [onFinish] 任务结束时回调（如视频队列）
+ * @param {(status: { queueState: string, queuePosition: number, queueAhead: number, queueSize: number }) => void} [onQueueStatus]
  */
-export function runPuppeteerTask(data, transport, onFinish) {
-  return enqueueTask(data, transport, onFinish);
+export function runPuppeteerTask(data, transport, onFinish, onQueueStatus) {
+  return enqueueTask(data, transport, onFinish, onQueueStatus);
 }
 
 export function runPuppeteerPreflight(data) {
@@ -365,6 +444,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
   let autoCloseTimer = null;
   let actionCheckTimer = null;
   let publishTimeoutTimer = null;
+  let lastAttemptError = null;
   const retryDelay = 1000;
 
   const safeReply = (channel, payload) => {
@@ -660,8 +740,12 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     data.mmCurrentAttempt = currentAttempt;
     if (currentAttempt > maxRetries) {
       console.log("已达到最大重试次数，操作失败", data);
-      safeReply("puppeteer-noLogin", data);
-      safeReply("puppeteerFile-done", { ...data, status: false });
+      safeReply("puppeteerFile-done", {
+        ...data,
+        status: false,
+        errorCode: lastAttemptError?.code,
+        message: getPublishNavigationFailureMessage(data.pt, lastAttemptError),
+      });
       finishOnce();
       return;
     }
@@ -669,6 +753,22 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     let browser;
     let win;
     let page;
+    let retryScheduled = false;
+    const scheduleRetry = () => {
+      if (finished || retryScheduled) return;
+      retryScheduled = true;
+      setTimeout(() => {
+        createWindowAndAttempt().catch((err) => {
+          console.error("重试创建窗口失败:", err);
+          safeReply("puppeteerFile-done", {
+            ...data,
+            status: false,
+            message: getPublishNavigationFailureMessage(data.pt, err),
+          });
+          finishOnce();
+        });
+      }, retryDelay);
+    };
 
     try {
       logStage("开始尝试", { attempt: currentAttempt, maxRetries });
@@ -913,6 +1013,49 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         }
       });
 
+      win.on("closed", () => {
+        openPublishWindows.delete(win);
+        if (autoCloseTimer) {
+          clearTimeout(autoCloseTimer);
+          autoCloseTimer = null;
+        }
+        try {
+          if (browser) browser.disconnect();
+        } catch (_) {
+          // 忽略
+        }
+        if (activeWin === win) activeWin = null;
+        if (activeBrowser === browser) activeBrowser = null;
+        if (finished) return;
+        const retry =
+          Boolean(win._mmRetryAfterClose) && currentAttempt < maxRetries;
+        if (retry) {
+          scheduleRetry();
+          return;
+        }
+        // 用户主动关窗（非程序自动关窗 / 非重试关窗）：跳过该平台，继续队列中的下一项
+        const userClosed = !win._mmClosedByProgram;
+        if (userClosed) {
+          console.log(`用户关闭 ${data.partition} 发布窗口，跳过 ${data.pt}`);
+          safeReply("puppeteerFile-done", {
+            ...data,
+            status: false,
+            skipped: true,
+            message: "发布窗口已被手动关闭，已跳过本次发布",
+          });
+          finishOnce();
+          return;
+        }
+        if (currentAttempt >= maxRetries) {
+          safeReply("puppeteerFile-done", {
+            ...data,
+            status: false,
+            message: getPublishNavigationFailureMessage(data.pt, lastAttemptError),
+          });
+        }
+        finishOnce();
+      });
+
       const AUTO_CLOSE_DELAY = UPLOAD_WINDOW_AUTO_CLOSE_MS;
       if (!isXhsTask) {
         autoCloseTimer = setTimeout(() => {
@@ -964,60 +1107,6 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         await win.loadURL(data.url);
       }
       logStage("发布页已加载", { attempt: currentAttempt, url: data.url });
-
-      win.on("closed", () => {
-        openPublishWindows.delete(win);
-        if (autoCloseTimer) {
-          clearTimeout(autoCloseTimer);
-          autoCloseTimer = null;
-        }
-        try {
-          if (browser) browser.disconnect();
-        } catch (_) {
-          // 忽略
-        }
-        if (activeWin === win) activeWin = null;
-        if (activeBrowser === browser) activeBrowser = null;
-        if (finished) return;
-        const retry =
-          Boolean(win._mmRetryAfterClose) && currentAttempt < maxRetries;
-        if (retry) {
-          setTimeout(() => {
-            createWindowAndAttempt().catch((err) => {
-              console.error("重试创建窗口失败:", err);
-              safeReply("puppeteerFile-done", {
-                ...data,
-                status: false,
-                message: "重新尝试发布失败",
-              });
-              finishOnce();
-            });
-          }, retryDelay);
-          return;
-        }
-        // 用户主动关窗（非程序自动关窗 / 非重试关窗）：跳过该平台，继续队列中的下一项
-        const userClosed = !win._mmClosedByProgram;
-        if (userClosed) {
-          console.log(`用户关闭 ${data.partition} 发布窗口，跳过 ${data.pt}`);
-          safeReply("puppeteerFile-done", {
-            ...data,
-            status: false,
-            skipped: true,
-            message: "发布窗口已被手动关闭，已跳过本次发布",
-          });
-          finishOnce();
-          return;
-        }
-        if (currentAttempt >= maxRetries) {
-          safeReply("puppeteer-noLogin", data);
-          safeReply("puppeteerFile-done", {
-            ...data,
-            status: false,
-            message: "发布窗口已关闭，任务已结束",
-          });
-        }
-        finishOnce();
-      });
 
       actionCheckTimer = setTimeout(async () => {
         actionCheckTimer = null;
@@ -1134,6 +1223,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         }
       }, 3000);
     } catch (error) {
+      lastAttemptError = error;
       const proxyConfigError =
         error && /代理/.test(String(error.message || error));
       if (proxyConfigError) {
@@ -1162,17 +1252,17 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       }
       if (browser) browser.disconnect();
       if (finished) return;
-      setTimeout(() => {
-        createWindowAndAttempt().catch((err) => {
-          console.error("重试创建窗口失败:", err);
-          safeReply("puppeteerFile-done", {
-            ...data,
-            status: false,
-            message: "重新尝试发布失败",
-          });
-          finishOnce();
+      if (currentAttempt >= maxRetries) {
+        safeReply("puppeteerFile-done", {
+          ...data,
+          status: false,
+          errorCode: error?.code,
+          message: getPublishNavigationFailureMessage(data.pt, error),
         });
-      }, retryDelay);
+        finishOnce();
+        return;
+      }
+      scheduleRetry();
     }
   };
 

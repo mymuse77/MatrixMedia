@@ -1654,6 +1654,11 @@ export async function handlePublishVideo(taskData, wsClient) {
 
       runPuppeteerTask(publishData, transport, () => {
         console.log('[WebSocket] 发布任务完成');
+      }, (queueStatus) => {
+        wsClient.sendAck(taskId, {
+          ...queueStatus,
+          executionToken: publishData.executionToken || '',
+        });
       });
     });
   } catch (error) {

@@ -46,10 +46,29 @@ async function main() {
     ],
   });
 
-  const { createPuppeteerTaskRuntime } = require(bundlePath);
+  const {
+    createPuppeteerTaskRuntime,
+    getPublishNavigationFailureMessage,
+  } = require(bundlePath);
+
+  assert.strictEqual(
+    getPublishNavigationFailureMessage("抖音", {
+      code: "ERR_NAME_NOT_RESOLVED",
+    }),
+    "抖音 发布页域名解析失败，请检查网络或 DNS 设置后重试",
+  );
+  assert.strictEqual(
+    getPublishNavigationFailureMessage("抖音", {
+      code: "ERR_CONNECTION_RESET",
+    }),
+    "抖音 发布页网络连接失败（ERR_CONNECTION_RESET），请检查网络后重试",
+  );
 
   const started = [];
+  const queueStatuses = new Map();
+  let queuedHeartbeatCount = 0;
   const runtime = createPuppeteerTaskRuntime({
+    queueHeartbeatMs: 10,
     runTask(task, done) {
       started.push(task.data.taskId);
       task.setCancelHandler(() => {
@@ -59,10 +78,30 @@ async function main() {
   });
 
   runtime.enqueueTask({ taskId: "active" }, { reply() {} });
-  runtime.enqueueTask({ taskId: "queued-1" }, { reply() {} });
-  runtime.enqueueTask({ taskId: "queued-2" }, { reply() {} });
+  runtime.enqueueTask({ taskId: "queued-1" }, { reply() {} }, undefined, (status) => {
+    queueStatuses.set("queued-1", status);
+    queuedHeartbeatCount += 1;
+  });
+  runtime.enqueueTask({ taskId: "queued-2" }, { reply() {} }, undefined, (status) => {
+    queueStatuses.set("queued-2", status);
+  });
 
   assert.deepStrictEqual(started, ["active"]);
+  assert.deepStrictEqual(queueStatuses.get("queued-1"), {
+    queueState: "queued",
+    queuePosition: 2,
+    queueAhead: 1,
+    queueSize: 3,
+  });
+  assert.deepStrictEqual(queueStatuses.get("queued-2"), {
+    queueState: "queued",
+    queuePosition: 3,
+    queueAhead: 2,
+    queueSize: 3,
+  });
+  const initialHeartbeatCount = queuedHeartbeatCount;
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.ok(queuedHeartbeatCount > initialHeartbeatCount);
 
   const result = runtime.cancelPuppeteerTasks("获取状态已中断上传");
 
@@ -79,6 +118,8 @@ async function main() {
   assert.strictEqual(targeted.cancel("单项超时"), true);
   assert.strictEqual(runtime.getQueueSize(), 0);
   assert.deepStrictEqual(started, ["active", "after-cancel"]);
+
+  runtime.dispose();
 
   console.log("test-puppeteer-cancel passed");
 }
