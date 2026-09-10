@@ -99,6 +99,8 @@ class WebSocketClient {
     this.taskDataById = new Map();
     this.taskStatusById = new Map();
     this.executionTokenByTaskId = new Map();
+    this.publishTaskItemsByTaskId = new Map();
+    this.pendingTaskResultDeliveries = new Set();
     this.isShuttingDown = false;
     this.lastConnectedAt = 0;
     this.lastDisconnectedAt = 0;
@@ -377,6 +379,74 @@ class WebSocketClient {
     }
   }
 
+  registerPublishTaskItems(taskId, items = []) {
+    const normalizedTaskId = String(taskId || '').trim();
+    if (!normalizedTaskId || !Array.isArray(items)) return;
+
+    const itemStates = new Map();
+    for (const item of items) {
+      const itemId = String(item?.itemId || '').trim();
+      if (!itemId) continue;
+      itemStates.set(itemId, {
+        state: 'queued',
+        itemId,
+        idempotencyKey: item?.idempotencyKey || '',
+        executionToken: item?.executionToken || '',
+        phone: item?.phone || '',
+        platform: item?.platform || '',
+        videoPath: item?.videoPath || '',
+        videoUrl: item?.videoUrl || '',
+      });
+    }
+
+    if (itemStates.size > 0) {
+      this.publishTaskItemsByTaskId.set(normalizedTaskId, itemStates);
+    }
+  }
+
+  updatePublishTaskItem(taskId, itemId, state, patch = {}) {
+    const itemStates = this.publishTaskItemsByTaskId.get(String(taskId || '').trim());
+    const normalizedItemId = String(itemId || '').trim();
+    if (!itemStates || !normalizedItemId) return;
+    const item = itemStates.get(normalizedItemId);
+    if (!item) return;
+    Object.assign(item, patch);
+    item.state = state;
+  }
+
+  updatePublishTaskItemsFromResult(taskId, resultData) {
+    const itemStates = this.publishTaskItemsByTaskId.get(String(taskId || '').trim());
+    if (!itemStates || !resultData || typeof resultData !== 'object') return;
+    const results = Array.isArray(resultData.results) ? resultData.results : [];
+
+    for (const result of results) {
+      const itemId = String(result?.itemId || '').trim();
+      const item = itemStates.get(itemId);
+      if (!item) continue;
+      const status = String(result?.status || '').toLowerCase();
+      if (result?.success === true || status === 'success' || status === 'completed') {
+        item.state = 'success';
+      } else if (status === 'failed' || status === 'skipped' || status === 'expired') {
+        item.state = 'failed';
+      }
+    }
+  }
+
+  finalizeTaskTracking(taskId, resultData) {
+    const normalizedTaskId = String(taskId || '').trim();
+    const businessStatus = String(resultData?.status || '').toLowerCase();
+    const keepsExecutionContext = businessStatus === 'running' || businessStatus === 'scheduled';
+    if (!keepsExecutionContext) {
+      this.taskTypeById.delete(normalizedTaskId);
+      this.taskDataById.delete(normalizedTaskId);
+      this.taskStatusById.delete(normalizedTaskId);
+      this.executionTokenByTaskId.delete(normalizedTaskId);
+      this.publishTaskItemsByTaskId.delete(normalizedTaskId);
+    } else {
+      this.taskStatusById.set(normalizedTaskId, businessStatus);
+    }
+  }
+
   /**
    * 发送任务执行结果
    */
@@ -392,25 +462,39 @@ class WebSocketClient {
     };
 
     const emittedWhileConnected = this.isConnected;
-    this.socket.emit('result', result);
+    const socket = this.socket;
+    const resultData = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+    const delivery = new Promise((resolve) => {
+      if (!socket) {
+        resolve(false);
+        return;
+      }
+      try {
+        socket.timeout(5_000).emit('result', result, (error, response) => {
+          resolve(!error && response?.success !== false);
+        });
+      } catch (error) {
+        console.warn(`[WebSocket] 发送任务结果失败 (${taskId}):`, error?.message || error);
+        resolve(false);
+      }
+    });
+    this.pendingTaskResultDeliveries.add(delivery);
+    void delivery.then((delivered) => {
+      this.pendingTaskResultDeliveries.delete(delivery);
+      if (delivered) {
+        this.finalizeTaskTracking(taskId, resultData);
+      }
+    });
     if (this.shouldLogTask(taskId)) {
       console.log(
         emittedWhileConnected
           ? `[WebSocket] 已发送任务结果: ${taskId}, 状态: ${status}`
-          : `[WebSocket] 连接中断，任务结果已进入 Socket.IO 待发送队列: ${taskId}, 状态: ${status}`,
+        : `[WebSocket] 连接中断，任务结果已进入 Socket.IO 待发送队列: ${taskId}, 状态: ${status}`,
       );
     }
-    const resultData = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
-    const businessStatus = String(resultData.status || '').toLowerCase();
-    const keepsExecutionContext = businessStatus === 'running' || businessStatus === 'scheduled';
-    if (!keepsExecutionContext) {
-      this.taskTypeById.delete(taskId);
-      this.taskDataById.delete(taskId);
-      this.taskStatusById.delete(taskId);
-      this.executionTokenByTaskId.delete(taskId);
-    } else {
-      this.taskStatusById.set(taskId, businessStatus);
-    }
+    this.updatePublishTaskItemsFromResult(taskId, resultData);
+    if (!socket) this.finalizeTaskTracking(taskId, resultData);
+    return delivery;
   }
 
   /**
@@ -506,9 +590,17 @@ class WebSocketClient {
   /**
    * 断开连接
    */
-  notifyInterruptedTasks(reason = '应用退出，已中断发布', timeoutMs = 4_000) {
+  async notifyInterruptedTasks(reason = '应用退出，已中断发布', timeoutMs = 4_000) {
     const socket = this.socket;
-    if (!socket || !this.isConnected) return Promise.resolve(false);
+    if (!socket || !this.isConnected) return false;
+
+    const pendingDeliveries = [...this.pendingTaskResultDeliveries];
+    if (pendingDeliveries.length > 0) {
+      await Promise.race([
+        Promise.allSettled(pendingDeliveries),
+        new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+      ]);
+    }
 
     const tasks = Array.from(this.taskDataById.entries())
       .filter(([taskId, taskData]) => {
@@ -523,6 +615,36 @@ class WebSocketClient {
         const data = taskData?.data && typeof taskData.data === 'object' && !Array.isArray(taskData.data)
           ? taskData.data
           : {};
+        const itemStates = this.publishTaskItemsByTaskId.get(taskId);
+        if (type === 'publish_videos' && itemStates) {
+          const listedItems = [...itemStates.values()].filter((item) => item.state !== 'scheduled');
+          if (listedItems.length === 0) return null;
+          return {
+            taskId,
+            status: 'failed',
+            data: {
+              action: type,
+              success: false,
+              status: 'failed',
+              clientShutdown: true,
+              onlyApplyListedItems: true,
+              error: reason,
+              message: reason,
+              executionToken: data.executionToken || '',
+              ...(data.matrixTaskId ? { matrixTaskId: data.matrixTaskId } : {}),
+              results: listedItems.map((item) => {
+                const completedSuccessfully = item.state === 'success';
+                return {
+                  ...item,
+                  status: completedSuccessfully ? 'success' : 'failed',
+                  success: completedSuccessfully,
+                  error: completedSuccessfully ? '' : item.error || reason,
+                  message: completedSuccessfully ? '' : item.error || reason,
+                };
+              }),
+            },
+          };
+        }
         const interruptedData = {
           action: type,
           success: false,
@@ -548,9 +670,10 @@ class WebSocketClient {
           status: 'failed',
           data: interruptedData,
         };
-      });
+      })
+      .filter(Boolean);
 
-    if (tasks.length === 0) return Promise.resolve(true);
+    if (tasks.length === 0) return true;
 
     return new Promise((resolve) => {
       let settled = false;
@@ -607,6 +730,8 @@ class WebSocketClient {
     this.taskDataById.clear();
     this.taskStatusById.clear();
     this.executionTokenByTaskId.clear();
+    this.publishTaskItemsByTaskId.clear();
+    this.pendingTaskResultDeliveries.clear();
     return notified;
   }
 

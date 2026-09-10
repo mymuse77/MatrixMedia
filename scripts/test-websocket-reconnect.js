@@ -76,6 +76,18 @@ async function main() {
     event.payload.executionToken === "execution-token-1"
   ));
 
+  client.taskTypeById.set("terminal-task", "publish_video");
+  client.taskDataById.set("terminal-task", {
+    taskId: "terminal-task",
+    type: "publish_video",
+    data: { itemId: "terminal-item" },
+  });
+  await client.sendTaskResult("terminal-task", "success", {
+    status: "completed",
+    success: true,
+  });
+  assert.strictEqual(client.taskDataById.has("terminal-task"), false);
+
   socketHandlers.get("disconnect")("ping timeout");
   const disconnectedStatus = client.getConnectionStatus();
   assert.strictEqual(disconnectedStatus.isConnected, false);
@@ -97,13 +109,44 @@ async function main() {
       executionToken: "execution-token-1",
     },
   });
+  client.registerPublishTaskItems("mixed-task", [
+    {
+      itemId: "published-item",
+      executionToken: "execution-token-1",
+      phone: "13377889205",
+      platform: "抖音",
+    },
+    {
+      itemId: "active-item",
+      executionToken: "execution-token-1",
+      phone: "18800000000",
+      platform: "抖音",
+    },
+    {
+      itemId: "scheduled-item",
+      executionToken: "execution-token-1",
+      phone: "19900000000",
+      platform: "抖音",
+    },
+  ]);
+  client.updatePublishTaskItem("mixed-task", "published-item", "success");
+  client.updatePublishTaskItem("mixed-task", "scheduled-item", "scheduled");
 
   await client.disconnect();
   assert.strictEqual(fakeSocket.disconnectCount, 1);
-  assert.ok(emittedEvents.some((event) =>
-    event.eventName === "client:shutdown" &&
-    event.payload.tasks.some((task) => task.taskId === "mixed-task")
-  ));
+  const shutdownEvent = emittedEvents.find((event) => event.eventName === "client:shutdown");
+  assert.ok(shutdownEvent);
+  const shutdownTask = shutdownEvent.payload.tasks.find((task) => task.taskId === "mixed-task");
+  assert.ok(shutdownTask);
+  assert.strictEqual(shutdownTask.data.clientShutdown, true);
+  assert.strictEqual(shutdownTask.data.onlyApplyListedItems, true);
+  assert.deepStrictEqual(
+    shutdownTask.data.results.map((item) => [item.itemId, item.status, item.success]),
+    [
+      ["published-item", "success", true],
+      ["active-item", "failed", false],
+    ],
+  );
   console.log("test-websocket-reconnect passed");
 }
 

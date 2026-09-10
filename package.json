@@ -1,6 +1,6 @@
 {
   "name": "matrix-video",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "author": "lhl",
   "description": "视媒助手-视频分发工具",
   "license": "GPL-2.0-only",
@@ -21,6 +21,7 @@
     "xz": "node .electron-vue/dev-download-server.js",
     "test:dev-download-server": "node scripts/test-dev-download-server.js",
     "test:main-process-log-file": "node scripts/test-main-process-log-file.js",
+    "test:app-notification": "node scripts/test-app-notification.js",
     "test:cli-login": "node scripts/test-cli-login.js",
     "test:publish-article-args": "node scripts/test-publish-article-args.js",
     "test:article-republish": "node scripts/test-article-republish.js",

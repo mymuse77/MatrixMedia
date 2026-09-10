@@ -1859,6 +1859,18 @@ export async function handlePublishVideos(taskData, wsClient) {
     detailIndex += 1;
   }
 
+  if (typeof wsClient.registerPublishTaskItems === 'function') {
+    wsClient.registerPublishTaskItems(taskId, publishQueue.map((queued) => ({
+      itemId: queued.itemId,
+      idempotencyKey: queued.idempotencyKey,
+      executionToken: queued.executionToken,
+      phone: queued.phone,
+      platform: queued.platform,
+      videoPath: queued.videoPath,
+      videoUrl: queued.videoUrl,
+    })));
+  }
+
   if (cleanText(data.scheduleMode) === PLATFORM_SCHEDULE_MODE) {
     for (const queued of publishQueue) {
       if (queued.platform !== '抖音') {
@@ -1895,6 +1907,9 @@ export async function handlePublishVideos(taskData, wsClient) {
         }, publishAt);
         await changeData({ type: 'add', fileName: 'pushData', item: scheduledRecord });
         schedulePublishRecord(scheduledRecord);
+        if (typeof wsClient.updatePublishTaskItem === 'function') {
+          wsClient.updatePublishTaskItem(taskId, queued.itemId, 'scheduled');
+        }
         scheduledResults.push({
           itemId: queued.itemId,
           idempotencyKey: queued.idempotencyKey,
@@ -1942,6 +1957,17 @@ export async function handlePublishVideos(taskData, wsClient) {
   }
   const immediatePublishQueue = mixedImmediateSchedule.immediateQueue;
   const scheduledResults = mixedImmediateSchedule.scheduledResults;
+
+  if (typeof wsClient.updatePublishTaskItem === 'function') {
+    const scheduledItemIds = new Set(scheduledResults.map((item) => item.itemId));
+    for (const queued of publishQueue) {
+      wsClient.updatePublishTaskItem(
+        taskId,
+        queued.itemId,
+        scheduledItemIds.has(queued.itemId) ? 'scheduled' : 'queued',
+      );
+    }
+  }
 
   const douyinBatchPreflight = await preflightDouyinBatchAccounts({
     publishQueue: immediatePublishQueue,
@@ -2000,6 +2026,9 @@ export async function handlePublishVideos(taskData, wsClient) {
         'failed',
         preflightFailure.message,
       );
+      if (typeof wsClient.updatePublishTaskItem === 'function') {
+        wsClient.updatePublishTaskItem(taskId, itemId, 'failed', { error: preflightFailure.message });
+      }
       const detail = {
         success: false,
         itemId,
@@ -2040,6 +2069,9 @@ export async function handlePublishVideos(taskData, wsClient) {
     const itemDeadline = Date.now() + itemTimeoutMs;
 
     try {
+      if (typeof wsClient.updatePublishTaskItem === 'function') {
+        wsClient.updatePublishTaskItem(taskId, itemId, 'running');
+      }
       wsClient.sendProgress(taskId, Number(progressStart.toFixed(2)), `正在发布 ${currentIndex}/${total}`);
 
       let result;
@@ -2132,6 +2164,9 @@ export async function handlePublishVideos(taskData, wsClient) {
         result,
       };
       results.push(detail);
+      if (typeof wsClient.updatePublishTaskItem === 'function') {
+        wsClient.updatePublishTaskItem(taskId, itemId, 'success');
+      }
       sendBatchPublishItemResult(wsClient, taskId, {
         taskName,
         total,
@@ -2166,6 +2201,9 @@ export async function handlePublishVideos(taskData, wsClient) {
         ...(diagnostic ? { diagnostic } : {}),
       };
       results.push(detail);
+      if (typeof wsClient.updatePublishTaskItem === 'function') {
+        wsClient.updatePublishTaskItem(taskId, itemId, 'failed', { error: message });
+      }
       sendBatchPublishItemResult(wsClient, taskId, {
         taskName,
         total,
