@@ -17,7 +17,15 @@ if (typeof electron !== "object" || !electron.app) {
   process.exit(1);
 }
 const app = electron.app;
-const { Tray, nativeImage, Menu, dialog, screen, shell } = electron;
+const {
+  Tray,
+  nativeImage,
+  Menu,
+  dialog,
+  screen,
+  shell,
+  Notification,
+} = electron;
 
 import initWindow from "./services/windowManager";
 import DisableButton from "./config/DisableButton";
@@ -45,6 +53,11 @@ import Server from "./server/index";
 const websocketConfig = require("./config/websocket.config");
 const { getWebSocketClient } = require("./services/websocketClient");
 import { initializeElectronRuntime } from "./services/electronStartup";
+import {
+  APP_ALREADY_RUNNING_MESSAGE,
+  APP_STARTUP_SUCCESS_MESSAGE,
+  createAppNotification,
+} from "./services/appNotification";
 
 const cliMode = isCliMode(process.argv);
 const appVersion = require("../../package.json").version;
@@ -60,26 +73,29 @@ if (process.platform === "win32") {
   app.setAppUserModelId("com.matrix.video");
 }
 
-if (!cliMode) {
-  const gotTheLock = app.requestSingleInstanceLock();
-  if (!gotTheLock) {
-    app.quit();
-  }
-}
-
-app.commandLine.appendSwitch("disable-features", "OutOfBlinkCors");
-
-if (!cliMode) {
-  app.on("window-all-closed", () => {
-    app.quit();
-  });
-}
-
 let tray;
 let mainWin = null;
 let allowQuit = false;
 let quitInProgress = false;
 let matrixWebSocketStarted = false;
+const notifyAppStatus = createAppNotification({ Notification });
+const gotTheLock = cliMode ? true : app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+  // 重复启动进程只显示提示并退出自身，不触碰已运行实例的窗口和生命周期。
+  app.whenReady().then(() => {
+    notifyAppStatus(APP_ALREADY_RUNNING_MESSAGE);
+    app.quit();
+  });
+}
+
+app.commandLine.appendSwitch("disable-features", "OutOfBlinkCors");
+
+if (gotTheLock && !cliMode) {
+  app.on("window-all-closed", () => {
+    app.quit();
+  });
+}
 
 function notifyQuitWarning() {
   const win = mainWin && !mainWin.isDestroyed() ? mainWin : null;
@@ -160,7 +176,7 @@ function startBuiltInHttpServer() {
     });
 }
 
-if (!cliMode) {
+if (gotTheLock && !cliMode) {
   app.on("before-quit", (event) => {
     if (allowQuit) return;
     // ponytail: 本地开发热重启会被 kill，跳过退出二次确认，避免卡死
@@ -194,7 +210,7 @@ async function startApplication() {
   }
 }
 
-startApplication();
+if (gotTheLock) startApplication();
 
 function onAppReady() {
   const appSettings = getAppSettings();
@@ -203,6 +219,10 @@ function onAppReady() {
   startBuiltInHttpServer();
   initWindow((win) => {
     mainWin = win;
+
+    win.webContents.once("dom-ready", () => {
+      notifyAppStatus(APP_STARTUP_SUCCESS_MESSAGE);
+    });
 
     // 拦截窗口关闭：未确认退出时隐藏窗口而非销毁，避免 "Object has been destroyed"
     win.on("close", (event) => {
