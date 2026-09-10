@@ -43,6 +43,29 @@ function isAxiosError(error) {
   return !!(error && (error.isAxiosError || error.name === 'AxiosError'));
 }
 
+/**
+ * 判断任务是否可能包含「尚未到发布时间」的分散/定时计划。
+ * 这类计划由客户端本地调度器持有，客户端重启后会继续发布，
+ * 因此不能在退出上报时把整个任务一次性判为失败。
+ */
+function hasPendingScheduledPublishPlan(data = {}, nowMs = Date.now()) {
+  if (data.scheduleMixDistribution === true || String(data.scheduleMixDistribution) === 'true') {
+    return true;
+  }
+
+  const scheduleMode = String(data.scheduleMode || '').trim().toLowerCase();
+  if (scheduleMode === 'scheduled' || scheduleMode === 'platform') return true;
+
+  const taskScheduledAt = Number(data.scheduledPublishAt);
+  if (Number.isFinite(taskScheduledAt) && taskScheduledAt > nowMs) return true;
+
+  const items = Array.isArray(data.publishItems) ? data.publishItems : [];
+  return items.some((item) => {
+    const itemScheduledAt = Number(item && item.scheduledPublishAt);
+    return Number.isFinite(itemScheduledAt) && itemScheduledAt > nowMs;
+  });
+}
+
 function truncateText(value, maxLength = 200) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   if (!text) return '';
@@ -616,6 +639,13 @@ class WebSocketClient {
           ? taskData.data
           : {};
         const itemStates = this.publishTaskItemsByTaskId.get(taskId);
+        // 明细状态缺失时无法区分「已到时间」与「尚未到时间的分散/定时计划」。
+        // 此时整批上报失败会让服务端把本地仍在等待执行的计划一并判为失败，
+        // 而客户端重启后本地调度器仍会继续发布它们，导致实际已发布却显示失败。
+        // 这种情况不上报，交给服务端断线接管（只终止已到时间的明细，保留未来计划）。
+        if (type === 'publish_videos' && !itemStates && hasPendingScheduledPublishPlan(data)) {
+          return null;
+        }
         if (type === 'publish_videos' && itemStates) {
           const listedItems = [...itemStates.values()].filter((item) => item.state !== 'scheduled');
           if (listedItems.length === 0) return null;
