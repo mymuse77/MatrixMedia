@@ -18,6 +18,7 @@ const PUBLISH_RETRY_DELAYS_MS = [1_000, 3_000, 8_000];
 const scheduledTimers = new Map();
 const scheduledPreloadPromises = new Map();
 let schedulerStarted = false;
+let schedulerStopped = false;
 let refreshInterval = null;
 const scheduledPublishListeners = new Set();
 
@@ -359,7 +360,7 @@ function finishScheduledRecord(record, payload) {
 }
 
 function executeScheduledRecord(record) {
-  if (!record || !record.id) return;
+  if (schedulerStopped || !record || !record.id) return;
   executeScheduledRecordAsync(record).catch((e) => {
     console.error("[scheduledPublish] 执行定时发布失败:", e && e.message);
     updateRecord(record, {
@@ -372,7 +373,7 @@ function executeScheduledRecord(record) {
 }
 
 async function executeScheduledRecordAsync(record) {
-  if (!record || !record.id) return;
+  if (schedulerStopped || !record || !record.id) return;
 
   let publishFilePath = record.filePath;
 
@@ -415,6 +416,7 @@ async function executeScheduledRecordAsync(record) {
 
   let finalPayload = null;
   for (let attempt = 1; attempt <= MAX_PUBLISH_ATTEMPTS; attempt += 1) {
+    if (schedulerStopped) break;
     updateRecord(record, {
         publishStatus: "publishing",
         publishAttemptCount: attempt,
@@ -462,6 +464,7 @@ async function executeScheduledRecordAsync(record) {
 }
 
 export function schedulePublishRecord(record, nowMs = Date.now()) {
+  if (schedulerStopped) return;
   if (!record || !record.id || record.publishStatus !== "scheduled") return;
   const key = `${record.date || ""}:${record.id}`;
   if (scheduledTimers.has(key)) {
@@ -492,6 +495,7 @@ export function schedulePublishRecord(record, nowMs = Date.now()) {
 }
 
 export function refreshScheduledPublishScheduler() {
+  if (schedulerStopped) return;
   const nowMs = Date.now();
   listScheduledRecords().forEach((record) => {
     if (record.textType === "article" || (record.filePath && !isRemotePublishFile(record.filePath) && fs.existsSync(record.filePath))) {
@@ -519,6 +523,7 @@ export function refreshScheduledPublishScheduler() {
 export function startScheduledPublishScheduler() {
   if (schedulerStarted) return;
   schedulerStarted = true;
+  schedulerStopped = false;
   refreshScheduledPublishScheduler();
   refreshInterval = setInterval(() => {
     refreshScheduledPublishScheduler();
@@ -532,6 +537,7 @@ export function registerScheduledPublishIpc() {
 }
 
 export function stopScheduledPublishScheduler() {
+  schedulerStopped = true;
   if (refreshInterval) {
     clearInterval(refreshInterval);
     refreshInterval = null;

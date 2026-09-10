@@ -1652,6 +1652,12 @@ export async function handlePublishVideo(taskData, wsClient) {
         },
       };
 
+      if (wsClient.isShuttingDown) {
+        const error = new Error('应用退出，未启动发布');
+        error.nonRetryable = true;
+        void rejectOnce(error, { nonRetryable: true });
+        return;
+      }
       runPuppeteerTask(publishData, transport, () => {
         console.log('[WebSocket] 发布任务完成');
       }, (queueStatus) => {

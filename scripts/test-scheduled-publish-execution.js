@@ -262,6 +262,17 @@ async function main() {
     assert.ok(statusUpdates.includes("publishing"));
     assert.ok(statusUpdates.includes("success"));
 
+    const stoppedRecord = { ...localRecord, id: "stopped-record", publishStatus: "scheduled", scheduledPublishAt: Date.now() + 100 };
+    records.push(stoppedRecord);
+    schedulePublishRecord(stoppedRecord);
+    const countBeforeStop = publishPayloads.length;
+    stopScheduledPublishScheduler();
+    schedulePublishRecord(stoppedRecord);
+    refreshScheduledPublishScheduler();
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    assert.strictEqual(publishPayloads.length, countBeforeStop, "停止后不得启动到点计划或重新调度");
+    assert.strictEqual(stoppedRecord.publishStatus, "scheduled", "停止保留未来计划记录");
+
     console.log("test:scheduled-publish-execution 全部通过");
   } finally {
     stopScheduledPublishScheduler();

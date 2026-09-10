@@ -109,7 +109,7 @@ function formatTaskError(error) {
 }
 
 class WebSocketClient {
-  constructor() {
+  constructor({ resultStore } = {}) {
     this.socket = null;
     this.isConnected = false;
     this.reconnectAttempts = 0;
@@ -124,6 +124,23 @@ class WebSocketClient {
     this.executionTokenByTaskId = new Map();
     this.publishTaskItemsByTaskId = new Map();
     this.pendingTaskResultDeliveries = new Set();
+    this.resultOutbox = new Map();
+    this.resultRetryTimer = null;
+    this.resultStore = resultStore;
+    this.resultStoreFailed = false;
+    try {
+      if (!this.resultStore) {
+        this.resultStore = require('./publishResultOutbox').createPublishResultStore(this.serverUrl, this.clientId);
+      }
+      for (const result of this.resultStore.load()) {
+        if (result && typeof result.taskId === 'string') {
+          this.resultOutbox.set(JSON.stringify(result), { result, durable: true, attempts: 0, nextAttemptAt: 0 });
+        }
+      }
+    } catch (error) {
+      this.resultStoreFailed = true;
+      console.error('[WebSocket] 发布结果队列读取失败，不覆盖原文件:', error?.message || error);
+    }
     this.isShuttingDown = false;
     this.lastConnectedAt = 0;
     this.lastDisconnectedAt = 0;
@@ -170,6 +187,7 @@ class WebSocketClient {
 
       // 发送认证信息（可以包含设备ID、账号列表等）
       this.authenticate();
+      this.flushTaskResults();
       this.pushInitialAccountSnapshot();
 
       // 启动心跳
@@ -279,6 +297,7 @@ class WebSocketClient {
    * 处理接收到的任务
    */
   handleTask(taskData) {
+    if (this.isShuttingDown) return;
     const { taskId, type } = taskData;
     this.taskTypeById.set(taskId, type);
     if (type === 'publish_video' || type === 'publish_videos') {
@@ -440,6 +459,8 @@ class WebSocketClient {
   updatePublishTaskItemsFromResult(taskId, resultData) {
     const itemStates = this.publishTaskItemsByTaskId.get(String(taskId || '').trim());
     if (!itemStates || !resultData || typeof resultData !== 'object') return;
+    const currentToken = this.executionTokenByTaskId.get(String(taskId || '').trim());
+    if (currentToken && currentToken !== resultData.executionToken) return;
     const results = Array.isArray(resultData.results) ? resultData.results : [];
 
     for (const result of results) {
@@ -457,8 +478,13 @@ class WebSocketClient {
 
   finalizeTaskTracking(taskId, resultData) {
     const normalizedTaskId = String(taskId || '').trim();
+    const currentToken = this.executionTokenByTaskId.get(normalizedTaskId) || this.taskDataById.get(normalizedTaskId)?.data?.executionToken;
+    if (currentToken && currentToken !== resultData?.executionToken) return;
+    if ([...this.resultOutbox.values()].some((entry) => entry.result.taskId === normalizedTaskId)) return;
     const businessStatus = String(resultData?.status || '').toLowerCase();
-    const keepsExecutionContext = businessStatus === 'running' || businessStatus === 'scheduled';
+    const items = this.publishTaskItemsByTaskId.get(normalizedTaskId);
+    const allFinished = items?.size > 0 && [...items.values()].every((item) => item.state === 'success' || item.state === 'failed');
+    const keepsExecutionContext = !allFinished && (businessStatus === 'running' || businessStatus === 'scheduled');
     if (!keepsExecutionContext) {
       this.taskTypeById.delete(normalizedTaskId);
       this.taskDataById.delete(normalizedTaskId);
@@ -484,39 +510,73 @@ class WebSocketClient {
       timestamp: Date.now(),
     };
 
-    const emittedWhileConnected = this.isConnected;
+    const snapshot = JSON.parse(JSON.stringify(result));
+    const key = JSON.stringify(snapshot);
+    const type = this.taskTypeById.get(taskId) || snapshot.data?.action;
+    const entry = { result: snapshot, durable: type === 'publish_video' || type === 'publish_videos', attempts: 0, nextAttemptAt: 0 };
+    this.resultOutbox.set(key, entry);
+    if (entry.durable) this.persistResultOutbox();
+    this.updatePublishTaskItemsFromResult(taskId, snapshot.data);
+    return this.deliverTaskResult(key, entry);
+  }
+
+  persistResultOutbox() {
+    if (this.resultStoreFailed) return false;
+    try {
+      this.resultStore.save([...this.resultOutbox.values()].filter((entry) => entry.durable).map((entry) => entry.result));
+      return true;
+    } catch (error) {
+      console.error('[WebSocket] 发布结果队列保存失败，保留内存结果:', error?.message || error);
+      return false;
+    }
+  }
+
+  scheduleResultRetry() {
+    if (this.resultRetryTimer || this.isShuttingDown || !this.isConnected || !this.resultOutbox.size) return;
+    this.resultRetryTimer = setTimeout(() => {
+      this.resultRetryTimer = null;
+      this.flushTaskResults();
+    }, 1_000);
+    this.resultRetryTimer.unref?.();
+  }
+
+  flushTaskResults() {
+    for (const [key, entry] of this.resultOutbox) {
+      if (!entry.delivery && entry.nextAttemptAt <= Date.now()) void this.deliverTaskResult(key, entry);
+    }
+    this.scheduleResultRetry();
+  }
+
+  deliverTaskResult(key, entry) {
+    if (entry.delivery) return entry.delivery;
     const socket = this.socket;
-    const resultData = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+    if (!socket || !this.isConnected) return Promise.resolve(false);
     const delivery = new Promise((resolve) => {
-      if (!socket) {
-        resolve(false);
-        return;
-      }
       try {
-        socket.timeout(5_000).emit('result', result, (error, response) => {
-          resolve(!error && response?.success !== false);
+        socket.timeout(5_000).emit('result', entry.result, (error, response) => {
+          resolve(!error && response?.success === true);
         });
       } catch (error) {
-        console.warn(`[WebSocket] 发送任务结果失败 (${taskId}):`, error?.message || error);
+        console.warn('[WebSocket] 发送结果失败:', error?.message || error);
         resolve(false);
       }
     });
+    entry.delivery = delivery;
     this.pendingTaskResultDeliveries.add(delivery);
     void delivery.then((delivered) => {
+      entry.delivery = null;
       this.pendingTaskResultDeliveries.delete(delivery);
+      if (this.resultOutbox.get(key) !== entry) return;
       if (delivered) {
-        this.finalizeTaskTracking(taskId, resultData);
+        this.resultOutbox.delete(key);
+        if (entry.durable) this.persistResultOutbox();
+        this.finalizeTaskTracking(entry.result.taskId, entry.result.data);
+      } else {
+        entry.attempts += 1;
+        entry.nextAttemptAt = Date.now() + Math.min(30_000, 1_000 * 2 ** Math.min(entry.attempts, 5));
       }
+      this.scheduleResultRetry();
     });
-    if (this.shouldLogTask(taskId)) {
-      console.log(
-        emittedWhileConnected
-          ? `[WebSocket] 已发送任务结果: ${taskId}, 状态: ${status}`
-        : `[WebSocket] 连接中断，任务结果已进入 Socket.IO 待发送队列: ${taskId}, 状态: ${status}`,
-      );
-    }
-    this.updatePublishTaskItemsFromResult(taskId, resultData);
-    if (!socket) this.finalizeTaskTracking(taskId, resultData);
     return delivery;
   }
 
@@ -639,6 +699,8 @@ class WebSocketClient {
           ? taskData.data
           : {};
         const itemStates = this.publishTaskItemsByTaskId.get(taskId);
+        if (type === 'publish_video' && [...this.resultOutbox.values()].some((entry) =>
+          entry.result.taskId === taskId && entry.result.data?.executionToken === data.executionToken)) return null;
         // 明细状态缺失时无法区分「已到时间」与「尚未到时间的分散/定时计划」。
         // 此时整批上报失败会让服务端把本地仍在等待执行的计划一并判为失败，
         // 而客户端重启后本地调度器仍会继续发布它们，导致实际已发布却显示失败。
@@ -647,7 +709,11 @@ class WebSocketClient {
           return null;
         }
         if (type === 'publish_videos' && itemStates) {
-          const listedItems = [...itemStates.values()].filter((item) => item.state !== 'scheduled');
+          const futureIds = new Set((Array.isArray(data.publishItems) ? data.publishItems : [])
+            .filter((item) => Number(item.scheduledPublishAt) > Date.now())
+            .map((item) => String(item.itemId || item.id || '')));
+          const listedItems = [...itemStates.values()].filter((item) => item.state !== 'scheduled' &&
+            (item.state === 'success' || item.state === 'failed' || !futureIds.has(item.itemId)));
           if (listedItems.length === 0) return null;
           return {
             taskId,
@@ -740,6 +806,9 @@ class WebSocketClient {
   async disconnect(reason = '应用退出，已中断发布') {
     const socket = this.socket;
     this.isShuttingDown = true;
+    clearTimeout(this.resultRetryTimer);
+    this.resultRetryTimer = null;
+    this.persistResultOutbox();
     this.stopHeartbeat();
 
     if (!socket) {

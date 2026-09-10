@@ -7,6 +7,7 @@ const socketHandlers = new Map();
 const managerHandlers = new Map();
 const emittedEvents = [];
 let capturedOptions = null;
+let resultAck = true;
 
 const fakeSocket = {
   id: "socket-test",
@@ -22,7 +23,7 @@ const fakeSocket = {
   },
   emit(eventName, payload, callback) {
     emittedEvents.push({ eventName, payload });
-    if (typeof callback === "function") callback(null, { success: true });
+    if (typeof callback === "function") callback(null, eventName === "result" ? (resultAck === null ? undefined : { success: resultAck }) : { success: true });
   },
   timeout() {
     return this;
@@ -56,7 +57,9 @@ Module._load = function patchedLoad(request, parent, isMain) {
 
 async function main() {
   const { WebSocketClient } = require("../src/main/services/websocketClient");
-  const client = new WebSocketClient();
+  let storedResults = [];
+  const resultStore = { load: () => storedResults, save: (records) => { storedResults = JSON.parse(JSON.stringify(records)); } };
+  const client = new WebSocketClient({ resultStore });
 
   client.connect();
   assert.strictEqual(capturedOptions.reconnection, true);
@@ -88,7 +91,26 @@ async function main() {
   });
   assert.strictEqual(client.taskDataById.has("terminal-task"), false);
 
+  for (const ack of [false, null]) {
+    resultAck = ack;
+    assert.strictEqual(await client.sendTaskResult("retry-task", "success", { action: "publish_video", status: "completed", executionToken: "old" }), false);
+    assert.strictEqual(storedResults.length, 1);
+    const [key, entry] = [...client.resultOutbox.entries()][0];
+    client.executionTokenByTaskId.set("retry-task", "new");
+    client.taskDataById.set("retry-task", { data: { executionToken: "new" } });
+    resultAck = true;
+    await client.deliverTaskResult(key, entry);
+    assert.strictEqual(storedResults.length, 0);
+    assert.strictEqual(client.executionTokenByTaskId.get("retry-task"), "new", "旧 ACK 不清新执行上下文");
+  }
+
   socketHandlers.get("disconnect")("ping timeout");
+  const beforeOffline = emittedEvents.length;
+  assert.strictEqual(await client.sendTaskResult("offline-result", "success", { action: "publish_videos", status: "running", results: [{ itemId: "offline-item", success: true }] }), false);
+  assert.strictEqual(emittedEvents.length, beforeOffline, "断线不依赖 Socket.IO 缓存");
+  assert.strictEqual(storedResults.length, 1);
+  const restored = new WebSocketClient({ resultStore });
+  assert.strictEqual(restored.resultOutbox.size, 1, "重启后恢复未确认结果");
   const disconnectedStatus = client.getConnectionStatus();
   assert.strictEqual(disconnectedStatus.isConnected, false);
   assert.strictEqual(disconnectedStatus.lastDisconnectReason, "ping timeout");
@@ -98,6 +120,17 @@ async function main() {
   assert.strictEqual(fakeSocket.connectCount, 1);
 
   socketHandlers.get("connect")();
+  await Promise.all([...client.pendingTaskResultDeliveries]);
+  assert.strictEqual(storedResults.length, 0, "重连后补发并清除已确认结果");
+  client.taskTypeById.set("finished-batch", "publish_videos");
+  client.taskDataById.set("finished-batch", { data: { executionToken: "batch-token" } });
+  client.executionTokenByTaskId.set("finished-batch", "batch-token");
+  client.registerPublishTaskItems("finished-batch", [{ itemId: "a" }, { itemId: "b" }]);
+  client.updatePublishTaskItem("finished-batch", "b", "scheduled");
+  await client.sendTaskResult("finished-batch", "success", { action: "publish_videos", status: "running", executionToken: "batch-token", results: [{ itemId: "a", success: true }] });
+  assert.strictEqual(client.taskDataById.has("finished-batch"), true);
+  await client.sendTaskResult("finished-batch", "success", { action: "publish_videos", status: "running", executionToken: "batch-token", results: [{ itemId: "b", success: true }] });
+  assert.strictEqual(client.taskDataById.has("finished-batch"), false, "最后明细确认后清理整批追踪");
   client.taskTypeById.set("mixed-task", "publish_videos");
   client.taskStatusById.set("mixed-task", "running");
   client.taskDataById.set("mixed-task", {

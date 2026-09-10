@@ -33,7 +33,7 @@ import fs from "fs";
 import path from "path";
 import pie from "puppeteer-in-electron";
 import { isCliMode, runCliMain } from "./cli";
-import { startScheduledPublishScheduler } from "./services/scheduledPublish";
+import { startScheduledPublishScheduler, stopScheduledPublishScheduler } from "./services/scheduledPublish";
 import {
   installMainProcessLogFile,
   getMainProcessLogDir,
@@ -107,6 +107,7 @@ function notifyQuitWarning() {
 async function performQuit() {
   if (quitInProgress) return;
   quitInProgress = true;
+  stopScheduledPublishScheduler();
 
   // Start the server-side interruption report before cancelling Puppeteer so
   // the task payloads are still available. Force-killed processes are handled
