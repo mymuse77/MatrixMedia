@@ -294,7 +294,17 @@ function listScheduledRecords() {
       }
     });
   });
-  return rows;
+  return rows.sort((left, right) => {
+    const leftScheduledAt = Number(left.scheduledPublishAt);
+    const rightScheduledAt = Number(right.scheduledPublishAt);
+    const leftPriority = Number.isFinite(leftScheduledAt)
+      ? leftScheduledAt
+      : Number.POSITIVE_INFINITY;
+    const rightPriority = Number.isFinite(rightScheduledAt)
+      ? rightScheduledAt
+      : Number.POSITIVE_INFINITY;
+    return leftPriority - rightPriority;
+  });
 }
 
 export async function cancelScheduledPublishRecords(matrixTaskId) {

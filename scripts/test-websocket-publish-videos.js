@@ -28,6 +28,7 @@ const changeDataCalls = [];
 const resolvePublishCalls = [];
 const scheduledPublishRecords = [];
 const preflightCalls = [];
+const publishLifecycleEvents = [];
 const preflightFailuresByPhone = new Map();
 const publishFailuresByPhone = new Map();
 const verificationPhones = new Set();
@@ -55,6 +56,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
     return {
       runPuppeteerPreflight: async (data) => {
         preflightCalls.push(data);
+        publishLifecycleEvents.push({ type: "preflight", phone: data.phone });
         const failure = preflightFailuresByPhone.get(data.phone);
         if (failure) {
           const error = new Error(failure.message);
@@ -65,6 +67,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
       },
       runPuppeteerTask(data, transport, onFinish) {
         capturedPublishPayloads.push(data);
+        publishLifecycleEvents.push({ type: "publish", phone: data.phone });
         setImmediate(() => {
           if (verificationPhones.has(data.phone)) {
             transport.reply("puppeteerFile-reply", {
@@ -668,6 +671,130 @@ async function main() {
   assert.strictEqual(resolvePublishCalls.at(-1).file, "https://matrix.example.com/api/matrix/publish/download/job-1/0");
   assert.notStrictEqual(scheduledPublishRecords.at(-1).filePath, "http://127.0.0.1:3000/api/matrix/publish/download/job-1/0");
   assert.strictEqual(scheduledPublishRecords.at(-1).matrixItemId, "scheduled-item");
+
+  const priorityScheduledCountBefore = scheduledPublishRecords.length;
+  const nearScheduledAt = Date.now() + 2 * 60 * 60 * 1_000;
+  const farScheduledAt = Date.now() + 3 * 60 * 60 * 1_000;
+  const priorityScheduledResult = await handlePublishVideos(
+    {
+      taskId: "matrix-task-scheduled-priority-test",
+      type: "publish_videos",
+      data: {
+        taskName: "Scheduled priority test",
+        scheduleMode: "scheduled",
+        platforms: [platform],
+        accounts: [
+          { id: "account-late", phone: "13800138000", platform },
+          { id: "account-early", phone: "13900139000", platform },
+        ],
+        videos: [
+          { id: "video-late", filePath: firstVideoPath },
+          { id: "video-early", filePath: secondVideoPath },
+        ],
+        publishItems: [
+          {
+            itemId: "scheduled-late-item",
+            accountId: "account-late",
+            phone: "13800138000",
+            platform,
+            videoId: "video-late",
+            videoPath: firstVideoPath,
+            scheduledPublishAt: farScheduledAt,
+            captionText: "Late scheduled caption",
+          },
+          {
+            itemId: "scheduled-early-item",
+            accountId: "account-early",
+            phone: "13900139000",
+            platform,
+            videoId: "video-early",
+            videoPath: secondVideoPath,
+            scheduledPublishAt: nearScheduledAt,
+            captionText: "Early scheduled caption",
+          },
+        ],
+        captions: [],
+      },
+    },
+    wsClient,
+  );
+
+  assert.strictEqual(priorityScheduledResult.status, "scheduled");
+  assert.deepStrictEqual(
+    scheduledPublishRecords
+      .slice(priorityScheduledCountBefore)
+      .map((record) => record.matrixItemId),
+    ["scheduled-early-item", "scheduled-late-item"],
+    "系统定时任务应严格按发布时间由近到远登记",
+  );
+
+  const platformLifecycleCountBefore = publishLifecycleEvents.length;
+  const platformPublishCountBefore = capturedPublishPayloads.length;
+  const platformPriorityResult = await handlePublishVideos(
+    {
+      taskId: "matrix-task-platform-priority-test",
+      type: "publish_videos",
+      data: {
+        taskName: "Platform priority test",
+        scheduleMode: "platform",
+        platforms: [platform],
+        accounts: [
+          { id: "account-late", phone: "13800138000", platform },
+          { id: "account-early", phone: "13900139000", platform },
+        ],
+        videos: [
+          { id: "video-late", filePath: firstVideoPath },
+          { id: "video-early", filePath: secondVideoPath },
+        ],
+        publishItems: [
+          {
+            itemId: "platform-late-item",
+            accountId: "account-late",
+            phone: "13800138000",
+            platform,
+            videoId: "video-late",
+            videoPath: firstVideoPath,
+            scheduledPublishAt: farScheduledAt,
+            captionText: "Late platform caption",
+          },
+          {
+            itemId: "platform-early-item",
+            accountId: "account-early",
+            phone: "13900139000",
+            platform,
+            videoId: "video-early",
+            videoPath: secondVideoPath,
+            scheduledPublishAt: nearScheduledAt,
+            captionText: "Early platform caption",
+          },
+        ],
+        captions: [],
+      },
+    },
+    wsClient,
+  );
+
+  assert.strictEqual(platformPriorityResult.status, "completed");
+  assert.deepStrictEqual(
+    platformPriorityResult.results.map((item) => item.itemId),
+    ["platform-early-item", "platform-late-item"],
+  );
+  assert.deepStrictEqual(
+    publishLifecycleEvents.slice(platformLifecycleCountBefore),
+    [
+      { type: "preflight", phone: "13900139000" },
+      { type: "publish", phone: "13900139000" },
+      { type: "preflight", phone: "13800138000" },
+      { type: "publish", phone: "13800138000" },
+    ],
+    "平台定时任务应按发布时间逐项预检，通过后立即发布",
+  );
+  assert.deepStrictEqual(
+    capturedPublishPayloads
+      .slice(platformPublishCountBefore)
+      .map((payload) => payload.platformScheduledPublishAt),
+    [nearScheduledAt, farScheduledAt],
+  );
 
   const mixedPublishCountBefore = capturedPublishPayloads.length;
   const mixedScheduledCountBefore = scheduledPublishRecords.length;

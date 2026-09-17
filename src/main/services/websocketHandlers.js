@@ -1746,6 +1746,23 @@ async function preflightDouyinBatchAccounts({
   return { failures, passedAccountKeys };
 }
 
+function sortPublishQueueByScheduledAt(publishQueue) {
+  publishQueue.sort((left, right) => {
+    const leftScheduledAt = Number(left.scheduledPublishAt) || 0;
+    const rightScheduledAt = Number(right.scheduledPublishAt) || 0;
+    return leftScheduledAt - rightScheduledAt || left.currentIndex - right.currentIndex;
+  });
+
+  const total = publishQueue.length;
+  publishQueue.forEach((queued, index) => {
+    queued.currentIndex = index + 1;
+    queued.progressStart = (index / total) * 100;
+    queued.progressEnd = ((index + 1) / total) * 100;
+  });
+
+  return publishQueue;
+}
+
 /**
  * 6. 批量发布视频任务
  */
@@ -1865,6 +1882,8 @@ export async function handlePublishVideos(taskData, wsClient) {
     detailIndex += 1;
   }
 
+  sortPublishQueueByScheduledAt(publishQueue);
+
   if (typeof wsClient.registerPublishTaskItems === 'function') {
     wsClient.registerPublishTaskItems(taskId, publishQueue.map((queued) => ({
       itemId: queued.itemId,
@@ -1975,11 +1994,15 @@ export async function handlePublishVideos(taskData, wsClient) {
     }
   }
 
-  const douyinBatchPreflight = await preflightDouyinBatchAccounts({
-    publishQueue: immediatePublishQueue,
-    taskId,
-    wsClient,
-  });
+  const isPlatformScheduledPublish =
+    cleanText(data.scheduleMode) === PLATFORM_SCHEDULE_MODE;
+  const douyinBatchPreflight = isPlatformScheduledPublish
+    ? { failures: [], passedAccountKeys: [] }
+    : await preflightDouyinBatchAccounts({
+        publishQueue: immediatePublishQueue,
+        taskId,
+        wsClient,
+      });
   const douyinPreflightFailures = new Map(
     douyinBatchPreflight.failures.map((failure) => [failure.key, failure]),
   );
