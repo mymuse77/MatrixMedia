@@ -38,6 +38,7 @@ const VERIFICATION_REQUIRED_PATTERNS = [
   "为确保是本人操作",
   "请输入当前手机号",
   "安全验证",
+  "扫码",
 ];
 const DEFAULT_CONFIRMATION_TIMEOUT_MS = 120 * 1000;
 const MAX_CONFIRMATION_TIMEOUT_MS = 180 * 1000;
