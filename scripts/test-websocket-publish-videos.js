@@ -29,10 +29,13 @@ const resolvePublishCalls = [];
 const scheduledPublishRecords = [];
 const preflightCalls = [];
 const publishLifecycleEvents = [];
-const preflightFailuresByPhone = new Map();
+const pageFailuresByPhone = new Map();
+const retryableFailuresByPhone = new Map();
 const publishFailuresByPhone = new Map();
 const verificationPhones = new Set();
 let remoteDownloadIndex = 0;
+let simulateSlowPreparation = false;
+let preparationElapsed = 0;
 
 const originalLoad = Module._load;
 Module._load = function patchedLoad(request, parent, isMain) {
@@ -56,17 +59,11 @@ Module._load = function patchedLoad(request, parent, isMain) {
     return {
       runPuppeteerPreflight: async (data) => {
         preflightCalls.push(data);
-        publishLifecycleEvents.push({ type: "preflight", phone: data.phone });
-        const failure = preflightFailuresByPhone.get(data.phone);
-        if (failure) {
-          const error = new Error(failure.message);
-          error.preflightPayload = failure;
-          throw error;
-        }
-        return { success: true };
+        throw new Error("正式发布不应额外创建预检窗口");
       },
       runPuppeteerTask(data, transport, onFinish) {
         capturedPublishPayloads.push(data);
+        if (simulateSlowPreparation) preparationElapsed += 5 * 60 * 1000;
         publishLifecycleEvents.push({ type: "publish", phone: data.phone });
         setImmediate(() => {
           if (verificationPhones.has(data.phone)) {
@@ -78,7 +75,14 @@ Module._load = function patchedLoad(request, parent, isMain) {
             });
           }
           const failure = publishFailuresByPhone.get(data.phone);
-          transport.reply("puppeteerFile-done", failure
+          const pageFailure = pageFailuresByPhone.get(data.phone);
+          const retryableCount = retryableFailuresByPhone.get(data.phone) || 0;
+          if (retryableCount) retryableFailuresByPhone.set(data.phone, retryableCount - 1);
+          transport.reply("puppeteerFile-done", pageFailure
+            ? { ...data, ...pageFailure }
+            : retryableCount
+            ? { ...data, status: false, nonRetryable: false, message: "模拟发布超时" }
+            : failure
             ? {
               ...data,
               status: false,
@@ -107,6 +111,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
         const raw = String(file || "").trim();
 
         if (/^https?:\/\//i.test(raw)) {
+          if (simulateSlowPreparation) preparationElapsed += 90 * 1000;
           const localPath = path.join(
             os.tmpdir(),
             `matrixmedia-remote-${Date.now()}-${remoteDownloadIndex++}.mp4`,
@@ -428,7 +433,7 @@ async function main() {
   const isolatedPublishCountBefore = capturedPublishPayloads.length;
   const isolatedTaskEventCountBefore = taskResultEvents.length;
   const isolatedChangeCallCountBefore = changeDataCalls.length;
-  preflightFailuresByPhone.set("13900139000", {
+  pageFailuresByPhone.set("13900139000", {
     status: false,
     message: "抖音发布页要求重新登录",
     nonRetryable: true,
@@ -452,23 +457,20 @@ async function main() {
     },
     wsClient,
   );
-  preflightFailuresByPhone.clear();
+  pageFailuresByPhone.clear();
 
   assert.strictEqual(isolatedResult.success, false);
   assert.strictEqual(isolatedResult.status, "partial");
   assert.strictEqual(isolatedResult.total, 2);
   assert.strictEqual(isolatedResult.successCount, 1);
   assert.strictEqual(isolatedResult.failCount, 1);
-  assert.strictEqual(capturedPublishPayloads.length, isolatedPublishCountBefore + 1);
-  assert.deepStrictEqual(
-    preflightCalls.slice(-2).map((item) => item.phone),
-    ["13800138000", "13900139000"],
-  );
+  assert.strictEqual(capturedPublishPayloads.length, isolatedPublishCountBefore + 2);
+  assert.strictEqual(preflightCalls.length, 0);
   assert.strictEqual(isolatedResult.results[0].phone, "13800138000");
   assert.strictEqual(isolatedResult.results[0].success, true);
   assert.strictEqual(isolatedResult.results[1].phone, "13900139000");
   assert.strictEqual(isolatedResult.results[1].success, false);
-  assert.strictEqual(isolatedResult.results[1].attemptCount, 0);
+  assert.strictEqual(isolatedResult.results[1].attemptCount, 1);
   assert.strictEqual(isolatedResult.results[1].nonRetryable, true);
   assert.match(isolatedResult.results[1].error, /要求重新登录/);
   assert.ok(
@@ -489,7 +491,7 @@ async function main() {
 
   const singleFailurePreflightCountBefore = preflightCalls.length;
   const singleFailurePublishCountBefore = capturedPublishPayloads.length;
-  preflightFailuresByPhone.set("13900139000", {
+  pageFailuresByPhone.set("13900139000", {
     status: false,
     message: "抖音发布页要求重新登录",
     nonRetryable: true,
@@ -508,7 +510,7 @@ async function main() {
     },
     wsClient,
   );
-  preflightFailuresByPhone.clear();
+  pageFailuresByPhone.clear();
 
   assert.strictEqual(singleFailureResult.status, "failed");
   assert.strictEqual(singleFailureResult.successCount, 0);
@@ -516,10 +518,10 @@ async function main() {
   assert.strictEqual(singleFailureResult.results[0].attemptCount, 1);
   assert.strictEqual(
     preflightCalls.length,
-    singleFailurePreflightCountBefore + 1,
-    "单账号登录失效不应触发批量外层重复预检",
+    singleFailurePreflightCountBefore,
+    "登录检查应在正式发布窗口中执行",
   );
-  assert.strictEqual(capturedPublishPayloads.length, singleFailurePublishCountBefore);
+  assert.strictEqual(capturedPublishPayloads.length, singleFailurePublishCountBefore + 1);
 
   const continueAfterFailurePublishCountBefore = capturedPublishPayloads.length;
   publishFailuresByPhone.set("13900139000", "单账号上传超时");
@@ -673,7 +675,7 @@ async function main() {
   assert.strictEqual(scheduledPublishRecords.at(-1).matrixItemId, "scheduled-item");
 
   const priorityScheduledCountBefore = scheduledPublishRecords.length;
-  const nearScheduledAt = Date.now() + 2 * 60 * 60 * 1_000;
+  const nearScheduledAt = Date.now() + (2 * 60 * 60 + 60) * 1_000;
   const farScheduledAt = Date.now() + 3 * 60 * 60 * 1_000;
   const priorityScheduledResult = await handlePublishVideos(
     {
@@ -782,12 +784,10 @@ async function main() {
   assert.deepStrictEqual(
     publishLifecycleEvents.slice(platformLifecycleCountBefore),
     [
-      { type: "preflight", phone: "13900139000" },
       { type: "publish", phone: "13900139000" },
-      { type: "preflight", phone: "13800138000" },
       { type: "publish", phone: "13800138000" },
     ],
-    "平台定时任务应按发布时间逐项预检，通过后立即发布",
+    "平台定时任务应按发布时间逐项发布，在同一窗口检查就绪状态",
   );
   assert.deepStrictEqual(
     capturedPublishPayloads
@@ -855,6 +855,33 @@ async function main() {
       { itemId: "mixed-scheduled-item", success: undefined, status: "scheduled" },
     ],
   );
+  const retryPayloadStart = capturedPublishPayloads.length;
+  const retryDownloadsStart = resolvePublishCalls.length;
+  const realNow = Date.now;
+  try {
+    simulateSlowPreparation = true;
+    Date.now = () => realNow() + preparationElapsed;
+    retryableFailuresByPhone.set("slow-account", 1);
+    const retryResult = await handlePublishVideos({
+      taskId: "matrix-task-slow-preparation-test", type: "publish_videos",
+      data: {
+        platforms: [platform], accounts: [{ phone: "slow-account", platform }],
+        videos: [{ videoUrl: "https://example.com/slow-video.mp4" }],
+        captions: [{ textContent: "Slow preparation" }],
+      },
+    }, wsClient);
+    assert.strictEqual(retryResult.successCount, 1);
+    assert.strictEqual(retryResult.results[0].attemptCount, 2);
+    assert.deepStrictEqual(capturedPublishPayloads.slice(retryPayloadStart).map((item) => item.publishTimeoutMs),
+      [180000, 180000], "下载和排队超过六分钟后，重试也应获得完整执行额度");
+    assert.deepStrictEqual(resolvePublishCalls.slice(retryDownloadsStart).map((item) => item.options.downloadTimeoutMs),
+      [120000, 120000], "下载使用独立的超时额度");
+    assert.strictEqual(preflightCalls.length, 0);
+  } finally {
+    simulateSlowPreparation = false;
+    Date.now = realNow;
+  }
+
   const terminalBatchEvent = taskResultEvents.find(
     (event) => event.taskId === "matrix-task-test" && event.data.status === "completed",
   );
