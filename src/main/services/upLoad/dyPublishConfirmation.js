@@ -1,5 +1,7 @@
 "use strict";
 
+import { throwIfPublishCanceled, isPublishPageClosedError, waitForPublishPoll } from "./uploadTimeouts.js";
+
 const PUBLISH_SUCCESS_PATTERNS = [
   "发布成功",
   "作品发布成功",
@@ -198,13 +200,17 @@ export async function waitForDyPublishConfirmation(
   let lastState = "";
 
   while (Date.now() < deadline) {
+    throwIfPublishCanceled(page);
     try {
       lastSnapshot = await inspectDyPublishConfirmation(page, {
         isDraftMode,
       });
-    } catch (_) {
+    } catch (error) {
+      throwIfPublishCanceled(page);
+      if (isPublishPageClosedError(error)) throw error;
       lastSnapshot = null;
     }
+    throwIfPublishCanceled(page);
 
     if (lastSnapshot?.state !== lastState) {
       lastState = lastSnapshot?.state || "unavailable";
@@ -230,7 +236,7 @@ export async function waitForDyPublishConfirmation(
       throw error;
     }
 
-    await page.waitForTimeout(intervalMs);
+    await waitForPublishPoll(page, intervalMs);
   }
 
   const error = new Error(

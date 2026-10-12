@@ -6,7 +6,6 @@
 import { changeData } from '../server/utils';
 import {
   runPuppeteerTask,
-  runPuppeteerPreflight,
   createIpcTransport,
 } from './puppeteerFile';
 import ptConfig from '../config/ptConfig';
@@ -1376,32 +1375,6 @@ export async function handlePublishVideo(taskData, wsClient) {
       if (!scheduleValidation.ok) throw new Error(scheduleValidation.error);
     }
 
-    if (platform === '抖音' && data.skipPublishPreflight !== true) {
-      sendScopedProgress(wsClient, taskId, 8, '正在检查抖音发布页', progressRange);
-      try {
-        await runPuppeteerPreflight({
-          taskId: `${taskId}:dy-preflight`,
-          phone,
-          pt: platform,
-          partition: partition || getAccountPartition(phone, platform),
-          url: ptConfig[platform]?.upload,
-          useragent: ptConfig[platform]?.useragent,
-        });
-      } catch (error) {
-        const diagnostic =
-          error?.preflightPayload?.diagnostic?.screenshotPath ||
-          error?.preflightPayload?.diagnostic?.metadataPath ||
-          '';
-        const diagnosticHint = diagnostic ? `，诊断文件：${diagnostic}` : '';
-        const preflightError = new Error(
-          `抖音账号 ${phone} 发布页预检失败：${error?.message || '页面未就绪'}${diagnosticHint}`,
-        );
-        preflightError.nonRetryable = error?.preflightPayload?.nonRetryable === true;
-        preflightError.publishPayload = error?.preflightPayload || null;
-        throw preflightError;
-      }
-    }
-
     const downloadRequest = createDownloadRequest(videoUrl, download, downloadHeaders, downloadExpiresAt);
     const resolvedVideoUrl = cleanText(downloadRequest?.url || videoUrl);
     const persistedSourceVideoUrl = downloadRequest?.headers ? '' : resolvedVideoUrl;
@@ -1676,76 +1649,6 @@ export async function handlePublishVideo(taskData, wsClient) {
   }
 }
 
-async function preflightDouyinBatchAccounts({
-  publishQueue,
-  taskId,
-  wsClient,
-}) {
-  const uniqueAccounts = new Map();
-  for (const queued of publishQueue) {
-    if (queued.platform !== '抖音') continue;
-    const key = `${queued.partition}|${queued.phone}`;
-    if (!uniqueAccounts.has(key)) uniqueAccounts.set(key, queued);
-  }
-
-  const targets = [...uniqueAccounts.values()];
-  if (targets.length < 2) {
-    return { failures: [], passedAccountKeys: [] };
-  }
-
-  console.log(`[WebSocket] 开始抖音批量发布页预检，共 ${targets.length} 个账号`);
-  const failures = [];
-  const passedAccountKeys = [];
-  for (let index = 0; index < targets.length; index += 1) {
-    const target = targets[index];
-    wsClient.sendProgress(
-      taskId,
-      Number((1 + ((index + 1) / targets.length) * 4).toFixed(2)),
-      `正在预检抖音账号 ${index + 1}/${targets.length}: ${target.phone}`,
-    );
-
-    try {
-      await runPuppeteerPreflight({
-        taskId: `${taskId}:dy-preflight:${index + 1}`,
-        phone: target.phone,
-        pt: target.platform,
-        partition: target.partition,
-        url: ptConfig[target.platform]?.upload,
-        useragent: ptConfig[target.platform]?.useragent,
-      });
-      passedAccountKeys.push(`${target.partition}|${target.phone}`);
-    } catch (error) {
-      const diagnostic = error?.preflightPayload?.diagnostic || null;
-      const diagnosticPath =
-        diagnostic?.screenshotPath || diagnostic?.metadataPath || '';
-      const diagnosticHint = diagnosticPath ? `，诊断文件：${diagnosticPath}` : '';
-      const message =
-        `抖音账号 ${target.phone} 发布页预检失败：${error?.message || '页面未就绪'}${diagnosticHint}`;
-      if (error?.preflightPayload?.nonRetryable === true) {
-        failures.push({
-          key: `${target.partition}|${target.phone}`,
-          phone: target.phone,
-          platform: target.platform,
-          message,
-          diagnostic,
-          nonRetryable: true,
-        });
-      }
-      console.warn(`[WebSocket] ${message}`);
-    }
-  }
-  const retryableFailureCount =
-    targets.length - passedAccountKeys.length - failures.length;
-  if (failures.length || retryableFailureCount) {
-    console.warn(
-      `[WebSocket] 抖音批量发布页预检完成：通过 ${passedAccountKeys.length}，需单项重试 ${retryableFailureCount}，不可发布 ${failures.length}`,
-    );
-  } else {
-    console.log('[WebSocket] 抖音批量发布页预检全部通过');
-  }
-  return { failures, passedAccountKeys };
-}
-
 function sortPublishQueueByScheduledAt(publishQueue) {
   publishQueue.sort((left, right) => {
     const leftScheduledAt = Number(left.scheduledPublishAt) || 0;
@@ -1994,22 +1897,6 @@ export async function handlePublishVideos(taskData, wsClient) {
     }
   }
 
-  const isPlatformScheduledPublish =
-    cleanText(data.scheduleMode) === PLATFORM_SCHEDULE_MODE;
-  const douyinBatchPreflight = isPlatformScheduledPublish
-    ? { failures: [], passedAccountKeys: [] }
-    : await preflightDouyinBatchAccounts({
-        publishQueue: immediatePublishQueue,
-        taskId,
-        wsClient,
-      });
-  const douyinPreflightFailures = new Map(
-    douyinBatchPreflight.failures.map((failure) => [failure.key, failure]),
-  );
-  const douyinPreflightPassedAccounts = new Set(
-    douyinBatchPreflight.passedAccountKeys,
-  );
-
   try {
     for (const queued of immediatePublishQueue) {
       await changeData({
@@ -2046,51 +1933,6 @@ export async function handlePublishVideos(taskData, wsClient) {
       progressEnd,
     } = queued;
     let attemptCount = 0;
-    const preflightFailure = douyinPreflightFailures.get(`${partition}|${phone}`);
-
-    if (preflightFailure) {
-      failCount += 1;
-      await updateLocalPublishRecord(
-        publishData,
-        'failed',
-        preflightFailure.message,
-      );
-      if (typeof wsClient.updatePublishTaskItem === 'function') {
-        wsClient.updatePublishTaskItem(taskId, itemId, 'failed', { error: preflightFailure.message });
-      }
-      const detail = {
-        success: false,
-        itemId,
-        phone,
-        platform,
-        videoPath,
-        videoUrl,
-        idempotencyKey,
-        executionToken,
-        attemptCount: 0,
-        error: preflightFailure.message,
-        nonRetryable: preflightFailure.nonRetryable,
-        ...(preflightFailure.diagnostic
-          ? { diagnostic: preflightFailure.diagnostic }
-          : {}),
-      };
-      results.push(detail);
-      sendBatchPublishItemResult(wsClient, taskId, {
-        taskName,
-        total,
-        successCount,
-        failCount,
-        detail,
-        results,
-      });
-      wsClient.sendProgress(
-        taskId,
-        Number(progressEnd.toFixed(2)),
-        `跳过登录失效账号 ${currentIndex}/${total}: ${phone}`,
-      );
-      continue;
-    }
-
     const itemTimeoutMs = resolvePublishTimeoutMs(
       data.publishTimeoutMs,
       PUBLISH_TASK_TIMEOUT_MS,
@@ -2108,7 +1950,8 @@ export async function handlePublishVideos(taskData, wsClient) {
       for (let attempt = 1; attempt <= PUBLISH_MAX_ATTEMPTS; attempt += 1) {
         attemptCount = attempt;
         try {
-          const remainingMs = itemDeadline - Date.now();
+          // 抖音从浏览器实际开始执行时计时；准备和排队不压缩重试额度。
+          const remainingMs = platform === '抖音' ? itemTimeoutMs : itemDeadline - Date.now();
           if (remainingMs <= 0) {
             const timeoutError = new Error(
               `单账号发布总超时（${Math.round(itemTimeoutMs / 60000)} 分钟）`,
@@ -2154,9 +1997,6 @@ export async function handlePublishVideos(taskData, wsClient) {
                 start: progressStart,
                 end: progressEnd,
               },
-              skipPublishPreflight:
-                platform === '抖音' &&
-                douyinPreflightPassedAccounts.has(`${partition}|${phone}`),
             },
           }, wsClient);
           break;

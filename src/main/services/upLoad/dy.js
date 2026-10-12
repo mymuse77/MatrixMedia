@@ -3,9 +3,10 @@ import maybeClosePublishWindow from "./closeWindow.js";
 import { resolveDyCreativeStatementLabel } from "../../../shared/creativeStatement.js";
 import {
   WAIT_SELECTOR_APPEAR_MS,
-  WAIT_UPLOAD_PROCESSING_MS,
   pollPageUntil,
+  throwIfPublishCanceled,
 } from "./uploadTimeouts.js";
+import { waitForDyUploadProcessing } from "./dyUploadState.js";
 import {
   findDyUploadInput,
   inspectDyPublishPage,
@@ -133,6 +134,7 @@ async function selectDyCreativeStatementWithRetry(page, data, maxMs = 60000) {
       await selectDyCreativeStatement(page, data);
       return;
     } catch (e) {
+      throwIfPublishCanceled(page);
       lastErr = e;
       await page.waitForTimeout(2000);
     }
@@ -140,7 +142,7 @@ async function selectDyCreativeStatementWithRetry(page, data, maxMs = 60000) {
   throw lastErr || new Error("抖音自主声明选择失败");
 }
 
-async function clickDyPublish(page, isDraftMode) {
+async function clickDyPublish(page, isDraftMode, beforeSubmit) {
   const submitSelector = isDraftMode
     ? "#popover-tip-container+button"
     : "#popover-tip-container";
@@ -156,6 +158,8 @@ async function clickDyPublish(page, isDraftMode) {
   );
   const submitBtn = await page.$(submitSelector);
   if (!submitBtn) throw new Error("未找到抖音发布按钮");
+  throwIfPublishCanceled(page);
+  beforeSubmit?.();
   await submitBtn.click({ delay: 200 });
   console.log(
     isDraftMode
@@ -1254,6 +1258,7 @@ async function selectDyLocationWithRetry(page, data) {
       });
       return { selected: true, skipped: false };
     } catch (error) {
+      throwIfPublishCanceled(page);
       lastError = error;
       console.warn(
         `[dy] 地理位置选择失败 (${attempt}/${DY_LOCATION_ATTEMPTS}):`,
@@ -1280,9 +1285,11 @@ async function selectDyLocationWithRetry(page, data) {
   };
 }
 
-export default async function (page, data, window, event) {
+export default async function (page, data, window, event, _finish, task = {}) {
   const isDraftMode =
     data.publishMode === "draft" || data.publishToDraft === true;
+  let publishSubmitted = false;
+  const stage = (value, options) => task.setStage?.(value, options);
 
   // 统一失败上报：event.reply("puppeteerFile-done", {status:false,...}) 在
   // puppeteerFile.js 的 createAttemptTransport 里会 throw，从而正确触发上层
@@ -1290,10 +1297,14 @@ export default async function (page, data, window, event) {
   // 输入框/标题输入框找不到时静默放过，流程继续往下走，最终在几十分钟到
   // 3 小时后才因为一个不相关的超时消息失败，掩盖了真实原因。
   const reportFailure = async (stage, e) => {
+    // 外层取消已负责回传终态和截图，不再重复诊断已关闭的页面。
+    if (task.signal?.aborted) return;
+    const confirmationUnknown = e?.confirmationUnknown === true ||
+      (publishSubmitted && !e?.verificationRequired && e?.code !== "publish_rejected");
     const detail =
       e?.verificationRequired === true
         ? `抖音账号 ${data.phone || data.partition || ""} 需要接收短信验证码，请完成验证后重新发布`
-        : e?.confirmationUnknown === true
+        : confirmationUnknown
           ? "抖音已点击发布，但在确认窗口内未收到最终结果，请到抖音作品管理核验，勿重复发布"
           : (e && e.message) || String(e);
     console.error(`❌ ${stage}`, e);
@@ -1313,9 +1324,9 @@ export default async function (page, data, window, event) {
       status: false,
       message: detail.length > 200 ? `${detail.slice(0, 200)}…` : detail,
       diagnostic,
-      nonRetryable: e?.nonRetryable === true,
+      nonRetryable: e?.nonRetryable === true || publishSubmitted,
       verificationRequired: e?.verificationRequired === true,
-      confirmationUnknown: e?.confirmationUnknown === true,
+      confirmationUnknown,
       confirmationWaitedMs: e?.waitedMs || 0,
     });
   };
@@ -1350,6 +1361,7 @@ export default async function (page, data, window, event) {
     }),
   );
   try {
+    stage("等待视频上传控件");
     console.log("[dy] 等待视频上传输入框");
     await waitForDyUploadPageReady(page, {
       timeoutMs: DY_UPLOAD_INPUT_TIMEOUT_MS,
@@ -1365,13 +1377,32 @@ export default async function (page, data, window, event) {
       JSON.stringify({ locator: uploadInput.locator.id, filePath: data.filePath || "" }),
     );
     console.log("[dy] 开始调用文件上传");
+    stage("选择视频文件");
     await uploadInput.handle.uploadFile(path.resolve(data.filePath));
     console.log("[dy] 文件上传调用已返回，等待视频处理");
+    stage("等待视频上传和预览");
+    let lastLoggedAt = 0;
+    let lastState = "";
+    await waitForDyUploadProcessing(page, {
+      onProgress: (progress) => task.uploadProgress?.(progress),
+      onSnapshot: (snapshot) => {
+        task.setSnapshot?.(snapshot);
+        stage(snapshot.state === "uploading" ? "等待视频上传完成" : "等待视频处理和预览", { progress: false });
+        const now = Date.now();
+        if (snapshot.state !== lastState || now - lastLoggedAt >= 15000) {
+          console.log("[dy] 上传处理状态:", JSON.stringify(snapshot));
+          lastLoggedAt = now;
+          lastState = snapshot.state;
+        }
+      },
+    });
+    console.log("[dy] 视频上传和预览已就绪");
   } catch (e) {
-    await reportFailure("输入文件失败", e);
+    await reportFailure("视频上传或处理失败", e);
     return;
   }
   try {
+    stage("填写标题、描述和标签");
     console.log("[dy] 等待标题输入框");
     await pollPageUntil(
       page,
@@ -1404,27 +1435,7 @@ export default async function (page, data, window, event) {
   }
 
   try {
-    console.log("[dy] 等待视频转码和发布配置");
-    // 不依赖会随打包变化的 container-xxx：等预览区 video（抖音 CDN）与同容器内的 rc 进度条同时出现
-    await pollPageUntil(
-      page,
-      () => {
-        for (const v of document.querySelectorAll("video")) {
-          const src = v.currentSrc || v.getAttribute("src") || "";
-          if (!src.includes("douyin.com")) continue;
-          const parent = v.parentElement;
-          if (
-            parent &&
-            parent.querySelector(".rc-slider.rc-slider-horizontal")
-          ) {
-            return true;
-          }
-        }
-        return false;
-      },
-      WAIT_UPLOAD_PROCESSING_MS
-    );
-
+    stage("设置保存权限");
     // 「保存权限」区域往往在预览视频就绪后才挂载；放在预览等待之后，并放宽文案/控件匹配
     await pollPageUntil(
       page,
@@ -1477,12 +1488,19 @@ export default async function (page, data, window, event) {
 
     // 自主声明入口在视频转码完成后才出现，必须在点击发布前完成
     console.log("[dy] 开始处理自主声明、地理位置和定时配置");
+    stage("设置自主声明");
     await selectDyCreativeStatementWithRetry(page, data);
+    stage("设置地理位置");
     await selectDyLocationWithRetry(page, data);
+    stage("设置平台定时");
     await setDyPlatformSchedule(page, data);
 
     console.log("[dy] 配置完成，准备点击发布");
-    await clickDyPublish(page, isDraftMode);
+    stage("定位发布按钮");
+    await clickDyPublish(page, isDraftMode, () => {
+      publishSubmitted = true;
+      task.markSubmitted?.();
+    });
     console.log("[dy] 已点击发布，等待平台确认");
     const confirmationTimeoutMs = resolveDyPublishConfirmationTimeoutMs({
       publishTimeoutMs: data.publishTimeoutMs,

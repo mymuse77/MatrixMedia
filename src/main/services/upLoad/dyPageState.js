@@ -1,5 +1,7 @@
 "use strict";
 
+import { throwIfPublishCanceled, isPublishPageClosedError, waitForPublishPoll } from "./uploadTimeouts.js";
+
 export const DY_UPLOAD_INPUT_LOCATORS = Object.freeze([
   Object.freeze({
     id: "upload-btn-name",
@@ -156,11 +158,15 @@ export async function waitForDyUploadPageReady(
   let terminalStateCount = 0;
 
   while (Date.now() < deadline) {
+    throwIfPublishCanceled(page);
     try {
       lastSnapshot = await inspectDyPublishPage(page);
-    } catch (_) {
+    } catch (error) {
+      throwIfPublishCanceled(page);
+      if (isPublishPageClosedError(error)) throw error;
       lastSnapshot = null;
     }
+    throwIfPublishCanceled(page);
 
     if (lastSnapshot?.state === "ready") {
       return lastSnapshot;
@@ -182,7 +188,7 @@ export async function waitForDyUploadPageReady(
       terminalStateCount = 0;
     }
 
-    await page.waitForTimeout(intervalMs);
+    await waitForPublishPoll(page, intervalMs);
   }
 
   throw createDyPageStateError(lastSnapshot, timeoutMessage);

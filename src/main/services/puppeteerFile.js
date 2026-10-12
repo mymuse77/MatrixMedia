@@ -11,8 +11,12 @@ import {
   PUBLISH_ATTEMPT_LIMIT,
   PUBLISH_TASK_TIMEOUT_MS,
   UPLOAD_WINDOW_AUTO_CLOSE_MS,
+  WAIT_UPLOAD_PROCESSING_MS,
+  bindPublishPageSignal,
   resolvePublishTimeoutMs,
 } from "./upLoad/uploadTimeouts.js";
+import { createPublishWatchdog } from "./upLoad/publishWatchdog.js";
+import { capturePublishFailureDiagnostics } from "./upLoad/publishDiagnostics.js";
 import { skipCloseConfirmation } from "./upLoad/closeWindow.js";
 import { applyAccountProxyForTask } from "./proxyConfig.js";
 import {
@@ -428,9 +432,17 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     PUBLISH_TASK_TIMEOUT_MS,
   );
   const rawLogStage = createPublishStageLogger(data);
+  const isDyPublish = data.pt === "抖音" && !data.mmPreflightOnly;
+  const abortController = new AbortController();
+  let watchdog = null;
+  let terminating = false;
+  let finished = false;
+  let activePage = null;
+  let lastPageSnapshot = null;
   let currentStage = "初始化";
   const logStage = (stage, extra = {}) => {
     currentStage = stage;
+    watchdog?.setStage(stage);
     rawLogStage(stage, extra);
   };
   logStage("任务开始", {
@@ -438,7 +450,6 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     publishTimeoutMs,
   });
   let currentAttempt = 0;
-  let finished = false;
   let activeBrowser = null;
   let activeWin = null;
   let autoCloseTimer = null;
@@ -458,6 +469,8 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
   };
 
   const cleanupTaskResources = () => {
+    abortController.abort();
+    watchdog?.stop();
     if (actionCheckTimer) {
       clearTimeout(actionCheckTimer);
       actionCheckTimer = null;
@@ -478,6 +491,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       }
     }
     activeBrowser = null;
+    activePage = null;
   };
 
   const finishOnce = () => {
@@ -496,13 +510,35 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     if (win && !win.isDestroyed()) win.close();
   };
 
-  const abortTask = (message, extra = {}) => {
-    if (finished) return;
+  const abortTask = async (message, extra = {}) => {
+    if (finished || terminating) return;
+    terminating = true;
+    abortController.abort();
+    watchdog?.stop();
+    let diagnostic;
+    if (isDyPublish && extra.timeout && activePage && activeWin && !activeWin.isDestroyed()) {
+      // 先留现场再关窗，诊断最多占用两秒，不能阻塞队列。
+      let diagnosticTimer;
+      try {
+        diagnostic = await Promise.race([
+          capturePublishFailureDiagnostics({
+            page: activePage, data, stage: currentStage, error: new Error(message),
+            pageSnapshot: { ...lastPageSnapshot, timing: watchdog?.snapshot() },
+          }),
+          new Promise((resolve) => { diagnosticTimer = setTimeout(resolve, 2000); }),
+        ]);
+      } catch (error) {
+        console.warn("[publish-diagnostics] 超时现场保存失败:", error?.message || error);
+      } finally {
+        clearTimeout(diagnosticTimer);
+      }
+    }
     const payload = {
       ...data,
       ...extra,
       status: false,
       message,
+      ...(diagnostic ? { diagnostic } : {}),
     };
     if (!Object.prototype.hasOwnProperty.call(extra, "nonRetryable")) {
       payload.nonRetryable = true;
@@ -514,21 +550,58 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     finishOnce();
   };
 
-  publishTimeoutTimer = setTimeout(() => {
+  const onPublishTimeout = (timing) => {
     const minutes = Number((publishTimeoutMs / 60000).toFixed(1));
-    const message = `单账号发布超时（已超过 ${minutes} 分钟），停留阶段：${currentStage}`;
-    console.error(`[publish-timeout] ${data.pt || "未知平台"} ${data.phone || data.partition || ""}: ${message}`);
-    abortTask(message, {
+    const submitted = timing?.submitted === true;
+    const message = submitted
+      ? "抖音已尝试提交发布，但未收到最终结果，请到作品管理核验，勿重复发布"
+      : isDyPublish
+        ? `单账号发布超时（${timing?.kind === "total" ? "达到执行上限" : `${minutes} 分钟无进展`}），停留阶段：${currentStage}`
+        : `单账号发布超时（已超过 ${minutes} 分钟），停留阶段：${currentStage}`;
+    console.error(`[publish-timeout] ${data.pt || "未知平台"} ${data.phone || data.partition || ""}: ${message}`, timing || "");
+    void abortTask(message, {
       timeout: true,
       timeoutMs: publishTimeoutMs,
       timeoutStage: currentStage,
-      nonRetryable: false,
+      nonRetryable: submitted,
+      confirmationUnknown: submitted,
     });
-  }, publishTimeoutMs);
+  };
+  if (isDyPublish) {
+    watchdog = createPublishWatchdog({
+      idleMs: publishTimeoutMs,
+      maxMs: Math.min(UPLOAD_WINDOW_AUTO_CLOSE_MS, WAIT_UPLOAD_PROCESSING_MS + publishTimeoutMs),
+      onTimeout: onPublishTimeout,
+    });
+  } else {
+    publishTimeoutTimer = setTimeout(onPublishTimeout, publishTimeoutMs);
+  }
+
+  const publishContext = {
+    signal: abortController.signal,
+    setStage(stage, options) {
+      if (finished || terminating || currentStage === stage) return;
+      currentStage = stage;
+      watchdog?.setStage(stage, options);
+      rawLogStage(stage);
+    },
+    setSnapshot(snapshot) { lastPageSnapshot = snapshot; },
+    uploadProgress(progress) {
+      if (finished || terminating) return;
+      watchdog?.progress();
+      console.log(`[publish-timing] ${data.phone || data.partition} 上传进度: ${progress}%`);
+    },
+    markSubmitted() {
+      if (finished || terminating) return;
+      watchdog?.markSubmitted();
+      currentStage = "等待平台发布确认";
+      rawLogStage(currentStage);
+    },
+  };
 
   const createAttemptTransport = () => ({
     reply(channel, ...args) {
-      if (finished) return false;
+      if (finished || terminating) return false;
       const payload = args[0];
       if (
         channel === "puppeteerFile-done" &&
@@ -554,7 +627,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
   let _xhsRealChromeFallback = false;
 
   const runXhsRealChrome = async () => {
-    if (finished) return;
+    if (finished || terminating) return;
     let realBrowser = null;
 
     // 使用独立的持久化 userDataDir：
@@ -729,7 +802,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
   };
 
   const createWindowAndAttempt = async () => {
-    if (finished) return;
+    if (finished || terminating) return;
 
     // 小红书 + 真实浏览器模式开关（fallback 时跳过，避免循环）
     if (isXhsTask && data.useRealBrowser && !_xhsRealChromeFallback) {
@@ -755,7 +828,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     let page;
     let retryScheduled = false;
     const scheduleRetry = () => {
-      if (finished || retryScheduled) return;
+      if (finished || terminating || retryScheduled) return;
       retryScheduled = true;
       setTimeout(() => {
         createWindowAndAttempt().catch((err) => {
@@ -771,6 +844,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     };
 
     try {
+      lastPageSnapshot = null;
       logStage("开始尝试", { attempt: currentAttempt, maxRetries });
       const proxyResult = await applyAccountProxyForTask({
         partition: data.partition,
@@ -784,6 +858,10 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       }
 
       browser = await pie.connect(app, puppeteer);
+      if (finished || terminating) {
+        browser.disconnect();
+        return;
+      }
       activeBrowser = browser;
       logStage("浏览器已连接", { attempt: currentAttempt });
       win = new BrowserWindow({
@@ -819,6 +897,12 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       // 发布页可能在上传完成后自动播放预览；静音仅影响本地播放，不会改动上传视频音轨。
       win.webContents.setAudioMuted(true);
       page = await pie.getPage(browser, win);
+      activePage = page;
+      if (data.pt === "抖音") bindPublishPageSignal(page, abortController.signal);
+      if (finished || terminating) {
+        closePublishWinProgrammatically(win);
+        return;
+      }
       logStage("发布窗口已创建", { attempt: currentAttempt });
 
       // 注入反自动化检测脚本（在页面 JS 执行前生效）
@@ -1026,7 +1110,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         }
         if (activeWin === win) activeWin = null;
         if (activeBrowser === browser) activeBrowser = null;
-        if (finished) return;
+        if (finished || terminating) return;
         const retry =
           Boolean(win._mmRetryAfterClose) && currentAttempt < maxRetries;
         if (retry) {
@@ -1110,7 +1194,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
 
       actionCheckTimer = setTimeout(async () => {
         actionCheckTimer = null;
-        if (finished) return;
+        if (finished || terminating) return;
         try {
           if (!page || typeof page.url !== "function") {
             throw new Error("发布页面异常，未能获取有效的页面对象");
@@ -1136,8 +1220,8 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
               return;
             }
             logStage("进入平台脚本", { attempt: currentAttempt });
-            await action(page, data, win, createAttemptTransport(), finishOnce);
-            logStage("平台脚本已返回", { attempt: currentAttempt });
+            await action(page, data, win, createAttemptTransport(), finishOnce, publishContext);
+            if (!finished && !terminating) logStage("平台脚本已返回", { attempt: currentAttempt });
             if (
               data.mmPreflightOnly &&
               win &&
@@ -1179,7 +1263,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
             }
           }
         } catch (err) {
-          if (finished) return;
+          if (finished || terminating) return;
           console.log(`尝试${currentAttempt}执行平台逻辑失败:`, err);
           const failurePayload = err && err._mmUploadFailurePayload;
           if (
@@ -1223,6 +1307,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         }
       }, 3000);
     } catch (error) {
+      if (finished || terminating) return;
       lastAttemptError = error;
       const proxyConfigError =
         error && /代理/.test(String(error.message || error));
