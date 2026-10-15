@@ -18,6 +18,7 @@ import {
   waitForDyPublishConfirmation,
 } from "./dyPublishConfirmation.js";
 import { revealPublishVerificationWindow } from "../publishWindowPresentation.js";
+import { inspectDyLocationPick, pickFirstDyLocation } from "./dyLocationPicker.js";
 
 const DY_PREFLIGHT_TIMEOUT_MS = 60 * 1000;
 const DY_UPLOAD_INPUT_TIMEOUT_MS = 60 * 1000;
@@ -191,10 +192,8 @@ async function selectDyLocation(
   ).trim();
   if (!location) {
     console.log("[dy] 未提供 address/location，跳过地理位置");
-    return;
+    return { selected: false, skipped: true };
   }
-  const normalize = (value) => String(value || "").replace(/\s+/g, "").trim();
-
   // 在中间栏 overflow 容器内滚动，直到出现「添加标签 / 输入地理位置」
   const revealLocationSection = async () => {
     await page
@@ -901,228 +900,9 @@ async function selectDyLocation(
   console.log("[dy] 已输入地理位置，等待候选项:", location);
   await page.waitForTimeout(700);
 
-  // 点选下拉短 POI（优先输入框附近）
-  const pickDeadline =
-    Date.now() + Math.min(WAIT_SELECTOR_APPEAR_MS, pickTimeoutMs);
-  const arrowFallbackAt =
-    Date.now() + Math.min(5_000, Math.max(1_500, pickTimeoutMs / 3));
-  let lastDebug = "";
-  let triedArrow = false;
-
-  while (Date.now() < pickDeadline) {
-    const result = await page
-      .evaluate((keyword) => {
-        const normalizeText = (v) =>
-          String(v || "")
-            .replace(/\s+/g, "")
-            .trim();
-        const target = normalizeText(keyword);
-        const anchor = document.querySelector("[data-mm-dy-location='1']");
-        const ar = anchor
-          ? anchor.getBoundingClientRect()
-          : { left: 0, right: 0, top: 0, bottom: 0 };
-
-        const isVisible = (node) => {
-          if (!node || node.nodeType !== 1) return false;
-          const st = window.getComputedStyle(node);
-          const r = node.getBoundingClientRect();
-          return (
-            st.display !== "none" &&
-            st.visibility !== "hidden" &&
-            r.width > 0 &&
-            r.height > 0
-          );
-        };
-        const inAnchor = (node) =>
-          !!anchor &&
-          (node === anchor ||
-            node.contains(anchor) ||
-            anchor.contains(node));
-        const nearInput = (node) => {
-          const r = node.getBoundingClientRect();
-          const horiz = r.left < ar.right + 100 && r.right > ar.left - 100;
-          const vert = r.bottom > ar.top - 420 && r.top < ar.bottom + 320;
-          return horiz && vert;
-        };
-
-        // 下拉结果里同一条 POI 往往会有 div/span 等多个子节点。先收敛到
-        // 可点击的候选项容器，再按屏幕从上到下排序，确保选择第一条建议。
-        // 抖音候选的主标题可能只显示“黄鹤楼”，而搜索词是“武汉黄鹤楼”，
-        // 因此不能只依赖候选文字完整包含搜索词。
-        const candidates = new Map();
-        for (const node of document.querySelectorAll(
-          "li, [role='option'], [role='listbox'] li, div, span, p, [class*='option'], [class*='item'], [class*='suggest'], [class*='poi']",
-        )) {
-          if (!isVisible(node) || inAnchor(node)) continue;
-          const full = normalizeText(node.textContent);
-          if (!full) continue;
-          if (full.length > Math.max(target.length + 60, 80)) continue;
-          if (/[，。！？#]/.test(full)) continue;
-          if (full.includes("地点测试") || full.includes("自动化")) continue;
-          const r = node.getBoundingClientRect();
-          if (r.height < 18 || r.height > 90) continue;
-
-          // 地点候选下拉在输入框正下方；排除同一行的“位置”下拉与其它表单项。
-          const isBelowAnchor =
-            r.top >= ar.bottom - 8 && r.top <= ar.bottom + 520;
-          if (!isBelowAnchor) continue;
-
-          // POI 主标题可省略城市（“黄鹤楼”），但至少必须能命中完整搜索词
-          // 或其去城市前缀后的核心词；否则很容易误点扩展区的其它城市/标签。
-          const coreTargets = [target, target.slice(2), target.slice(3)].filter(
-            (value) => value.length >= 2,
-          );
-          const isLocationText = coreTargets.some(
-            (value) =>
-              full.includes(value) || (full.length >= 3 && value.includes(full)),
-          );
-          if (!isLocationText) continue;
-
-          let score = 5;
-          if (full === target) score = 0;
-          else if (full.startsWith(target) && full.length <= target.length + 10)
-            score = 1;
-          else if (
-            full.startsWith(target) &&
-            /[省市区县镇路街站线]/.test(full.slice(target.length))
-          ) {
-            score = 2;
-          } else if (full.includes(target)) score = 3;
-          // 候选仅显示 POI 简称时，仍按视觉上的第一条处理。
-          else if (target.includes(full) || full.includes(target.slice(2))) score = 4;
-          if (!nearInput(node)) score += 20;
-          score += Math.max(0, r.top - ar.bottom) / 12;
-
-          let clickable =
-            node.closest(
-              "li, [role='option'], [class*='option'], [class*='item'], [class*='suggest']",
-            ) || node;
-          if (normalizeText(clickable.textContent).length > target.length + 60) {
-            clickable = node;
-          }
-          const clickableRect = clickable.getBoundingClientRect();
-          const existing = candidates.get(clickable);
-          const candidate = {
-            node: clickable,
-            score,
-            full,
-            top: clickableRect.top,
-            left: clickableRect.left,
-            area: clickableRect.width * clickableRect.height,
-          };
-          if (!existing || candidate.score < existing.score) {
-            candidates.set(clickable, candidate);
-          }
-        }
-
-        const scored = [...candidates.values()];
-        if (!scored.length) {
-          const samples = [...document.querySelectorAll(
-            "li, [role='option'], [role='button'], button, div, span, p",
-          )]
-            .filter((node) => {
-              if (!isVisible(node) || inAnchor(node)) return false;
-              const full = normalizeText(node.textContent);
-              if (!full || full.length > 120) return false;
-              return (
-                full.includes(target) ||
-                full.includes(target.slice(2)) ||
-                full.includes(target.slice(3)) ||
-                full.includes("位置")
-              );
-            })
-            .map((node) => {
-              const r = node.getBoundingClientRect();
-              return {
-                text: normalizeText(node.textContent).slice(0, 60),
-                tag: node.tagName,
-                role: node.getAttribute("role") || "",
-                cls: String(node.className || "").slice(0, 60),
-                top: Math.round(r.top),
-                left: Math.round(r.left),
-                width: Math.round(r.width),
-                height: Math.round(r.height),
-              };
-            })
-            .slice(0, 20);
-          return {
-            ok: false,
-            debug: `no-poi; value=${anchor ? anchor.value || "" : ""}`,
-            samples,
-          };
-        }
-        scored.sort(
-          (a, b) =>
-            a.top - b.top || a.left - b.left || a.score - b.score ||
-            a.area - b.area,
-        );
-        const best = scored[0];
-        best.node.click();
-        return {
-          ok: true,
-          title: target,
-          selected: best.full,
-          rank: scored.findIndex((item) => item === best) + 1,
-        };
-      }, location)
-      .catch((e) => ({
-        ok: false,
-        debug: `err:${e && e.message ? e.message : e}`,
-      }));
-
-    if (result && result.ok) {
-      console.log(
-        "[dy] 已选择地理位置第一条候选:",
-        result.selected || result.title || location,
-      );
-      await page.waitForTimeout(400);
-      return;
-    }
-    if (result && result.debug && result.debug !== lastDebug) {
-      lastDebug = result.debug;
-      console.log("[dy] 地点候选未就绪:", lastDebug);
-    }
-    if (!triedArrow && Date.now() >= arrowFallbackAt) {
-      triedArrow = true;
-      console.log("[dy] 尝试 ArrowDown+Enter 选第一条建议");
-      try {
-        await page.keyboard.press("ArrowDown");
-        await page.waitForTimeout(200);
-        await page.keyboard.press("Enter");
-        await page.waitForTimeout(700);
-        const keyboardPicked = await page
-          .evaluate(() => {
-            const input = document.querySelector("[data-mm-dy-location='1']");
-            if (!input) return { accepted: false, reason: "input-missing" };
-            const value = String(
-              input.value == null ? input.textContent || "" : input.value,
-            ).trim();
-            const expanded = input.getAttribute("aria-expanded");
-            // 抖音接受首条 POI 后会把搜索输入清空并收起候选层；地点会以
-            // 选择态渲染在控件外，不能再用输入框文本判断是否成功。
-            return {
-              accepted: !value && expanded !== "true",
-              value,
-              expanded,
-            };
-          })
-          .catch(() => ({ accepted: false, reason: "state-read-failed" }));
-        if (keyboardPicked && keyboardPicked.accepted) {
-          console.log("[dy] 已通过键盘选择地理位置第一条候选");
-          return;
-        }
-      } catch (_) {
-        /* ignore */
-      }
-    }
-    await page.waitForTimeout(400);
-  }
-
-  throw new Error(
-    `未找到抖音地点：${normalize(location)}${
-      lastDebug ? `（${lastDebug.slice(0, 160)}）` : ""
-    }`,
-  );
+  return pickFirstDyLocation(page, location, {
+    timeoutMs: Math.min(WAIT_SELECTOR_APPEAR_MS, pickTimeoutMs),
+  });
 }
 
 async function setDyPlatformSchedule(page, data) {
@@ -1196,15 +976,6 @@ async function setDyPlatformSchedule(page, data) {
   console.log(`[dy] 已设置平台定时发布时间: ${scheduledText}`);
 }
 
-function isDyLocationRequired(data) {
-  return (
-    data?.locationRequired === true ||
-    data?.requireLocation === true ||
-    data?.data?.locationRequired === true ||
-    data?.data?.requireLocation === true
-  );
-}
-
 async function resetDyLocationAttempt(page, { clearValue = false } = {}) {
   await page.keyboard.press("Escape").catch(() => {});
   await page
@@ -1253,12 +1024,20 @@ async function selectDyLocationWithRetry(page, data) {
   let lastError = null;
   for (let attempt = 1; attempt <= DY_LOCATION_ATTEMPTS; attempt += 1) {
     try {
-      await selectDyLocation(page, data, {
+      const result = await selectDyLocation(page, data, {
         pickTimeoutMs: DY_LOCATION_PICK_TIMEOUT_MS,
       });
-      return { selected: true, skipped: false };
+      if (result?.selected !== true && result?.skipped !== true) {
+        throw new Error("地理位置未确认选中，已停止发布");
+      }
+      return result;
     } catch (error) {
       throwIfPublishCanceled(page);
+      if (error?.dyLocationSelectionAttempted) {
+        // 已填写地址时，未选中就不能发布；也不重搜换选其它地址。
+        error.nonRetryable = true;
+        throw error;
+      }
       lastError = error;
       console.warn(
         `[dy] 地理位置选择失败 (${attempt}/${DY_LOCATION_ATTEMPTS}):`,
@@ -1270,19 +1049,9 @@ async function selectDyLocationWithRetry(page, data) {
     }
   }
 
-  if (isDyLocationRequired(data)) {
-    throw lastError || new Error("抖音地理位置选择失败");
-  }
-
-  await resetDyLocationAttempt(page, { clearValue: true });
-  console.warn(
-    `[dy] 地理位置为可选项，连续 ${DY_LOCATION_ATTEMPTS} 次未获取到候选，跳过地点继续发布`,
-  );
-  return {
-    selected: false,
-    skipped: true,
-    reason: lastError?.message || "未获取到地点候选",
-  };
+  const error = lastError || new Error("抖音地理位置未选中，已停止发布");
+  error.nonRetryable = true;
+  throw error;
 }
 
 export default async function (page, data, window, event, _finish, task = {}) {
@@ -1491,9 +1260,22 @@ export default async function (page, data, window, event, _finish, task = {}) {
     stage("设置自主声明");
     await selectDyCreativeStatementWithRetry(page, data);
     stage("设置地理位置");
-    await selectDyLocationWithRetry(page, data);
+    const locationSelection = await selectDyLocationWithRetry(page, data);
     stage("设置平台定时");
     await setDyPlatformSchedule(page, data);
+
+    if (locationSelection.selected) {
+      const locationState = await page.evaluate(inspectDyLocationPick, {
+        selected: locationSelection.label,
+      });
+      if (!locationState.accepted) {
+        const error = new Error(
+          `发布前地理位置未确认选中，已停止发布：${locationSelection.label}；${JSON.stringify(locationState)}`,
+        );
+        error.nonRetryable = true;
+        throw error;
+      }
+    }
 
     console.log("[dy] 配置完成，准备点击发布");
     stage("定位发布按钮");
