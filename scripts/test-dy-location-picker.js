@@ -82,6 +82,7 @@ function fixture(names = ["东风康明斯", "东风康明斯发动机有限公�
   scope.append(control, popup);
   body.append(new Element("div", { class: "form-item" }, "关联热点", 135), scope);
   const document = {
+    activeElement: null,
     querySelectorAll: (selector) => body.querySelectorAll(selector),
     querySelector: (selector) => body.querySelectorAll(selector)[0] || null,
     getElementById: (id) => body.querySelectorAll("*").find((node) => node.getAttribute("id") === id) || null,
@@ -90,6 +91,7 @@ function fixture(names = ["东风康明斯", "东风康明斯发动机有限公�
       return rect.width && rect.height && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
     }) || null,
   };
+  input.blur = () => { document.activeElement = null; };
   const state = { keyword, body, input, popup, rows, document, control, label, list, city, addOption, clicks: [], searches: 0, resets: 0 };
   state.accept = ({ keepInput = false, selected = state.clicks[0] } = {}) => {
     popup.hidden = true;
@@ -111,11 +113,27 @@ async function withPage(state, onClick, action) {
   global.window = { getComputedStyle: (node) => ({ display: "block", visibility: "visible", cursor: node.cursor || "auto" }) };
   Date.now = () => now;
   const page = {
+    $: async (selector) => {
+      const element = state.document.querySelector(selector);
+      return element ? { focus: async () => { if (!state.blockFocus) state.document.activeElement = element; } } : null;
+    },
     evaluate: async (callback, args) => vm.runInNewContext(`(${callback.toString()})`, {
       document: state.document,
       window: global.window,
     })(args),
     waitForTimeout: async (ms) => { now += ms; state.onWait?.(now); },
+    keyboard: {
+      down: async () => {},
+      up: async () => {},
+      press: async (key) => {
+        if (key === "KeyA") state.searchSelected = state.document.activeElement === state.input;
+        if (key === "Backspace" && state.searchSelected && !state.blockClear) state.input.value = "";
+        if (key === "Escape") {
+          state.popup.hidden = true;
+          state.control.setAttribute("class", "semi-select");
+        }
+      },
+    },
     mouse: { click: async (x, y) => { const hit = state.document.elementFromPoint(x, y); state.clicks.push(hit?.closest("[role='option']")?.querySelector("[class*='name-']")?.textContent || hit?.textContent); onClick(); } },
   };
   try { await action(page); }
@@ -249,12 +267,60 @@ async function main() {
         assert.strictEqual(state.clicks.length, 0);
       });
     }],
-    ["没有搜索数据时重试后必须报错，不能跳过地址继续发布", async () => {
+    ["等待后仍没有搜索结果时清空搜索词并跳过地点，不中断发布", async () => {
       const state = fixture([]);
       await withPage(state, () => { throw new Error("没有结果时不能点击"); }, async (page) => {
-        await assert.rejects(loadRetry(page, state)(page, { data: { address: state.keyword } }), (error) => error.nonRetryable === true && /未找到抖音地点搜索结果/.test(error.message));
-        assert.strictEqual(state.searches, 3);
+        const result = await loadRetry(page, state)(page, { data: { address: state.keyword } });
+        assert.strictEqual(result.selected, false);
+        assert.strictEqual(result.skipped, true);
+        assert.strictEqual(result.reason, "no-search-options");
+        assert.strictEqual(state.input.value, "");
+        assert.strictEqual(state.control.classList.contains("semi-select-open"), false);
+        assert.strictEqual(state.label.classList.contains("semi-select-selection-placeholder"), true);
+        assert.strictEqual(state.searches, 1);
+        assert.strictEqual(state.resets, 0);
         assert.strictEqual(state.clicks.length, 0);
+      });
+    }],
+    ["搜索框丢失属于控件异常，不能按无搜索结果跳过", async () => {
+      const state = fixture([]);
+      state.input.removeAttribute("data-mm-dy-location");
+      await withPage(state, () => { throw new Error("不能点击"); }, async (page) => {
+        await assert.rejects(loadRetry(page, state)(page, {}),
+          error => error.nonRetryable === true && /search-input-missing/.test(error.message));
+        assert.strictEqual(state.searches, 3);
+        assert.strictEqual(state.input.value, state.keyword);
+      });
+    }],
+    ["无结果但搜索词清空失败时停止，不重新搜索或继续发布", async () => {
+      const state = fixture([]);
+      state.blockClear = true;
+      await withPage(state, () => { throw new Error("不能点击"); }, async (page) => {
+        await assert.rejects(loadRetry(page, state)(page, {}),
+          error => error.nonRetryable === true && /清理抖音地点失败/.test(error.message));
+        assert.strictEqual(state.input.value, state.keyword);
+        assert.strictEqual(state.searches, 1);
+        assert.strictEqual(state.resets, 0);
+      });
+    }],
+    ["清理前必须确认搜索框焦点，避免删除其它表单内容", async () => {
+      const state = fixture([]);
+      state.blockFocus = true;
+      await withPage(state, () => { throw new Error("不能点击"); }, async (page) => {
+        await assert.rejects(loadRetry(page, state)(page, {}),
+          error => error.nonRetryable === true && /未获得焦点/.test(error.message));
+        assert.strictEqual(state.input.value, state.keyword);
+        assert.strictEqual(state.searchSelected, undefined);
+      });
+    }],
+    ["恢复的已选地点未清除时不能假装无地点发布", async () => {
+      const state = fixture([]);
+      state.label.setAttribute("class", "semi-select-selection-text");
+      state.label.text = "旧地点";
+      await withPage(state, () => { throw new Error("不能点击"); }, async (page) => {
+        await assert.rejects(loadRetry(page, state)(page, {}),
+          error => error.nonRetryable === true && /清理抖音地点失败/.test(error.message));
+        assert.strictEqual(state.searches, 1);
       });
     }],
     ["第一条被遮挡时不能越过它选择第二条", async () => {
@@ -263,6 +329,15 @@ async function main() {
       await withPage(state, () => {}, async (page) => {
         await assert.rejects(pickFirstDyLocation(page, state.keyword, { timeoutMs: 500 }), /first-option-covered/);
         assert.strictEqual(state.clicks.length, 0);
+      });
+    }],
+    ["结果曾被遮挡后消失时仍报错，不能按无搜索结果放行", async () => {
+      const state = fixture();
+      state.document.elementFromPoint = () => new Element("div", { class: "overlay" });
+      state.onWait = () => { state.list.children = []; };
+      await withPage(state, () => { throw new Error("不能点击"); }, async (page) => {
+        await assert.rejects(pickFirstDyLocation(page, state.keyword, { timeoutMs: 500 }), /first-option-covered/);
+        assert.strictEqual(state.input.value, state.keyword);
       });
     }],
   ];

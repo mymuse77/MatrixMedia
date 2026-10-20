@@ -6,6 +6,7 @@ export function findFirstDyLocationOption(keyword) {
   if (value !== String(keyword).trim()) return { ok: false, reason: "search-value-not-ready" };
   const control = input.closest(".semi-select");
   if (!control) return { ok: false, reason: "location-control-missing" };
+  control.setAttribute("data-mm-dy-location-control", "1");
   const visible = (node) => {
     const style = window.getComputedStyle(node);
     const rect = node.getBoundingClientRect();
@@ -26,8 +27,6 @@ export function findFirstDyLocationOption(keyword) {
   const name = first.querySelector("[class*='name-']");
   const selected = String(name ? name.textContent : first.textContent).trim();
   if (!selected) return { ok: false, reason: "first-option-empty" };
-  // 外层 select 保持存在，选中后只会移除其内部的搜索 input。
-  control.setAttribute("data-mm-dy-location-control", "1");
   return { ok: true, selected, optionText: String(first.textContent || "").trim(), x, y };
 }
 
@@ -53,13 +52,63 @@ export function inspectDyLocationPick({ selected }) {
   };
 }
 
+async function clearEmptyDyLocationSearch(page) {
+  try {
+    const input = await page.$("[data-mm-dy-location='1']");
+    if (!input) throw new Error("未找到地点搜索框");
+    await input.focus();
+    const focused = await page.evaluate(() =>
+      document.activeElement === document.querySelector("[data-mm-dy-location='1']"),
+    );
+    if (!focused) throw new Error("地点搜索框未获得焦点");
+    const modifier = process.platform === "darwin" ? "Meta" : "Control";
+    await page.keyboard.down(modifier);
+    try {
+      await page.keyboard.press("KeyA");
+    } finally {
+      await page.keyboard.up(modifier);
+    }
+    await page.keyboard.press("Backspace");
+    await page.keyboard.press("Escape");
+    await page.evaluate(() => {
+      const active = document.activeElement;
+      if (active && typeof active.blur === "function") active.blur();
+    });
+
+    const deadline = Date.now() + 2_000;
+    do {
+      await page.waitForTimeout(200);
+      const cleared = await page.evaluate(() => {
+        // 外层 select 在搜索 input 被移除后仍存在，用它核验最终状态。
+        const control = document.querySelector("[data-mm-dy-location-control='1']");
+        const label = control && control.querySelector(".semi-select-selection-text");
+        const input = control && control.querySelector("input, textarea, [contenteditable='true']");
+        const value = input ? String(input.value == null ? input.textContent || "" : input.value).trim() : "";
+        return !!control && !!label && !value &&
+          label.classList.contains("semi-select-selection-placeholder") &&
+          !control.classList.contains("semi-select-open");
+      });
+      if (cleared) return;
+    } while (Date.now() < deadline);
+    throw new Error("搜索词或已选地点仍有残留");
+  } catch (cause) {
+    const error = new Error(`无搜索结果时清理抖音地点失败，已停止发布：${cause.message}`);
+    error.nonRetryable = true;
+    throw error;
+  }
+}
+
 export async function pickFirstDyLocation(page, keyword, { timeoutMs = 15_000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   let lastReason = "no-search-options";
+  let optionFailure = "";
   while (Date.now() < deadline) {
     const first = await page.evaluate(findFirstDyLocationOption, keyword);
     if (!first.ok) {
       lastReason = first.reason;
+      if (first.reason === "first-option-covered" || first.reason === "first-option-empty") {
+        optionFailure = first.reason;
+      }
       await page.waitForTimeout(300);
       continue;
     }
@@ -83,5 +132,10 @@ export async function pickFirstDyLocation(page, keyword, { timeoutMs = 15_000 } 
       throw error;
     }
   }
-  throw new Error(`未找到抖音地点搜索结果：${keyword}（${lastReason}）`);
+  if (lastReason === "no-search-options" && !optionFailure) {
+    await clearEmptyDyLocationSearch(page);
+    console.warn(`[dy] 地点搜索无结果，已清空并跳过地点，继续发布：${keyword}`);
+    return { selected: false, skipped: true, reason: "no-search-options" };
+  }
+  throw new Error(`未找到抖音地点搜索结果：${keyword}（${optionFailure || lastReason}）`);
 }

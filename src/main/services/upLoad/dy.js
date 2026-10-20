@@ -19,6 +19,7 @@ import {
 } from "./dyPublishConfirmation.js";
 import { revealPublishVerificationWindow } from "../publishWindowPresentation.js";
 import { inspectDyLocationPick, pickFirstDyLocation } from "./dyLocationPicker.js";
+import { replaceDyDescription } from "./dyDescription.js";
 
 const DY_PREFLIGHT_TIMEOUT_MS = 60 * 1000;
 const DY_UPLOAD_INPUT_TIMEOUT_MS = 60 * 1000;
@@ -1033,8 +1034,8 @@ async function selectDyLocationWithRetry(page, data) {
       return result;
     } catch (error) {
       throwIfPublishCanceled(page);
-      if (error?.dyLocationSelectionAttempted) {
-        // 已填写地址时，未选中就不能发布；也不重搜换选其它地址。
+      if (error?.dyLocationSelectionAttempted || error?.nonRetryable) {
+        // 点击后未确认，或无结果后清理失败时停止，不能重新搜索换选。
         error.nonRetryable = true;
         throw error;
       }
@@ -1187,19 +1188,10 @@ export default async function (page, data, window, event, _finish, task = {}) {
     await page.keyboard.press("Backspace"); // 删除内容
     await page.type(".semi-input", data.data.bt1, { delay: 50 });
 
-    const input2 = await page.$(".zone-container.editor-kit-container");
-    await input2.click(); // 三击全选
-    const descriptionAndTags = [data.data.bt2, data.data.bq]
-      .map(value => String(value || "").trim())
-      .filter(Boolean)
-      .join(" ");
-    await page.keyboard.type(descriptionAndTags, { delay: 50 });
-    // 抖音话题只有遇到空格/回车才会把当前 #xxx 转成话题胶囊；
-    // bq 末尾没有分隔符会导致最后一个标签没被识别，这里补一次空格触发。
-    await page.keyboard.press("Space");
+    await replaceDyDescription(page, data.data);
     console.log("[dy] 标题、描述和标签已填写");
   } catch (e) {
-    await reportFailure("输入标题失败", e);
+    await reportFailure("填写标题、描述或标签失败", e);
     return;
   }
 
