@@ -80,6 +80,7 @@ async function main() {
         item: record,
       });
       assert.strictEqual(result.success, true);
+      assert.strictEqual(result.recordId, record.id);
     }
 
     const queryResult = changeData({
@@ -94,11 +95,17 @@ async function main() {
       ["item-1", "item-2", "item-3", "item-4"],
     );
 
-    changeData({
+    const replayResult = changeData({
       type: "add",
       fileName: "pushData",
       item: { ...records[0], id: "replayed-local-1" },
     });
+    assert.strictEqual(replayResult.recordId, "local-1");
+    assert.strictEqual(changeData({
+      type: "update",
+      fileName: "pushData",
+      item: { id: replayResult.recordId, date: records[0].date, publishStatus: "success" },
+    }).success, true);
     const replayQueryResult = changeData({
       type: "get",
       fileName: "pushData",
@@ -106,6 +113,7 @@ async function main() {
     });
     const recordsAfterReplay = Object.values(replayQueryResult.data).flat();
     assert.strictEqual(recordsAfterReplay.length, 4);
+    assert.strictEqual(recordsAfterReplay.find((record) => record.id === "local-1").publishStatus, "success");
     assert.strictEqual(
       recordsAfterReplay.find((record) => record.matrixItemId === "item-1")
         .publishAttemptCount,

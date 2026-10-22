@@ -36,12 +36,15 @@ const verificationPhones = new Set();
 let remoteDownloadIndex = 0;
 let simulateSlowPreparation = false;
 let preparationElapsed = 0;
+let publishStore = null;
+let testDocumentsRoot = path.join(os.tmpdir(), "matrixmedia-test-documents");
+const notifications = [];
 
 const originalLoad = Module._load;
 Module._load = function patchedLoad(request, parent, isMain) {
   if (request === "electron") {
     return {
-      app: { getPath: () => path.join(os.tmpdir(), "matrixmedia-test-documents") },
+      app: { getPath: (name) => path.join(testDocumentsRoot, name) },
       BrowserWindow: { getAllWindows: () => [] },
     };
   }
@@ -50,9 +53,13 @@ Module._load = function patchedLoad(request, parent, isMain) {
     return {
       changeData: async (payload) => {
         changeDataCalls.push(payload);
-        return { success: true };
+        return publishStore ? publishStore(payload) : { success: true, recordId: payload.item?.id };
       },
     };
+  }
+
+  if (request === "./publishNotification") {
+    return { notifyPublishSuccess: (payload) => notifications.push(payload) };
   }
 
   if (request === "./puppeteerFile") {
@@ -200,7 +207,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
 };
 
 async function main() {
-  const { handlePublishVideos } = require("../src/main/services/websocketHandlers");
+  const { handlePublishVideo, handlePublishVideos } = require("../src/main/services/websocketHandlers");
 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "matrixmedia-publish-"));
   const firstVideoPath = path.join(tempDir, "video-a.mp4");
@@ -886,6 +893,68 @@ async function main() {
     (event) => event.taskId === "matrix-task-test" && event.data.status === "completed",
   );
   assert.strictEqual(terminalBatchEvent, undefined);
+
+  // 使用真实落盘和去重逻辑，重现“首次失败 -> 单条重发成功 -> 批量重发”的记录回写。
+  testDocumentsRoot = path.join(tempDir, "publish-records");
+  publishStore = require("../src/main/server/utils").changeData;
+  const replayPhone = "record-replay-account";
+  const replayData = {
+    phone: replayPhone, platform, videoPath: firstVideoPath,
+    itemId: "record-replay-item", idempotencyKey: "record-replay-key",
+    title: "Record replay", taskName: "Record replay",
+  };
+  const readRecords = () => Object.values(publishStore({
+    type: "get", fileName: "pushData", item: { pageSize: 100 },
+  }).data).flat();
+  try {
+    const notificationsBefore = notifications.length;
+    publishFailuresByPhone.set(replayPhone, "模拟首次发布确认超时");
+    await assert.rejects(handlePublishVideo({
+      taskId: "record-first-task", data: replayData,
+    }, wsClient), /模拟首次发布确认超时/);
+    const originalRecord = readRecords()[0];
+    assert.strictEqual(originalRecord.publishStatus, "failed");
+    assert.strictEqual(notifications.length, notificationsBefore);
+
+    publishFailuresByPhone.delete(replayPhone);
+    const replayResult = await handlePublishVideo({
+      taskId: "record-replay-task", data: replayData,
+    }, wsClient);
+    assert.strictEqual(replayResult.success, true);
+    assert.strictEqual(capturedPublishPayloads.at(-1).id, originalRecord.id);
+    assert.strictEqual(readRecords().length, 1);
+    assert.strictEqual(readRecords()[0].publishStatus, "success");
+    assert.strictEqual(readRecords()[0].publishAttemptCount, 2);
+    assert.strictEqual(notifications.length, notificationsBefore + 1);
+
+    const batchReplay = await handlePublishVideos({
+      taskId: "record-batch-replay-task", data: {
+        taskName: "Record replay", platforms: [platform],
+        accounts: [{ id: "replay-account", phone: replayPhone, platform }],
+        videos: [{ id: "replay-video", filePath: firstVideoPath }],
+        publishItems: [{
+          ...replayData, accountId: "replay-account", videoId: "replay-video",
+          captionText: "Record replay",
+        }],
+      },
+    }, wsClient);
+    assert.strictEqual(batchReplay.successCount, 1);
+    assert.strictEqual(capturedPublishPayloads.at(-1).id, originalRecord.id);
+    assert.strictEqual(readRecords().length, 1);
+    assert.strictEqual(readRecords()[0].publishStatus, "success");
+    assert.strictEqual(readRecords()[0].publishAttemptCount, 3);
+    assert.strictEqual(notifications.length, notificationsBefore + 2);
+
+    await handlePublishVideo({
+      taskId: "record-distinct-task",
+      data: { ...replayData, itemId: "distinct-item", idempotencyKey: "distinct-key" },
+    }, wsClient);
+    assert.strictEqual(readRecords().length, 2, "同素材的不同发布项仍需独立保存");
+    assert.notStrictEqual(capturedPublishPayloads.at(-1).id, originalRecord.id);
+  } finally {
+    publishStore = null;
+    publishFailuresByPhone.delete(replayPhone);
+  }
 
   console.log("test-websocket-publish-videos passed");
 }

@@ -126,7 +126,7 @@ async function runDryRun(opts) {
       return {
         changeData: async (payload) => {
           changeDataCalls.push(payload);
-          return { success: true, data: [] };
+          return { success: true, data: [], recordId: payload.item?.id };
         },
       };
     }

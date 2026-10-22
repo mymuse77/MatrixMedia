@@ -1163,6 +1163,15 @@ function sendBatchPublishItemResult(wsClient, taskId, payload) {
   );
 }
 
+async function addLocalPublishRecord(publishData) {
+  const result = await changeData({ type: 'add', fileName: 'pushData', item: publishData });
+  if (!result?.success || !result.recordId) {
+    throw new Error(result?.message || '保存本地发布记录失败');
+  }
+  // 重发被去重时，后续发布和状态回写必须使用实际保存的记录 ID。
+  publishData.id = result.recordId;
+}
+
 async function updateLocalPublishRecord(publishData, status, message) {
   if (!publishData?.id || !publishData?.date) return;
 
@@ -1526,11 +1535,7 @@ export async function handlePublishVideo(taskData, wsClient) {
     sendScopedProgress(wsClient, taskId, 30, '正在启动发布流程', progressRange);
 
     if (!localPublishRecord) {
-      await changeData({
-        type: 'add',
-        fileName: 'pushData',
-        item: publishData,
-      });
+      await addLocalPublishRecord(publishData);
     }
 
     // 执行发布任务
@@ -1899,11 +1904,7 @@ export async function handlePublishVideos(taskData, wsClient) {
 
   try {
     for (const queued of immediatePublishQueue) {
-      await changeData({
-        type: 'add',
-        fileName: 'pushData',
-        item: queued.publishData,
-      });
+      await addLocalPublishRecord(queued.publishData);
     }
   } catch (error) {
     if (scheduledResults.length > 0) {

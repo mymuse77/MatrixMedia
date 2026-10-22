@@ -40,7 +40,7 @@ function changeData(payload) {
   const item = payload?.item || {};
   if (payload?.type === "add") {
     records.push(cloneRecord(item));
-    return { success: true };
+    return { success: true, recordId: item.id };
   }
   if (payload?.type === "update") {
     const target = records.find((record) => record.id === item.id && record.date === item.date);

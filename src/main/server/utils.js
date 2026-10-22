@@ -190,6 +190,7 @@ function changeData({ item, fileName, type }) {
         id: item.id || generateId(),
         createTime: Date.now(),
       };
+      let recordId = newItem.id;
 
       // 如果是pushData文件名，则检查重复数据
       if (fileName == "pushData") {
@@ -214,6 +215,7 @@ function changeData({ item, fileName, type }) {
           list.push(newItem);
         } else {
           const oldItem = list[duplicateIndex] || {};
+          recordId = oldItem.id;
           const attemptCount = (Number(oldItem.publishAttemptCount) || 1) + 1;
           list[duplicateIndex] = {
             ...oldItem,
@@ -230,7 +232,7 @@ function changeData({ item, fileName, type }) {
       }
 
       writeDayData(filePath, list);
-      return { success: true, data: list };
+      return { success: true, data: list, recordId };
     }
 
     case "update": {
