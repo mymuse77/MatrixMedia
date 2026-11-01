@@ -20,6 +20,7 @@ const downloadCalls = [];
 const publishPayloads = [];
 const notifications = [];
 const queuedPublishReplies = [];
+let failUpdate = null;
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "matrixmedia-scheduled-execution-"));
 
 function cloneRecord(record) {
@@ -43,6 +44,11 @@ function changeData(payload) {
     return { success: true, recordId: item.id };
   }
   if (payload?.type === "update") {
+    if (failUpdate) {
+      const failure = failUpdate(item);
+      if (failure === "throw") throw new Error("模拟历史写入失败");
+      if (failure) return { success: false, message: "模拟历史写入失败" };
+    }
     const target = records.find((record) => record.id === item.id && record.date === item.date);
     if (target) Object.assign(target, item);
     return { success: true };
@@ -165,6 +171,7 @@ async function main() {
     refreshScheduledPublishScheduler,
     schedulePublishRecord,
     stopScheduledPublishScheduler,
+    subscribeScheduledPublishEvents,
   } = require("../src/main/services/scheduledPublish");
 
   try {
@@ -261,6 +268,60 @@ async function main() {
       .filter(Boolean);
     assert.ok(statusUpdates.includes("publishing"));
     assert.ok(statusUpdates.includes("success"));
+
+    const events = [];
+    subscribeScheduledPublishEvents((record) => events.push(record));
+    for (const failureMode of ["return", "throw"]) {
+      for (const failedWrite of [1, 2]) {
+        const id = `write-failure-${failureMode}-${failedWrite}`;
+        const record = { ...localRecord, id, publishStatus: "scheduled", scheduledPublishAt: Date.now() + 30 };
+        let writes = 0;
+        failUpdate = (item) => item.id === id && item.publishStatus === "publishing" && ++writes === failedWrite
+          ? failureMode : false;
+        records.push(record);
+        const before = publishPayloads.length;
+        schedulePublishRecord(record);
+        await waitFor(() => writes >= failedWrite);
+        assert.strictEqual(publishPayloads.length, before, "发布前或尝试前状态写入失败，均不得调用发布器");
+        failUpdate = null;
+        records.splice(records.indexOf(record), 1);
+      }
+    }
+
+    for (const unknown of [true, false]) {
+      const id = `closed-window-${unknown}`;
+      const record = { ...localRecord, id, publishStatus: "scheduled", scheduledPublishAt: Date.now() + 30 };
+      records.push(record);
+      queuedPublishReplies.push({ channel: "puppeteerFile-done", payload: {
+        status: false, skipped: true, confirmationUnknown: unknown, nonRetryable: true,
+      } });
+      const before = publishPayloads.length;
+      schedulePublishRecord(record);
+      await waitFor(() => record.publishStatus !== "scheduled" && record.publishStatus !== "publishing");
+      assert.strictEqual(record.publishStatus, unknown ? "failed" : "skipped");
+      assert.strictEqual(record.confirmationUnknown === true, unknown, "历史必须保留待核验标记");
+      assert.strictEqual(events.findLast((event) => event.id === id).confirmationUnknown === true, unknown);
+      assert.strictEqual(publishPayloads.length, before + 1, "关闭窗口后不得自动重试");
+    }
+
+    const unknownRecord = { ...localRecord, id: "unknown-without-flags", publishStatus: "scheduled", scheduledPublishAt: Date.now() + 30 };
+    records.push(unknownRecord);
+    queuedPublishReplies.push({ channel: "puppeteerFile-done", payload: {
+      status: false, confirmationUnknown: true,
+    } });
+    const beforeUnknown = publishPayloads.length;
+    schedulePublishRecord(unknownRecord);
+    await waitFor(() => unknownRecord.publishStatus === "failed");
+    assert.strictEqual(unknownRecord.confirmationUnknown, true);
+    assert.strictEqual(publishPayloads.length, beforeUnknown + 1, "仅有未知结果标记也必须停止自动重试");
+
+    const finalWriteRecord = { ...localRecord, id: "final-write-failure", publishStatus: "scheduled", scheduledPublishAt: Date.now() + 30 };
+    records.push(finalWriteRecord);
+    failUpdate = (item) => item.id === finalWriteRecord.id && item.publishStatus === "success" ? "throw" : false;
+    schedulePublishRecord(finalWriteRecord);
+    await waitFor(() => events.some((event) => event.id === finalWriteRecord.id && event.publishStatus === "success"));
+    assert.strictEqual(finalWriteRecord.publishStatus, "publishing", "模拟最终历史写入失败");
+    failUpdate = null;
 
     const stoppedRecord = { ...localRecord, id: "stopped-record", publishStatus: "scheduled", scheduledPublishAt: Date.now() + 100 };
     records.push(stoppedRecord);

@@ -15,10 +15,11 @@ const {
 
 assert.deepStrictEqual(normalizeAccountPublishSettings({}), {
   defaultPublishToDraft: false,
+  useRealBrowser: false,
 });
 assert.deepStrictEqual(
   normalizeAccountPublishSettings({ defaultPublishToDraft: true }),
-  { defaultPublishToDraft: true }
+  { defaultPublishToDraft: true, useRealBrowser: false }
 );
 
 assert.strictEqual(isDefaultPublishToDraftEnabled({}), false);
@@ -46,8 +47,8 @@ assert.deepStrictEqual(resolveEffectivePublishMode(true, {}), {
 const accountTree = {
   13800138000: {
     children: [
-      { pt: "小红书", phone: "13800138000", defaultPublishToDraft: false },
-      { pt: "抖音", phone: "13800138000", defaultPublishToDraft: false },
+      { meta: { pt: "小红书", phone: "13800138000", defaultPublishToDraft: false, useRealBrowser: true } },
+      { meta: { pt: "抖音", phone: "13800138000", defaultPublishToDraft: false } },
     ],
   },
 };
@@ -57,16 +58,23 @@ const nextTree = updateAccountTreePublishSettings(accountTree, {
   defaultPublishToDraft: true,
 });
 assert.strictEqual(
-  nextTree["13800138000"].children[0].defaultPublishToDraft,
+  nextTree["13800138000"].children[0].meta.defaultPublishToDraft,
   true
 );
 assert.strictEqual(
-  nextTree["13800138000"].children[1].defaultPublishToDraft,
+  nextTree["13800138000"].children[1].meta.defaultPublishToDraft,
   false
 );
 assert.strictEqual(
-  accountTree["13800138000"].children[0].defaultPublishToDraft,
+  accountTree["13800138000"].children[0].meta.defaultPublishToDraft,
   false
 );
+
+assert.strictEqual(nextTree["13800138000"].children[0].meta.useRealBrowser, true);
+const disabledBrowser = updateAccountTreePublishSettings(nextTree, {
+  phone: "13800138000", pt: "小红书", defaultPublishToDraft: true, useRealBrowser: false,
+});
+assert.strictEqual(disabledBrowser["13800138000"].children[0].meta.useRealBrowser, false);
+assert.strictEqual(nextTree["13800138000"].children[0].meta.useRealBrowser, true);
 
 console.log("test-account-publish-settings passed");

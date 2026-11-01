@@ -235,6 +235,10 @@ async function main() {
     publishStatus: "success", lastPublishAt: 1700000000000 });
   assert.strictEqual(scheduledResults[0][2].results[0].publishedAt, 1700000000000,
     "定时发布回执应携带实际确认时间");
+  onScheduledPublishEvent({ matrixTaskId: "scheduled-task", matrixItemId: "unknown-item", executionToken: "scheduled-token",
+    publishStatus: "failed", confirmationUnknown: true });
+  assert.strictEqual(scheduledResults[1][2].results[0].confirmationUnknown, true,
+    "定时发布回执必须保留待核验标记");
 
   const result = await handlePublishVideos(
     {
@@ -994,6 +998,12 @@ async function main() {
     const snapshot = await handleGetPublishTaskStatus({ taskId: "snapshot-test", data: { matrixTaskId: record.taskId } }, wsClient);
     const snapshotItem = snapshot.results.find((item) => item.id === record.id);
     assert.strictEqual(snapshotItem.publishedAt, record.lastPublishAt, "状态快照应保留客户端确认时间");
+    publishStore({ type: "update", fileName: "pushData", item: {
+      id: record.id, date: record.date, publishStatus: "failed", confirmationUnknown: true,
+    } });
+    const unknownSnapshot = await handleGetPublishTaskStatus({ taskId: "unknown-snapshot", data: { matrixTaskId: record.taskId } }, wsClient);
+    assert.strictEqual(unknownSnapshot.results.find((item) => item.id === record.id).confirmationUnknown, true,
+      "重连快照必须保留待核验标记");
 
     await handlePublishVideo({
       taskId: "record-distinct-task",

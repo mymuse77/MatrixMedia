@@ -178,7 +178,7 @@ export function buildTaskPayloadFromRecord(record) {
 }
 
 function updateRecord(record, patch) {
-  if (!record || !record.id || !record.date) return;
+  if (!record || !record.id || !record.date) return false;
   // 成功事件先进入 WebSocket 持久化补报队列，历史文件写入不能阻断回执。
   emitScheduledPublishEvent(record, patch);
   try {
@@ -192,8 +192,10 @@ function updateRecord(record, patch) {
       },
     });
     if (result?.success === false) throw new Error(result.message || '发布历史写入失败');
+    return true;
   } catch (error) {
     console.error('[scheduledPublish] 本地状态保存失败', { taskId: record.matrixTaskId, itemId: record.matrixItemId, error: error?.stack || String(error) });
+    return false;
   }
 }
 
@@ -346,7 +348,7 @@ export async function cancelScheduledPublishRecords(matrixTaskId) {
 }
 
 function finishScheduledRecord(record, payload) {
-  if (payload && payload.skipped) {
+  if (payload && payload.skipped && payload.confirmationUnknown !== true) {
     updateRecord(record, {
       publishStatus: "skipped",
       publishSuccessCount: 0,
@@ -357,7 +359,7 @@ function finishScheduledRecord(record, payload) {
     });
     return;
   }
-  const ok = payload && payload.status === true;
+  const ok = payload && payload.status === true && payload.confirmationUnknown !== true;
   if (ok) {
     notifyPublishSuccess({
       phone: record.phone,
@@ -367,6 +369,7 @@ function finishScheduledRecord(record, payload) {
   }
   updateRecord(record, {
     publishStatus: ok ? "success" : "failed",
+    confirmationUnknown: !ok && payload?.confirmationUnknown === true,
     publishSuccessCount: ok ? 1 : 0,
     publishFailCount: ok ? 0 : 1,
     lastPublishMessage:
@@ -424,21 +427,23 @@ async function executeScheduledRecordAsync(record) {
       filePath: publishFilePath,
   });
   const taskId = taskPayload.taskId;
-  updateRecord(record, {
+  const started = updateRecord(record, {
       publishStatus: "publishing",
       lastPublishMessage: "定时任务开始发布",
       lastPublishAt: Date.now(),
   });
+  if (!started) return;
 
   let finalPayload = null;
   for (let attempt = 1; attempt <= MAX_PUBLISH_ATTEMPTS; attempt += 1) {
     if (schedulerStopped) break;
-    updateRecord(record, {
+    const attemptSaved = updateRecord(record, {
         publishStatus: "publishing",
         publishAttemptCount: attempt,
         lastPublishMessage: attempt === 1 ? "定时任务开始发布" : `发布失败，正在进行第 ${attempt} 次重试`,
         lastPublishAt: Date.now(),
     });
+    if (!attemptSaved) return;
     const attemptPayload = await new Promise((resolve) => {
       let publishSettled = false;
       const finish = () => {
@@ -470,6 +475,7 @@ async function executeScheduledRecordAsync(record) {
     if (
       attemptPayload?.status === true ||
       attemptPayload?.skipped ||
+      attemptPayload?.confirmationUnknown === true ||
       attemptPayload?.nonRetryable
     ) break;
     if (attempt < MAX_PUBLISH_ATTEMPTS) {

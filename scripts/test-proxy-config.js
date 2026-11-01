@@ -78,7 +78,7 @@ const {
 (() => {
   const disabled = normalizeAccountProxy({ enabled: false, url: "" });
   assert.strictEqual(disabled.ok, true);
-  assert.strictEqual(disabled.value.enabled, false);
+  assert.deepStrictEqual(disabled.value, { proxies: [] });
 })();
 
 (() => {
@@ -92,7 +92,7 @@ const {
     url: "http://127.0.0.1:7890",
   });
   assert.strictEqual(enabled.ok, true);
-  assert.strictEqual(enabled.value.url, "http://127.0.0.1:7890");
+  assert.deepStrictEqual(enabled.value, { proxies: [{ enabled: true, url: "http://127.0.0.1:7890" }] });
 })();
 
 (() => {
