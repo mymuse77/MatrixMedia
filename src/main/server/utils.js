@@ -219,6 +219,13 @@ function changeData({ item, fileName, type }) {
           const attemptCount = (Number(oldItem.publishAttemptCount) || 1) + 1;
           list[duplicateIndex] = {
             ...oldItem,
+            ...(newItem.matrixItemId ? {
+              taskId: newItem.taskId,
+              matrixTaskId: newItem.matrixTaskId,
+              matrixItemId: newItem.matrixItemId,
+              idempotencyKey: newItem.idempotencyKey,
+              executionToken: newItem.executionToken,
+            } : {}),
             publishAttemptCount: attemptCount,
             republishCount: Math.max(0, attemptCount - 1),
             publishStatus: "publishing",

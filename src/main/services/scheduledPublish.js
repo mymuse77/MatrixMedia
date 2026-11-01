@@ -179,16 +179,22 @@ export function buildTaskPayloadFromRecord(record) {
 
 function updateRecord(record, patch) {
   if (!record || !record.id || !record.date) return;
-  changeData({
-    fileName: "pushData",
-    type: "update",
-    item: {
-      id: record.id,
-      date: record.date,
-      ...patch,
-    },
-  });
+  // 成功事件先进入 WebSocket 持久化补报队列，历史文件写入不能阻断回执。
   emitScheduledPublishEvent(record, patch);
+  try {
+    const result = changeData({
+      fileName: "pushData",
+      type: "update",
+      item: {
+        id: record.id,
+        date: record.date,
+        ...patch,
+      },
+    });
+    if (result?.success === false) throw new Error(result.message || '发布历史写入失败');
+  } catch (error) {
+    console.error('[scheduledPublish] 本地状态保存失败', { taskId: record.matrixTaskId, itemId: record.matrixItemId, error: error?.stack || String(error) });
+  }
 }
 
 function getScheduledRecordKey(record) {

@@ -76,6 +76,7 @@ async function main() {
   fs.mkdirSync(outDir, { recursive: true });
   const { createPublishWatchdog } = await load("publishWatchdog");
   const { classifyDyUploadSnapshot, inspectDyUploadState, waitForDyUploadProcessing } = await load("dyUploadState");
+  const { clickDyPublish } = await load("dyPublishSubmit");
   checkWatchdog(createPublishWatchdog);
   const preview = { visible: true, hasSource: true, hasSlider: true, readyState: 0, duration: 0 };
   assert.strictEqual(classifyDyUploadSnapshot({ videos: [preview] }), "ready");
@@ -85,6 +86,11 @@ async function main() {
   assert.strictEqual(classifyDyUploadSnapshot({ videos: [{ ...preview, hasSlider: false }] }), "processing");
   assert.strictEqual(classifyDyUploadSnapshot({ videos: [{ ...preview, hasSlider: false, readyState: 2, duration: 10 }], hasSavePermission: true }), "ready");
   assert.strictEqual(classifyDyUploadSnapshot({ failure: "视频上传失败", videos: [preview] }), "failed");
+  const editableTranscoding = { processing: true, canPublishWhileProcessing: true, videos: [] };
+  assert.strictEqual(classifyDyUploadSnapshot(editableTranscoding), "ready",
+    "平台明确允许转码期间发布且编辑控件就绪时，无需等待预览 video 出现");
+  assert.strictEqual(classifyDyUploadSnapshot({ ...editableTranscoding, uploading: true }), "uploading");
+  assert.strictEqual(classifyDyUploadSnapshot({ ...editableTranscoding, failure: "视频转码失败" }), "failed");
 
   // 执行真正的页面采集函数：其他 CDN 和新增包装层不应阻塞识别。
   const saved = { document: global.document, location: global.location, getComputedStyle: global.getComputedStyle };
@@ -95,8 +101,16 @@ async function main() {
     const video = { currentSrc: "https://video.example.net/preview.mp4?signature=secret", parentElement: wrapper,
       readyState: 2, duration: 10, getBoundingClientRect: () => ({ width: 100, height: 100 }) };
     let progressBar = null;
-    global.document = { body, querySelectorAll: (selector) => selector === "video" ? [video]
-      : selector.includes('role="progressbar"') && progressBar ? [progressBar] : [] };
+    let publishControls = false;
+    let previewVisible = true;
+    const control = { disabled: false, getBoundingClientRect: () => ({ width: 100, height: 30 }) };
+    const submit = { isConnected: true, disabled: false, ariaDisabled: false, getBoundingClientRect: control.getBoundingClientRect,
+      matches: () => submit.disabled, getAttribute: () => submit.ariaDisabled ? "true" : null, closest: () => null };
+    global.document = { body, querySelectorAll: (selector) => selector === "video" ? previewVisible ? [video] : []
+      : selector.includes('role="progressbar"') && progressBar ? [progressBar]
+      : publishControls && selector === ".semi-input" ? [control]
+      : publishControls && selector === "#popover-tip-container" ? [submit] : [],
+      querySelector: () => publishControls ? submit : null };
     global.location = { href: "https://creator.douyin.com/" };
     global.getComputedStyle = () => ({ display: "block", visibility: "visible" });
     const snapshot = await inspectDyUploadState({ evaluate: async (fn) => fn() });
@@ -111,6 +125,55 @@ async function main() {
     body.innerText = "保存权限 视频转码失败怎么办";
     const helpText = await inspectDyUploadState({ evaluate: async (fn) => fn() });
     assert.strictEqual(helpText.state, "ready", "说明文字不能误判为上传错误提示");
+    previewVisible = false;
+    body.innerText = "保存权限 预览转码中，请稍后 转码过程也可以发布作品";
+    assert.strictEqual((await inspectDyUploadState({ evaluate: async (fn) => fn() })).state, "processing",
+      "只有提示文案而没有编辑控件时不能放行");
+    publishControls = true;
+    assert.strictEqual((await inspectDyUploadState({ evaluate: async (fn) => fn() })).state, "ready");
+    submit.disabled = true;
+    assert.strictEqual((await inspectDyUploadState({ evaluate: async (fn) => fn() })).state, "ready",
+      "标题尚未填写时按钮可能禁用，编辑阶段不能等待按钮启用");
+    submit.disabled = false;
+    submit.ariaDisabled = true;
+    assert.strictEqual((await inspectDyUploadState({ evaluate: async (fn) => fn() })).state, "ready");
+    submit.ariaDisabled = false;
+
+    const realNow = Date.now;
+    let now = 0;
+    let marked = 0;
+    let clicks = 0;
+    let waits = 0;
+    let enableAfterWait = false;
+    let disableOnLookup = false;
+    const submitPage = {
+      evaluate: async (fn, ...args) => fn(...args),
+      $: async () => {
+        if (disableOnLookup) { submit.disabled = true; disableOnLookup = false; }
+        return { evaluate: async (fn) => fn(submit), click: async () => { assert.strictEqual(submit.disabled, false); clicks++; } };
+      },
+      waitForTimeout: async (ms) => { now += ms; waits++; if (enableAfterWait && waits >= 2) submit.disabled = false; },
+    };
+    try {
+      Date.now = () => now;
+      submit.disabled = true;
+      await assert.rejects(clickDyPublish(submitPage, false, () => { marked++; }), /发布按钮.*可用/);
+      assert.strictEqual(marked, 0, "按钮一直禁用时不能标记已提交");
+      assert.strictEqual(clicks, 0);
+      now = 0;
+      waits = 0;
+      enableAfterWait = true;
+      disableOnLookup = true;
+      await clickDyPublish(submitPage, false, () => { assert.strictEqual(submit.disabled, false); marked++; });
+      assert.strictEqual(marked, 1);
+      assert.strictEqual(clicks, 1);
+      assert.ok(waits >= 2, "必须等待按钮从禁用变为可用");
+    } finally {
+      Date.now = realNow;
+    }
+    body.innerText = "保存权限 视频处理中";
+    assert.strictEqual((await inspectDyUploadState({ evaluate: async (fn) => fn() })).state, "processing",
+      "普通处理中提示不能代替平台明确允许发布的信号");
   } finally {
     Object.assign(global, saved);
   }

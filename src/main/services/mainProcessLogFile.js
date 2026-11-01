@@ -57,10 +57,13 @@ function closeLogStream() {
 function openLogStream(app) {
   const p = getLogFilePath(app);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  if (sink.stream && logFilePath === p) return sink.stream;
+  if (sink.stream && !sink.stream.destroyed && logFilePath === p) return sink.stream;
   closeLogStream();
   logFilePath = p;
   sink.stream = fs.createWriteStream(logFilePath, { flags: "a" });
+  sink.stream.on("error", (error) => {
+    try { process.stderr.write(`[main-log] 日志写入失败: ${error.message}\n`); } catch (_) { }
+  });
   return sink.stream;
 }
 
@@ -73,6 +76,52 @@ export function installMainProcessLogFile(app) {
   openLogStream(app).write(
     `[${formatLogTimestamp()}] [LOG] MatrixMedia 主进程日志文件已就绪。\n`
   );
+  const writeCritical = (event, details) => {
+    try {
+      fs.appendFileSync(getLogFilePath(app), `[${formatLogTimestamp()}] [FATAL] ${JSON.stringify({ event, pid: process.pid, ...details })}\n`);
+    } catch (error) {
+      try { process.stderr.write(`[main-log] 致命异常日志写入失败: ${error.message}\n`); } catch (_) { }
+    }
+  };
+  const sessionDir = path.join(getMainProcessLogDir(app), "sessions");
+  fs.mkdirSync(sessionDir, { recursive: true });
+  for (const name of fs.readdirSync(sessionDir)) {
+    if (!/^\d+\.json$/.test(name)) continue;
+    const previousPid = Number(name.split(".")[0]);
+    try { process.kill(previousPid, 0); continue; } catch (error) { if (error.code !== "ESRCH") continue; }
+    const previousPath = path.join(sessionDir, name);
+    try {
+      writeCritical("previous_session_unclean", { previousSession: JSON.parse(fs.readFileSync(previousPath, "utf8")) });
+      fs.unlinkSync(previousPath);
+    } catch (error) { writeCritical("session_marker_read_failed", { message: error.message }); }
+  }
+  const sessionPath = path.join(sessionDir, `${process.pid}.json`);
+  fs.writeFileSync(sessionPath, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+  let fatal = false;
+  process.on("uncaughtExceptionMonitor", (error, origin) => {
+    fatal = true;
+    writeCritical("uncaught_exception", { origin, error: error.stack || String(error) });
+  });
+  process.on("unhandledRejection", (reason) => {
+    fatal = true;
+    const error = reason instanceof Error ? reason : new Error(String(reason));
+    writeCritical("unhandled_rejection", { error: error.stack });
+    // 留下同步日志后保留致命错误语义，不带着未知状态继续发布。
+    process.nextTick(() => { throw error; });
+  });
+  process.on("exit", (code) => {
+    if (code === 0 && !fatal) {
+      try { fs.unlinkSync(sessionPath); } catch (_) { }
+    } else writeCritical("main_process_exit", { code });
+  });
+  if (typeof app.on === "function") {
+    app.on("render-process-gone", (_event, contents, details) => {
+      writeCritical("render_process_gone", { webContentsId: contents?.id, reason: details?.reason, exitCode: details?.exitCode });
+    });
+    app.on("child-process-gone", (_event, details) => {
+      writeCritical("child_process_gone", { type: details?.type, reason: details?.reason, exitCode: details?.exitCode, name: details?.name });
+    });
+  }
 
   const stamp = () => formatLogTimestamp();
   const line = (level, args) =>

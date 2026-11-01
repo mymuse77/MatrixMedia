@@ -1030,6 +1030,7 @@ function isPlainObject(value) {
 
 function createLocalPublishData({
   taskId,
+  matrixTaskId = taskId,
   itemId,
   phone,
   platform,
@@ -1058,6 +1059,7 @@ function createLocalPublishData({
   return {
     id: createLocalPublishRecordId(),
     taskId,
+    matrixTaskId,
     bookName: localRecordName,
     textType: 'local',
     data: {
@@ -1164,7 +1166,7 @@ function sendBatchPublishItemResult(wsClient, taskId, payload) {
 }
 
 async function addLocalPublishRecord(publishData) {
-  const result = await changeData({ type: 'add', fileName: 'pushData', item: publishData });
+  const result = await changeData({ type: 'add', fileName: 'pushData', item: { ...publishData, taskId: publishData.matrixTaskId } });
   if (!result?.success || !result.recordId) {
     throw new Error(result?.message || '保存本地发布记录失败');
   }
@@ -1172,7 +1174,7 @@ async function addLocalPublishRecord(publishData) {
   publishData.id = result.recordId;
 }
 
-async function updateLocalPublishRecord(publishData, status, message) {
+async function updateLocalPublishRecord(publishData, status, message, timestamp = Date.now()) {
   if (!publishData?.id || !publishData?.date) return;
 
   try {
@@ -1184,7 +1186,7 @@ async function updateLocalPublishRecord(publishData, status, message) {
         date: publishData.date,
         publishStatus: status,
         lastPublishMessage: message || '',
-        lastPublishAt: Date.now(),
+        lastPublishAt: timestamp,
         ...(status === 'success' ? { publishSuccessCount: 1, publishFailCount: 0 } : {}),
         ...(status === 'failed' || status === 'skipped' ? { publishFailCount: 1 } : {}),
       },
@@ -1329,11 +1331,12 @@ async function deferMixedImmediatePublishItems(publishQueue, taskId, nowMs = Dat
   return { immediateQueue, scheduledResults };
 }
 
-export async function handlePublishVideo(taskData, wsClient) {
+export async function handlePublishVideo(taskData, wsClient, { deferFailure = false } = {}) {
   const { taskId, data } = taskData;
   const {
     phone,
     platform,
+    matrixTaskId,
     itemId,
     serverId,
     partition,
@@ -1437,6 +1440,7 @@ export async function handlePublishVideo(taskData, wsClient) {
       '';
     const publishOverrides = {
       taskId,
+      matrixTaskId: cleanText(matrixTaskId) || taskId,
       itemId,
       idempotencyKey,
       executionToken,
@@ -1457,6 +1461,7 @@ export async function handlePublishVideo(taskData, wsClient) {
       ? normalizeLocalPublishData(localPublishRecord, publishOverrides)
       : createLocalPublishData({
         taskId,
+        matrixTaskId: cleanText(matrixTaskId) || taskId,
         itemId,
         phone,
         platform,
@@ -1515,6 +1520,10 @@ export async function handlePublishVideo(taskData, wsClient) {
         item: {
           id: publishData.id,
           date: publishData.date,
+          taskId: publishData.matrixTaskId,
+          matrixTaskId: publishData.matrixTaskId,
+          executionToken: publishData.executionToken,
+          idempotencyKey: publishData.idempotencyKey,
           matrixItemId: publishData.matrixItemId || cleanText(itemId),
           filePath: publishData.filePath || '',
           selectedFile: publishData.selectedFile || '',
@@ -1526,6 +1535,7 @@ export async function handlePublishVideo(taskData, wsClient) {
           bt: publishData.bt || title || '',
           ...(publishData.bt2 ? { bt2: publishData.bt2 } : {}),
           bq: publishData.bq || tags || '',
+          publishStatus: 'publishing',
           lastPublishMessage: '等待发布结果',
           lastPublishAt: Date.now(),
         },
@@ -1543,21 +1553,42 @@ export async function handlePublishVideo(taskData, wsClient) {
       let settled = false;
       const cleanupOnce = () => {
         if (cleanupDownloadedVideo) {
-          cleanupDownloadedVideo();
-          cleanupDownloadedVideo = null;
+          try { cleanupDownloadedVideo(); }
+          catch (error) { console.error('[publish-sync] temporary-file-cleanup-failed', { taskId, itemId, error: error?.stack || String(error) }); }
+          finally { cleanupDownloadedVideo = null; }
         }
       };
       const resolveOnce = async (result, message) => {
         if (settled) return;
         settled = true;
-        await updateLocalPublishRecord(publishData, 'success', message || '视频发布成功');
+        const publishedAt = Date.now();
+        const receipt = {
+          action: deferFailure ? 'publish_videos' : 'publish_video',
+          matrixTaskId: publishData.matrixTaskId,
+          itemId: cleanText(itemId), executionToken: cleanText(executionToken),
+          status: 'running', success: true,
+          results: [{ itemId: cleanText(itemId), executionToken: cleanText(executionToken),
+            idempotencyKey: cleanText(idempotencyKey), phone, platform,
+            ...(Number(data.attemptCount) > 0 ? { attemptCount: Number(data.attemptCount) } : {}),
+            status: 'success', success: true, publishedAt }],
+        };
+        // 先同步写入持久化补报队列，再更新历史、通知和返回批量结果。
+        console.info('[publish-sync] platform-confirmed', { taskId, matrixTaskId: publishData.matrixTaskId, itemId, platform, publishedAt });
+        try {
+          if (itemId) void Promise.resolve(wsClient.sendTaskResult(taskId, 'success', receipt)).catch((error) => {
+            console.error('[publish-sync] receipt-delivery-failed', { taskId, itemId, error: error?.stack || String(error) });
+          });
+        } catch (error) {
+          console.error('[publish-sync] receipt-queue-failed', { taskId, itemId, error: error?.stack || String(error) });
+        }
+        await updateLocalPublishRecord(publishData, 'success', message || '视频发布成功', publishedAt);
         notifyPublishSuccess({
           phone,
           platform,
           videoName: localVideoPath || videoPath || videoUrl || title,
         });
         cleanupOnce();
-        resolve(result);
+        resolve({ ...result, matrixTaskId: publishData.matrixTaskId, publishedAt });
       };
       const rejectOnce = async (error, payload) => {
         if (settled) return;
@@ -1568,8 +1599,11 @@ export async function handlePublishVideo(taskData, wsClient) {
           error.verificationRequired = payload.verificationRequired === true;
           error.confirmationUnknown = payload.confirmationUnknown === true;
         }
-        const status = payload?.skipped ? 'skipped' : 'failed';
-        await updateLocalPublishRecord(publishData, status, error?.message || '发布失败');
+        // 批量发布由外层统一重试；中间失败不能通过本地快照提前结束服务端任务。
+        if (!deferFailure) {
+          const status = payload?.skipped ? 'skipped' : 'failed';
+          await updateLocalPublishRecord(publishData, status, error?.message || '发布失败');
+        }
         cleanupOnce();
         reject(error);
       };
@@ -1748,6 +1782,7 @@ export async function handlePublishVideos(taskData, wsClient) {
     const progressEnd = (currentIndex / total) * 100;
     const publishData = createLocalPublishData({
       taskId,
+      matrixTaskId: cleanText(data.matrixTaskId) || taskId,
       itemId: cleanText(plannedItem?.itemId) || publishItemIds[detailIndex] || '',
       idempotencyKey: cleanText(plannedItem?.idempotencyKey),
       executionToken: cleanText(data.executionToken),
@@ -1974,6 +2009,7 @@ export async function handlePublishVideos(taskData, wsClient) {
             data: {
               phone,
               platform,
+              matrixTaskId: publishData.matrixTaskId,
               itemId,
               idempotencyKey,
               executionToken,
@@ -1988,6 +2024,7 @@ export async function handlePublishVideos(taskData, wsClient) {
               description: publishText.description,
               tags: publishText.tags,
               publishTimeoutMs: attemptTimeoutMs,
+              attemptCount: attempt,
               localPublishRecord: publishData,
               scheduleMode: cleanText(data.scheduleMode),
               scheduledPublishAt:
@@ -1999,7 +2036,7 @@ export async function handlePublishVideos(taskData, wsClient) {
                 end: progressEnd,
               },
             },
-          }, wsClient);
+          }, wsClient, { deferFailure: true });
           break;
         } catch (error) {
           lastError = error;
@@ -2031,23 +2068,17 @@ export async function handlePublishVideos(taskData, wsClient) {
         idempotencyKey,
         executionToken,
         attemptCount,
+        publishedAt: result.publishedAt,
         result,
       };
       results.push(detail);
       if (typeof wsClient.updatePublishTaskItem === 'function') {
         wsClient.updatePublishTaskItem(taskId, itemId, 'success');
       }
-      sendBatchPublishItemResult(wsClient, taskId, {
-        taskName,
-        total,
-        successCount,
-        failCount,
-        detail,
-        results,
-      });
     } catch (error) {
       failCount += 1;
       const message = error?.message || '发布失败';
+      await updateLocalPublishRecord(publishData, error?.publishPayload?.skipped ? 'skipped' : 'failed', message);
       const diagnostic = error?.publishPayload?.diagnostic || null;
       const nonRetryable =
         error?.nonRetryable === true ||
@@ -2068,6 +2099,7 @@ export async function handlePublishVideos(taskData, wsClient) {
         error: message,
         nonRetryable,
         verificationRequired,
+        confirmationUnknown: error?.confirmationUnknown === true || error?.publishPayload?.confirmationUnknown === true,
         ...(diagnostic ? { diagnostic } : {}),
       };
       results.push(detail);
@@ -2098,6 +2130,7 @@ export async function handlePublishVideos(taskData, wsClient) {
       success: true,
       action: 'publish_videos',
       status: 'running',
+      matrixTaskId: cleanText(data.matrixTaskId) || taskId,
       taskName,
       total,
       successCount,
@@ -2114,6 +2147,7 @@ export async function handlePublishVideos(taskData, wsClient) {
     success: successCount === total,
     action: 'publish_videos',
     status: successCount === total ? 'completed' : successCount > 0 ? 'partial' : 'failed',
+    matrixTaskId: cleanText(data.matrixTaskId) || taskId,
     taskName,
     total,
     successCount,
@@ -2207,6 +2241,7 @@ export async function handleGetPublishTaskStatus(taskData, wsClient) {
           message: cleanText(record.lastPublishMessage),
           executionToken: cleanText(record.executionToken),
           lastPublishAt: Number(record.lastPublishAt) || 0,
+          publishedAt: status === 'success' ? Number(record.lastPublishAt) || null : null,
           date: cleanText(record.date),
         };
       })
@@ -2324,6 +2359,7 @@ export function registerWebSocketHandlers(wsClient) {
       wsClient.sendTaskResult(matrixTaskId, 'success', {
         action: 'publish_videos',
         status: 'running',
+        matrixTaskId,
         executionToken: cleanText(record.executionToken),
         results: [{
           itemId,
@@ -2333,6 +2369,7 @@ export function registerWebSocketHandlers(wsClient) {
           platform: record.pt,
           videoPath: record.filePath,
           success,
+          publishedAt: success ? Number(record.lastPublishAt) || null : null,
           status: success ? 'success' : record.publishStatus,
           error: success ? '' : record.lastPublishMessage || (record.publishStatus === 'expired' ? '错过发布时间' : '发布失败'),
         }],

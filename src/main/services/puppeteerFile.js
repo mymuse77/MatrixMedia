@@ -200,7 +200,12 @@ export function createPuppeteerTaskRuntime({ runTask, queueHeartbeatMs = 30_000 
 
 const puppeteerTaskRuntime = createPuppeteerTaskRuntime({
   runTask(task, queueDone) {
-    doUpload(task.data, task.transport, queueDone, task);
+    doUpload(task.data, task.transport, queueDone, task).catch((error) => {
+      console.error('[publish-runtime] task-exception', { taskId: task.data.taskId, itemId: task.data.matrixItemId, error: error?.stack || String(error) });
+      try { task.transport.reply('puppeteerFile-done', { ...task.data, status: false, nonRetryable: true, message: error?.message || '发布流程异常' }); }
+      catch (replyError) { console.error('[publish-runtime] failure-reply-error', { taskId: task.data.taskId, error: replyError?.stack || String(replyError) }); }
+      finally { queueDone(); }
+    });
   },
 });
 
@@ -305,6 +310,9 @@ function createPublishStageLogger(data) {
   return (stage, extra = {}) => {
     const now = Date.now();
     const payload = {
+      taskId: data.taskId,
+      matrixTaskId: data.matrixTaskId,
+      itemId: data.matrixItemId || data.itemId,
       platform: data.pt,
       phone: data.phone,
       attempt: extra.attempt,
@@ -440,6 +448,13 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
   let activePage = null;
   let lastPageSnapshot = null;
   let currentStage = "初始化";
+  let publishSubmitted = false;
+  const failureListeners = [];
+  const listen = (target, event, listener) => {
+    if (typeof target?.on !== 'function') return;
+    target.on(event, listener);
+    failureListeners.push(() => target.removeListener?.(event, listener));
+  };
   const logStage = (stage, extra = {}) => {
     currentStage = stage;
     watchdog?.setStage(stage);
@@ -469,6 +484,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
   };
 
   const cleanupTaskResources = () => {
+    for (const remove of failureListeners.splice(0)) remove();
     abortController.abort();
     watchdog?.stop();
     if (actionCheckTimer) {
@@ -515,8 +531,11 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     terminating = true;
     abortController.abort();
     watchdog?.stop();
+    console.error('[publish-runtime] aborted', { taskId: data.taskId, matrixTaskId: data.matrixTaskId,
+      itemId: data.matrixItemId || data.itemId, platform: data.pt, stage: currentStage,
+      submitted: publishSubmitted, message, ...extra });
     let diagnostic;
-    if (isDyPublish && extra.timeout && activePage && activeWin && !activeWin.isDestroyed()) {
+    if ((extra.timeout || extra.crash) && activePage && activeWin && !activeWin.isDestroyed()) {
       // 先留现场再关窗，诊断最多占用两秒，不能阻塞队列。
       let diagnosticTimer;
       try {
@@ -536,6 +555,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     const payload = {
       ...data,
       ...extra,
+      ...(publishSubmitted ? { confirmationUnknown: true, nonRetryable: true } : {}),
       status: false,
       message,
       ...(diagnostic ? { diagnostic } : {}),
@@ -594,6 +614,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     markSubmitted() {
       if (finished || terminating) return;
       watchdog?.markSubmitted();
+      publishSubmitted = true;
       currentStage = "等待平台发布确认";
       rawLogStage(currentStage);
     },
@@ -863,6 +884,9 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         return;
       }
       activeBrowser = browser;
+      listen(browser, 'disconnected', () => {
+        if (!finished && !terminating && !win?.isDestroyed() && !win?._mmClosedByProgram) void abortTask('发布浏览器连接异常断开', { crash: true, nonRetryable: true });
+      });
       logStage("浏览器已连接", { attempt: currentAttempt });
       win = new BrowserWindow({
         show: data.mmCliSuppressWindow
@@ -898,6 +922,17 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       win.webContents.setAudioMuted(true);
       page = await pie.getPage(browser, win);
       activePage = page;
+      listen(win.webContents, 'render-process-gone', (_event, details) => {
+        if (!finished && !terminating) void abortTask(`发布页面进程异常退出：${details?.reason || 'unknown'}（${details?.exitCode ?? ''}）`, { crash: true, nonRetryable: true });
+      });
+      listen(page, 'error', (error) => {
+        if (!finished && !terminating) void abortTask(`发布页面崩溃：${error?.message || error}`, { crash: true, nonRetryable: true });
+      });
+      listen(page, 'pageerror', (error) => {
+        if (!finished && !terminating) console.error('[publish-runtime] page-script-error', {
+          taskId: data.taskId, itemId: data.matrixItemId || data.itemId, platform: data.pt,
+          stage: currentStage, submitted: publishSubmitted, error: error?.stack || String(error) });
+      });
       if (data.pt === "抖音") bindPublishPageSignal(page, abortController.signal);
       if (finished || terminating) {
         closePublishWinProgrammatically(win);
@@ -1125,7 +1160,9 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
             ...data,
             status: false,
             skipped: true,
-            message: "发布窗口已被手动关闭，已跳过本次发布",
+            confirmationUnknown: publishSubmitted,
+            nonRetryable: true,
+            message: publishSubmitted ? "已提交发布但确认前窗口被关闭，请核验作品，勿重复发布" : "发布窗口已被手动关闭，已跳过本次发布",
           });
           finishOnce();
           return;

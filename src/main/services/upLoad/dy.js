@@ -20,6 +20,7 @@ import {
 import { revealPublishVerificationWindow } from "../publishWindowPresentation.js";
 import { inspectDyLocationPick, pickFirstDyLocation } from "./dyLocationPicker.js";
 import { replaceDyDescription } from "./dyDescription.js";
+import { clickDyPublish } from "./dyPublishSubmit.js";
 
 const DY_PREFLIGHT_TIMEOUT_MS = 60 * 1000;
 const DY_UPLOAD_INPUT_TIMEOUT_MS = 60 * 1000;
@@ -142,32 +143,6 @@ async function selectDyCreativeStatementWithRetry(page, data, maxMs = 60000) {
     }
   }
   throw lastErr || new Error("抖音自主声明选择失败");
-}
-
-async function clickDyPublish(page, isDraftMode, beforeSubmit) {
-  const submitSelector = isDraftMode
-    ? "#popover-tip-container+button"
-    : "#popover-tip-container";
-  const hasSubmitButton = isDraftMode
-    ? () => !!document.querySelector("#popover-tip-container+button")
-    : () => !!document.querySelector("#popover-tip-container");
-  await pollPageUntil(
-    page,
-    hasSubmitButton,
-    WAIT_SELECTOR_APPEAR_MS,
-    500,
-    "未找到抖音发布按钮",
-  );
-  const submitBtn = await page.$(submitSelector);
-  if (!submitBtn) throw new Error("未找到抖音发布按钮");
-  throwIfPublishCanceled(page);
-  beforeSubmit?.();
-  await submitBtn.click({ delay: 200 });
-  console.log(
-    isDraftMode
-      ? "[dy] 已点击存草稿按钮 (#popover-tip-container+button)"
-      : "[dy] 已点击发布入口 (#popover-tip-container)"
-  );
 }
 
 /**
@@ -1166,7 +1141,7 @@ export default async function (page, data, window, event, _finish, task = {}) {
         }
       },
     });
-    console.log("[dy] 视频上传和预览已就绪");
+    console.log("[dy] 视频上传完成，已可继续编辑发布");
   } catch (e) {
     await reportFailure("视频上传或处理失败", e);
     return;
@@ -1247,7 +1222,7 @@ export default async function (page, data, window, event, _finish, task = {}) {
     if (!saved) throw new Error("未找到保存权限-不允许");
     console.log("[dy] 保存权限已设置");
 
-    // 自主声明入口在视频转码完成后才出现，必须在点击发布前完成
+    // 自主声明、地理位置和定时配置必须在点击发布前完成。
     console.log("[dy] 开始处理自主声明、地理位置和定时配置");
     stage("设置自主声明");
     await selectDyCreativeStatementWithRetry(page, data);

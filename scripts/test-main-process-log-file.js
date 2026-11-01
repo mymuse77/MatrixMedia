@@ -89,6 +89,25 @@ console.log("closed stdout pipe");
   );
   fs.rmSync(epipeTempDir, { recursive: true, force: true });
   assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+
+  const faultDir = path.join(tempDir, "faults");
+  const appSetup = `const {EventEmitter}=require('events'); const app=new EventEmitter();
+    app.getPath=()=>${JSON.stringify(faultDir)};
+    require(${JSON.stringify(logFileBundle)}).installMainProcessLogFile(app);`;
+  const crashed = spawnSync(process.execPath, ["-e", `${appSetup}
+    app.emit('render-process-gone', {}, {id:42}, {reason:'crashed',exitCode:7});
+    Promise.reject(new Error('publish-test-unhandled'));`], { encoding: "utf8" });
+  assert.notStrictEqual(crashed.status, 0, "不能吞掉未处理的致命异常");
+  const faultLog = path.join(faultDir, todayLogName());
+  const faultText = fs.readFileSync(faultLog, "utf8");
+  assert.ok(faultText.includes('render_process_gone'));
+  assert.ok(faultText.includes('unhandled_rejection'));
+  assert.ok(faultText.includes('publish-test-unhandled'));
+  assert.strictEqual(fs.readdirSync(path.join(faultDir, "sessions")).length, 1, "异常退出保留标记");
+  const restarted = spawnSync(process.execPath, ["-e", appSetup], { encoding: "utf8" });
+  assert.strictEqual(restarted.status, 0, restarted.stderr);
+  assert.ok(fs.readFileSync(faultLog, "utf8").includes('previous_session_unclean'));
+  assert.strictEqual(fs.readdirSync(path.join(faultDir, "sessions")).length, 0, "正常退出移除标记");
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true });
 }

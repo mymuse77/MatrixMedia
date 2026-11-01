@@ -9,9 +9,11 @@ import {
 
 export function classifyDyUploadSnapshot(snapshot) {
   if (snapshot.failure) return "failed";
-  if (snapshot.processing) return "processing";
   if (snapshot.uploading) return "uploading";
-  // 预览与编辑控件都已就绪才继续，视频地址不限定 CDN 域名。
+  // 抖音允许预览转码期间编辑和发布；须同时确认平台提示与真实编辑控件。
+  if (snapshot.canPublishWhileProcessing) return "ready";
+  if (snapshot.processing) return "processing";
+  // 没有明确可发布提示时仍等待预览就绪，视频地址不限定 CDN 域名。
   if (snapshot.videos?.some((video) =>
     video.visible && video.hasSource &&
     (video.hasSlider || (video.readyState >= 2 && video.duration > 0 && snapshot.hasSavePermission)),
@@ -41,6 +43,11 @@ export async function inspectDyUploadState(page) {
     const progress = progressValues.length ? Math.max(...progressValues) : null;
     const errorText = [...document.querySelectorAll('[role="alert"], .semi-toast-content, .semi-message-content, [class*="upload"] [class*="error"]')]
       .filter(visible).map((element) => element.innerText || "").join(" ");
+    const hasSavePermission = text.includes("保存权限");
+    const canPublishWhileProcessing =
+      text.includes("预览转码中") && text.includes("转码过程也可以发布作品") && hasSavePermission &&
+      [...document.querySelectorAll(".semi-input")].some((element) => visible(element) && !element.disabled) &&
+      [...document.querySelectorAll("#popover-tip-container")].some(visible);
     const videos = [...document.querySelectorAll("video")].slice(0, 10).map((video) => {
       const src = video.currentSrc || video.getAttribute("src") || "";
       let parent = video.parentElement;
@@ -67,7 +74,8 @@ export async function inspectDyUploadState(page) {
       uploading: progress != null && progress < 100,
       processing: /转码中|正在转码|视频处理中|正在处理视频/.test(text),
       failure: errorText.match(/视频上传失败|上传失败，请重试|视频处理失败|视频转码失败|不支持该视频格式|视频格式不支持/)?.[0] || "",
-      hasSavePermission: text.includes("保存权限"),
+      hasSavePermission,
+      canPublishWhileProcessing,
       videos,
       bodyText: text.replace(/\s+/g, " ").slice(0, 1000),
     };

@@ -18,7 +18,7 @@ async function main() {
     constructor() {
       super();
       this.destroyed = false;
-      this.webContents = { setAudioMuted() {}, setWindowOpenHandler() {}, on() {} };
+      this.webContents = Object.assign(new EventEmitter(), { setAudioMuted() {}, setWindowOpenHandler() {} });
       windows.push(this);
     }
     isDestroyed() { return this.destroyed; }
@@ -76,6 +76,11 @@ async function main() {
   try {
     const { runPuppeteerTask, runPuppeteerPreflight, hasActivePublishTasks } = require(outfile);
     global.__publishAction = async (page, data, win, event, task) => {
+      if (data.scenario === "crash") {
+        task.markSubmitted();
+        win.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 7 });
+        return;
+      }
       if (data.scenario === "progress") {
         task.setStage("等待视频上传完成");
         for (const value of [10, 30, 60]) { await sleep(60); task.uploadProgress(value); }
@@ -115,6 +120,14 @@ async function main() {
     assert.strictEqual(unknown.confirmationUnknown, true);
     assert.match(unknown.message, /勿重复发布/);
     assert.strictEqual(submitted.replies.length, 1);
+
+    const crashed = start("crash");
+    const crashResult = await crashed.result;
+    assert.strictEqual(crashResult.crash, true);
+    assert.strictEqual(crashResult.confirmationUnknown, true);
+    assert.strictEqual(crashResult.nonRetryable, true);
+    assert.strictEqual(crashed.replies.length, 1);
+    assert.strictEqual((await start("normal").result).status, true, "渲染进程崩溃后队列继续执行");
 
     const canceled = start("stall");
     await sleep(20);

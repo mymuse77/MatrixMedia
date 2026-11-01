@@ -2,12 +2,17 @@
 
 const assert = require("assert");
 const Module = require("module");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const durableDir = fs.mkdtempSync(path.join(os.tmpdir(), "matrix-result-durability-"));
 
 const socketHandlers = new Map();
 const managerHandlers = new Map();
 const emittedEvents = [];
 let capturedOptions = null;
 let resultAck = true;
+let resultOutcome = 'persisted';
 
 const fakeSocket = {
   id: "socket-test",
@@ -23,7 +28,7 @@ const fakeSocket = {
   },
   emit(eventName, payload, callback) {
     emittedEvents.push({ eventName, payload });
-    if (typeof callback === "function") callback(null, eventName === "result" ? (resultAck === null ? undefined : { success: resultAck }) : { success: true });
+    if (typeof callback === "function") callback(null, eventName === "result" ? (resultAck === null ? undefined : { success: resultAck, outcome: resultAck ? resultOutcome : 'retry' }) : { success: true });
   },
   timeout() {
     return this;
@@ -38,6 +43,7 @@ const fakeSocket = {
 
 const originalLoad = Module._load;
 Module._load = function patchedLoad(request, parent, isMain) {
+  if (request === "electron") return { app: { getPath: () => durableDir } };
   if (request === "socket.io-client") {
     return {
       io(_url, options) {
@@ -60,6 +66,26 @@ async function main() {
   let storedResults = [];
   const resultStore = { load: () => storedResults, save: (records) => { storedResults = JSON.parse(JSON.stringify(records)); } };
   const client = new WebSocketClient({ resultStore });
+
+  const { createPublishResultStore } = require("../src/main/services/publishResultOutbox");
+  const diskStore = createPublishResultStore("https://test.invalid", "durable-client");
+  const offline = new WebSocketClient({ resultStore: diskStore });
+  await offline.sendTaskResult("retry-request", "success", {
+    action: "publish_video", matrixTaskId: "parent-task", executionToken: "current-token",
+    itemId: "durable-item", success: true, publishedAt: Date.now(),
+  });
+  const afterRestart = new WebSocketClient({ resultStore: diskStore });
+  assert.strictEqual(afterRestart.resultOutbox.size, 1, "真实文件恢复已确认但未同步的发布结果");
+  const [diskKey, diskEntry] = [...afterRestart.resultOutbox.entries()][0];
+  assert.strictEqual(diskEntry.result.data.matrixTaskId, "parent-task");
+  afterRestart.socket = fakeSocket;
+  afterRestart.isConnected = true;
+  resultAck = false;
+  await afterRestart.deliverTaskResult(diskKey, diskEntry);
+  assert.strictEqual(diskStore.load().length, 1, "服务端未保存时不能删除磁盘队列");
+  resultAck = true;
+  await afterRestart.deliverTaskResult(diskKey, diskEntry);
+  assert.strictEqual(diskStore.load().length, 0, "服务端保存确认后才能移除结果");
 
   client.connect();
   assert.strictEqual(capturedOptions.reconnection, true);
@@ -91,14 +117,16 @@ async function main() {
   });
   assert.strictEqual(client.taskDataById.has("terminal-task"), false);
 
-  for (const ack of [false, null]) {
+  for (const ack of [false, null, true]) {
     resultAck = ack;
+    resultOutcome = ack === true ? undefined : 'persisted';
     assert.strictEqual(await client.sendTaskResult("retry-task", "success", { action: "publish_video", status: "completed", executionToken: "old" }), false);
     assert.strictEqual(storedResults.length, 1);
     const [key, entry] = [...client.resultOutbox.entries()][0];
     client.executionTokenByTaskId.set("retry-task", "new");
     client.taskDataById.set("retry-task", { data: { executionToken: "new" } });
     resultAck = true;
+    resultOutcome = 'persisted';
     await client.deliverTaskResult(key, entry);
     assert.strictEqual(storedResults.length, 0);
     assert.strictEqual(client.executionTokenByTaskId.get("retry-task"), "new", "旧 ACK 不清新执行上下文");
@@ -190,4 +218,6 @@ main()
   })
   .finally(() => {
     Module._load = originalLoad;
+    for (const name of fs.readdirSync(durableDir)) fs.unlinkSync(path.join(durableDir, name));
+    fs.rmdirSync(durableDir);
   });

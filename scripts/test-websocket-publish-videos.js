@@ -38,6 +38,7 @@ let simulateSlowPreparation = false;
 let preparationElapsed = 0;
 let publishStore = null;
 let testDocumentsRoot = path.join(os.tmpdir(), "matrixmedia-test-documents");
+let onScheduledPublishEvent;
 const notifications = [];
 
 const originalLoad = Module._load;
@@ -187,7 +188,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
       schedulePublishRecord: (record) => {
         scheduledPublishRecords.push(record);
       },
-      subscribeScheduledPublishEvents: () => () => {},
+      subscribeScheduledPublishEvents: (listener) => { onScheduledPublishEvent = listener; return () => {}; },
     };
   }
 
@@ -207,7 +208,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
 };
 
 async function main() {
-  const { handlePublishVideo, handlePublishVideos } = require("../src/main/services/websocketHandlers");
+  const { handlePublishVideo, handlePublishVideos, handleGetPublishTaskStatus, registerWebSocketHandlers } = require("../src/main/services/websocketHandlers");
 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "matrixmedia-publish-"));
   const firstVideoPath = path.join(tempDir, "video-a.mp4");
@@ -222,9 +223,18 @@ async function main() {
       progressEvents.push({ taskId, progress, message });
     },
     sendTaskResult(taskId, status, data) {
-      taskResultEvents.push({ taskId, status, data });
+      const itemId = data.results?.[0]?.itemId;
+      const recordId = itemId && capturedPublishPayloads.find((item) => item.matrixItemId === itemId)?.id;
+      const historySaved = Boolean(recordId && changeDataCalls.some((call) => call.type === 'update' && call.item?.id === recordId && call.item?.publishStatus === 'success'));
+      taskResultEvents.push({ taskId, status, data, historySaved });
     },
   };
+  const scheduledResults = [];
+  registerWebSocketHandlers({ registerTaskHandler() {}, sendTaskResult: (...args) => scheduledResults.push(args) });
+  onScheduledPublishEvent({ matrixTaskId: "scheduled-task", matrixItemId: "scheduled-item", executionToken: "scheduled-token",
+    publishStatus: "success", lastPublishAt: 1700000000000 });
+  assert.strictEqual(scheduledResults[0][2].results[0].publishedAt, 1700000000000,
+    "定时发布回执应携带实际确认时间");
 
   const result = await handlePublishVideos(
     {
@@ -364,6 +374,9 @@ async function main() {
   assert.strictEqual(successUpdates[0].item.date, capturedPublishPayloads[0].date);
   assert.strictEqual(successUpdates[0].item.publishStatus, "success");
   assert.strictEqual(successUpdates[0].item.publishSuccessCount, 1);
+  assert.ok(result.results[0].publishedAt > 0);
+  assert.strictEqual(result.results[0].publishedAt, successUpdates[0].item.lastPublishAt,
+    "回执和本地记录必须使用同一个平台确认时间");
 
   const assignedPublishCountBefore = capturedPublishPayloads.length;
   const assignedTaskEventCountBefore = taskResultEvents.length;
@@ -406,13 +419,14 @@ async function main() {
   const assignedTaskEvents = taskResultEvents.slice(assignedTaskEventCountBefore);
   assert.strictEqual(
     assignedTaskEvents.length,
-    2,
-    "最后一项完成后应由 WebSocket 外层统一发送唯一终态",
+    3,
+    "包括最后一项在内，每条平台确认必须立即进入持久化结果补报链路",
   );
   assert.deepStrictEqual(
     assignedTaskEvents.map((event) => event.data.results[0].itemId),
-    ["publish-item-1", "publish-item-2"],
+    ["publish-item-1", "publish-item-2", "publish-item-3"],
   );
+  assert.ok(assignedTaskEvents.every((event) => !event.historySaved), "确认回执必须先于本地历史更新发送，避免后续异常丢失结果");
 
   const failedResult = await handlePublishVideos(
     {
@@ -492,8 +506,8 @@ async function main() {
   );
   assert.strictEqual(
     taskResultEvents.slice(isolatedTaskEventCountBefore).length,
-    1,
-    "批量终态应由 WebSocket 外层在 handler 返回后发送",
+    0,
+    "没有发布明细身份时不提前发送无法确认归属的成功回执",
   );
 
   const singleFailurePreflightCountBefore = preflightCalls.length;
@@ -864,6 +878,7 @@ async function main() {
   );
   const retryPayloadStart = capturedPublishPayloads.length;
   const retryDownloadsStart = resolvePublishCalls.length;
+  const retryUpdatesStart = changeDataCalls.length;
   const realNow = Date.now;
   try {
     simulateSlowPreparation = true;
@@ -884,10 +899,31 @@ async function main() {
     assert.deepStrictEqual(resolvePublishCalls.slice(retryDownloadsStart).map((item) => item.options.downloadTimeoutMs),
       [120000, 120000], "下载使用独立的超时额度");
     assert.strictEqual(preflightCalls.length, 0);
+    assert.strictEqual(changeDataCalls.slice(retryUpdatesStart).filter((call) =>
+      call.type === "update" && call.item?.publishStatus === "failed").length, 0,
+    "自动重试成功前不能把中间失败写成终态，否则状态快照会提前结束服务端任务");
+    assert.ok(changeDataCalls.slice(retryUpdatesStart).filter((call) =>
+      call.type === "update" && call.item?.lastPublishMessage === "等待发布结果")
+      .every((call) => call.item.publishStatus === "publishing"), "每次尝试开始都应处于发布中");
   } finally {
     simulateSlowPreparation = false;
     Date.now = realNow;
   }
+
+  const exhaustedUpdatesStart = changeDataCalls.length;
+  retryableFailuresByPhone.set("retry-exhausted-account", 2);
+  const exhaustedResult = await handlePublishVideos({
+    taskId: "matrix-task-exhausted-test", type: "publish_videos",
+    data: {
+      platforms: [platform], accounts: [{ phone: "retry-exhausted-account", platform }],
+      videos: [{ filePath: firstVideoPath }], captions: [{ textContent: "Retry exhausted" }],
+    },
+  }, wsClient);
+  assert.strictEqual(exhaustedResult.failCount, 1);
+  assert.strictEqual(exhaustedResult.results[0].attemptCount, 2);
+  assert.strictEqual(changeDataCalls.slice(exhaustedUpdatesStart).filter((call) =>
+    call.type === "update" && call.item?.publishStatus === "failed").length, 1,
+  "自动重试耗尽后只写入一次最终失败");
 
   const terminalBatchEvent = taskResultEvents.find(
     (event) => event.taskId === "matrix-task-test" && event.data.status === "completed",
@@ -901,6 +937,7 @@ async function main() {
   const replayData = {
     phone: replayPhone, platform, videoPath: firstVideoPath,
     itemId: "record-replay-item", idempotencyKey: "record-replay-key",
+    matrixTaskId: "record-first-task", executionToken: "token-first",
     title: "Record replay", taskName: "Record replay",
   };
   const readRecords = () => Object.values(publishStore({
@@ -917,6 +954,7 @@ async function main() {
     assert.strictEqual(notifications.length, notificationsBefore);
 
     publishFailuresByPhone.delete(replayPhone);
+    replayData.executionToken = "token-retry";
     const replayResult = await handlePublishVideo({
       taskId: "record-replay-task", data: replayData,
     }, wsClient);
@@ -925,10 +963,16 @@ async function main() {
     assert.strictEqual(readRecords().length, 1);
     assert.strictEqual(readRecords()[0].publishStatus, "success");
     assert.strictEqual(readRecords()[0].publishAttemptCount, 2);
+    assert.strictEqual(readRecords()[0].executionToken, "token-retry", "重发应落盘当前执行令牌");
+    assert.strictEqual(readRecords()[0].taskId, replayData.matrixTaskId, "本地状态应归属父发布任务");
+    const retrySnapshot = await handleGetPublishTaskStatus({ taskId: "retry-snapshot", data: { matrixTaskId: replayData.matrixTaskId } }, wsClient);
+    assert.strictEqual(retrySnapshot.results[0].executionToken, "token-retry");
+    assert.strictEqual(retrySnapshot.results[0].status, "success");
     assert.strictEqual(notifications.length, notificationsBefore + 1);
 
     const batchReplay = await handlePublishVideos({
       taskId: "record-batch-replay-task", data: {
+        executionToken: "token-batch",
         taskName: "Record replay", platforms: [platform],
         accounts: [{ id: "replay-account", phone: replayPhone, platform }],
         videos: [{ id: "replay-video", filePath: firstVideoPath }],
@@ -943,7 +987,13 @@ async function main() {
     assert.strictEqual(readRecords().length, 1);
     assert.strictEqual(readRecords()[0].publishStatus, "success");
     assert.strictEqual(readRecords()[0].publishAttemptCount, 3);
+    assert.strictEqual(readRecords()[0].executionToken, "token-batch", "批量重发的尝试也应落盘当前令牌");
+    assert.strictEqual(readRecords()[0].taskId, "record-batch-replay-task");
     assert.strictEqual(notifications.length, notificationsBefore + 2);
+    const record = readRecords()[0];
+    const snapshot = await handleGetPublishTaskStatus({ taskId: "snapshot-test", data: { matrixTaskId: record.taskId } }, wsClient);
+    const snapshotItem = snapshot.results.find((item) => item.id === record.id);
+    assert.strictEqual(snapshotItem.publishedAt, record.lastPublishAt, "状态快照应保留客户端确认时间");
 
     await handlePublishVideo({
       taskId: "record-distinct-task",

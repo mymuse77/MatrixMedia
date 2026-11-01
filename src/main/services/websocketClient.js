@@ -321,6 +321,7 @@ class WebSocketClient {
             const taskPayload = taskData && typeof taskData.data === 'object' && taskData.data !== null ? taskData.data : {};
             this.sendTaskResult(taskId, 'success', {
               action: 'publish_video',
+              matrixTaskId: taskPayload.matrixTaskId || taskId,
               itemId: taskPayload.itemId || '',
               idempotencyKey: taskPayload.idempotencyKey || '',
               executionToken: taskPayload.executionToken || '',
@@ -354,6 +355,7 @@ class WebSocketClient {
               error?.publishPayload?.verificationRequired === true;
             this.sendTaskResult(taskId, 'failed', {
               action: 'publish_video',
+              matrixTaskId: taskPayload.matrixTaskId || taskId,
               itemId: taskPayload.itemId || '',
               idempotencyKey: taskPayload.idempotencyKey || '',
               executionToken: taskPayload.executionToken || '',
@@ -364,6 +366,7 @@ class WebSocketClient {
               error: errorMessage,
               nonRetryable,
               verificationRequired,
+              confirmationUnknown: error?.confirmationUnknown === true || error?.publishPayload?.confirmationUnknown === true,
             });
             return;
           }
@@ -372,6 +375,7 @@ class WebSocketClient {
             const taskPayload = taskData && typeof taskData.data === 'object' && taskData.data !== null ? taskData.data : {};
             this.sendTaskResult(taskId, 'failed', {
               action: 'publish_videos',
+              matrixTaskId: taskPayload.matrixTaskId || taskId,
               success: false,
               status: 'failed',
               executionToken: taskPayload.executionToken || '',
@@ -515,7 +519,9 @@ class WebSocketClient {
     const type = this.taskTypeById.get(taskId) || snapshot.data?.action;
     const entry = { result: snapshot, durable: type === 'publish_video' || type === 'publish_videos', attempts: 0, nextAttemptAt: 0 };
     this.resultOutbox.set(key, entry);
-    if (entry.durable) this.persistResultOutbox();
+    const persisted = entry.durable ? this.persistResultOutbox() : false;
+    if (entry.durable) console.info('[publish-sync] queued', { ...this.describeResult(entry), persisted });
+    this.scheduleResultRetry();
     this.updatePublishTaskItemsFromResult(taskId, snapshot.data);
     return this.deliverTaskResult(key, entry);
   }
@@ -529,6 +535,13 @@ class WebSocketClient {
       console.error('[WebSocket] 发布结果队列保存失败，保留内存结果:', error?.message || error);
       return false;
     }
+  }
+
+  describeResult(entry) {
+    const data = entry.result.data || {};
+    return { taskId: entry.result.taskId, matrixTaskId: data.matrixTaskId || entry.result.taskId,
+      itemIds: (Array.isArray(data.results) ? data.results : [data]).map((item) => item.itemId).filter(Boolean),
+      status: data.status || entry.result.status, attempt: entry.attempts + 1, pendingCount: this.resultOutbox.size };
   }
 
   scheduleResultRetry() {
@@ -551,10 +564,16 @@ class WebSocketClient {
     if (entry.delivery) return entry.delivery;
     const socket = this.socket;
     if (!socket || !this.isConnected) return Promise.resolve(false);
+    if (entry.durable) {
+      this.persistResultOutbox();
+      console.info('[publish-sync] sending', this.describeResult(entry));
+    }
     const delivery = new Promise((resolve) => {
       try {
         socket.timeout(5_000).emit('result', entry.result, (error, response) => {
-          resolve(!error && response?.success === true);
+          entry.receiptOutcome = response?.outcome;
+          const confirmed = !entry.durable || response?.outcome === 'persisted' || response?.outcome === 'obsolete';
+          resolve(!error && response?.success === true && confirmed);
         });
       } catch (error) {
         console.warn('[WebSocket] 发送结果失败:', error?.message || error);
@@ -568,10 +587,12 @@ class WebSocketClient {
       this.pendingTaskResultDeliveries.delete(delivery);
       if (this.resultOutbox.get(key) !== entry) return;
       if (delivered) {
+        if (entry.durable) console.info(entry.receiptOutcome === 'obsolete' ? '[publish-sync] obsolete-result' : '[publish-sync] server-confirmed', this.describeResult(entry));
         this.resultOutbox.delete(key);
         if (entry.durable) this.persistResultOutbox();
         this.finalizeTaskTracking(entry.result.taskId, entry.result.data);
       } else {
+        if (entry.durable) console.warn('[publish-sync] unconfirmed-retry', this.describeResult(entry));
         entry.attempts += 1;
         entry.nextAttemptAt = Date.now() + Math.min(30_000, 1_000 * 2 ** Math.min(entry.attempts, 5));
       }
