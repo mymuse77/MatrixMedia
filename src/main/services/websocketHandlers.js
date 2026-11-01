@@ -12,6 +12,9 @@ import ptConfig from '../config/ptConfig';
 import path from 'path';
 import fs from 'fs';
 import { app, BrowserWindow } from 'electron';
+import { revealPublishVerificationWindow } from './publishWindowPresentation';
+import { notifyVerificationRequired } from './verificationNotifications';
+const {auditOperation} = require('./operationAudit');
 import { getAccountLoginStatus, getAccountPartition } from './accountLoginStatus';
 import { openAccountLoginWindow, unblockAccountLoginPartition } from './accountLoginWindow';
 import { purgeAccountSession } from './accountSessionCleanup';
@@ -2309,6 +2312,25 @@ export async function handleGetClientStatus(taskData, wsClient) {
  * 注册所有任务处理器
  */
 export function registerWebSocketHandlers(wsClient) {
+  require('./douyinOutreach/bridge').registerOutreachHandlers(wsClient, {
+    revealWindow: revealPublishVerificationWindow,
+    notifyVerification: notifyVerificationRequired,
+    audit: auditOperation,
+    resolveAccount: async expected => {
+      const account = getAllAccounts().find(item => item.id === expected.id && item.phone === expected.phone && (item.pt || item.platform) === expected.pt);
+      return account ? {id: account.id, phone: account.phone, pt: account.pt || account.platform} : null;
+    },
+    openWindow: async account => {
+      const win = new BrowserWindow({show: true, width: 1100, height: 800, title: `主题读取 · ${account.phone}`,
+        webPreferences: {partition: getAccountPartition(account.phone, account.pt), nodeIntegration: false, contextIsolation: true, sandbox: true}});
+      win.webContents.setWindowOpenHandler(() => ({action: 'deny'}));
+      for (const eventName of ['will-navigate','will-redirect']) win.webContents.on(eventName, (event,url) => {
+        try {const target = new URL(url); if(target.protocol !== 'https:' || !/(^|\.)douyin\.com$/.test(target.hostname)) event.preventDefault();}
+        catch (_) {event.preventDefault();}
+      });
+      return win;
+    },
+  });
   subscribeScheduledPublishEvents((record) => {
     const matrixTaskId = cleanText(record?.matrixTaskId);
     const itemId = cleanText(record?.matrixItemId);

@@ -18,6 +18,8 @@ import {
   waitForDyPublishConfirmation,
 } from "./dyPublishConfirmation.js";
 import { revealPublishVerificationWindow } from "../publishWindowPresentation.js";
+import { notifyVerificationRequired } from "../verificationNotifications";
+const {auditOperation} = require('../operationAudit');
 import { inspectDyLocationPick, pickFirstDyLocation } from "./dyLocationPicker.js";
 import { replaceDyDescription } from "./dyDescription.js";
 
@@ -1282,6 +1284,8 @@ export default async function (page, data, window, event, _finish, task = {}) {
     console.log(
       `[dy] 发布确认最长等待 ${Math.round(confirmationTimeoutMs / 1000)} 秒`,
     );
+    let verificationSeen = false;
+    const verificationContext = {taskId: data.taskId || data.matrixTaskId, accountName: data.phone || data.partition, platform: '抖音', source: 'publish_video'};
     const confirmation = await waitForDyPublishConfirmation(page, {
       isDraftMode,
       publishTimeoutMs: data.publishTimeoutMs,
@@ -1293,8 +1297,18 @@ export default async function (page, data, window, event, _finish, task = {}) {
           )} 秒，提示=${JSON.stringify(snapshot.messages || [])}`,
         );
         if (snapshot.state !== "verification_required") return;
+        verificationSeen = true;
+        auditOperation('verification.detected', verificationContext);
 
         const windowShown = revealDyVerificationWindow(window);
+        auditOperation('verification.window', {...verificationContext, windowShown});
+        const verificationText = (snapshot.messages || []).join(' ');
+        void notifyVerificationRequired({
+          source: 'publish_video', taskId: data.taskId || data.matrixTaskId,
+          account: {phone: data.phone || data.partition || '抖音账号', pt: '抖音'},
+          challengeType: /短信|手机验证码/.test(verificationText) ? 'sms' : /扫码|二维码/.test(verificationText) ? 'qr_login' : 'verification',
+          windowShown,
+        });
         const message = `抖音账号 ${data.phone || data.partition || ""} 需要接收短信验证码，请在弹出的抖音窗口中完成验证`;
         try {
           event.reply("puppeteerFile-reply", {
@@ -1310,7 +1324,13 @@ export default async function (page, data, window, event, _finish, task = {}) {
           console.warn("[dy] 推送短信验证状态失败:", error?.message || error);
         }
       },
+    }).catch(error => {
+      if (verificationSeen) auditOperation('verification.failed', {...verificationContext,
+        status: error.verificationRequired ? 'timeout' : 'failed',
+        errorCode: error.verificationRequired ? 'VERIFICATION_TIMEOUT' : 'PUBLISH_CONFIRMATION_FAILED'});
+      throw error;
     });
+    if (verificationSeen) auditOperation('verification.completed', {...verificationContext, status: 'platform_confirmed'});
     console.log(
       isDraftMode ? "✅ 抖音已确认保存草稿成功" : "✅ 抖音已确认视频发布成功",
       JSON.stringify(confirmation),

@@ -22,6 +22,7 @@ const clientCapabilities = [
   'publish.schedule.cancel',
   'publish.history',
   'client.status',
+  'outreach.transport.v1',
 ];
 
 function getClientClockInfo(nowMs = Date.now()) {
@@ -317,6 +318,10 @@ class WebSocketClient {
       handler(taskData)
         .then((result) => {
           if (this.isShuttingDown) return;
+          if (['outreach_search','outreach_sync_covers','outreach_sync_comments','outreach_execute'].includes(type)) {
+            void this.flushOutreachResults();
+            return;
+          }
           if (type === 'publish_video') {
             const taskPayload = taskData && typeof taskData.data === 'object' && taskData.data !== null ? taskData.data : {};
             this.sendTaskResult(taskId, 'success', {
@@ -380,7 +385,10 @@ class WebSocketClient {
             return;
           }
 
-          this.sendTaskResult(taskId, 'failed', { error: errorMessage });
+          this.sendTaskResult(taskId, 'failed', type.startsWith('outreach_') && type !== 'outreach_cancel' ? {
+            domain: 'outreach', outreachTaskId: taskId, executionToken: taskData.data?.executionToken,
+            error: {code: error.code || 'EXECUTION_FAILED', message: errorMessage},
+          } : {error: errorMessage});
         });
     } else {
       console.warn(`[WebSocket] 未找到任务类型 "${type}" 的处理器`);
@@ -531,8 +539,29 @@ class WebSocketClient {
     }
   }
 
+  async flushOutreachResults() {
+    if (!this.isConnected || !this.socket || !this.getOutreachRuntime) return;
+    try {
+      const runtime = this.getOutreachRuntime();
+      if (!this.outreachDeliveries) this.outreachDeliveries = new Set();
+      for (const result of runtime.pendingResults()) {
+        if (this.outreachDeliveries.has(result.taskId)) continue;
+        this.outreachDeliveries.add(result.taskId);
+        const payload = {...result, clientId: this.clientId, clientType: config.clientType, protocolVersion, timestamp: Date.now()};
+        this.socket.timeout(5000).emit('result', payload, (error, receipt) => {
+          this.outreachDeliveries.delete(result.taskId);
+          if (!error) {
+            try {runtime.acknowledge(receipt);} catch (failure) {console.error('[Outreach] 回执保存失败:', failure.message);}
+          }
+          this.scheduleResultRetry();
+        });
+      }
+      this.scheduleResultRetry();
+    } catch (error) {console.error('[Outreach] 独立执行日志不可用，保持停止:', error.message);}
+  }
+
   scheduleResultRetry() {
-    if (this.resultRetryTimer || this.isShuttingDown || !this.isConnected || !this.resultOutbox.size) return;
+    if (this.resultRetryTimer || this.isShuttingDown || !this.isConnected || !this.resultOutbox.size && !this.outreachRuntime?.pendingResults().length) return;
     this.resultRetryTimer = setTimeout(() => {
       this.resultRetryTimer = null;
       this.flushTaskResults();
@@ -541,6 +570,7 @@ class WebSocketClient {
   }
 
   flushTaskResults() {
+    void this.flushOutreachResults();
     for (const [key, entry] of this.resultOutbox) {
       if (!entry.delivery && entry.nextAttemptAt <= Date.now()) void this.deliverTaskResult(key, entry);
     }

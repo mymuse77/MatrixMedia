@@ -200,7 +200,13 @@ export function createPuppeteerTaskRuntime({ runTask, queueHeartbeatMs = 30_000 
 
 const puppeteerTaskRuntime = createPuppeteerTaskRuntime({
   runTask(task, queueDone) {
-    doUpload(task.data, task.transport, queueDone, task);
+    const {acquireAccountOperation} = require('./accountOperationLock');
+    void acquireAccountOperation({pt: task.data.pt, phone: task.data.phone || String(task.data.partition || '').split('-')[0]}, 1).then(release => {
+      if (task.control.canceled) {release(); queueDone(); return;}
+      const done = () => {release(); queueDone();};
+      try {void doUpload(task.data, task.transport, done, task).catch(error => {done(); console.error('发布执行异常:', error.message);});}
+      catch (error) {done(); console.error('发布执行异常:', error.message);}
+    });
   },
 });
 
